@@ -167,6 +167,29 @@ describe('the log service', () => {
     expect(lines[1]).toMatchObject({ requestId: 'kept', workspaceName: 'Site' })
   })
 
+  it('logs one line when a log\'s writes start failing, however many tries fail, and one when they work again', async () => {
+    configureRootLogger({}, { format: 'json' })
+    const blocker = logPath()
+    writeFileSync(blocker, 'not a directory')
+    const logs = service({ retryDelaysMs: [10, 10, 10] })
+    const log = createFileActionLog(join(blocker, 'actions.jsonl'), { service: logs })
+    const stderr = captureStderr()
+    log.append(entry('lost'))
+    await logs.flush()
+    log.append(entry('lost again'))
+    await logs.flush()
+    rmSync(blocker)
+    mkdirSync(blocker)
+    log.append(entry('kept'))
+    await logs.flush()
+    await flushLogs()
+
+    const lines = stderr().filter(line => line.component === 'buckle').map(line => line.message)
+    expect(lines.filter(message => message === 'Could not durably write the action log')).toHaveLength(1)
+    expect(lines.filter(message => message === 'The action log takes writes again')).toHaveLength(1)
+    expect(logs.stats().logs[join(blocker, 'actions.jsonl')]).toMatchObject({ failures: 8, written: 1 })
+  })
+
   it('returns from an append at once while the disk stalls a sync, as a required attempt waits for its own', async () => {
     const path = logPath()
     const faulty = faultyWriter()

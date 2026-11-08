@@ -51,12 +51,18 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
   // Masked by every secret value a call holds now, as a log line is (docs/user/how-to/secrets.md), and named, before the
   // entry leaves this thread or waits in a queue: a value never reaches the file.
   const prepared = (entry: ActionLogEntry): ActionLogEntry => nameEntry(masksHeld() ? maskHeldJson(entry) : entry, naming())
+  // One line when writes start failing and one when they work again: each line shares the budget the queued entries
+  // wait under, so a line per failed try would push out the entries waiting for theirs.
+  let failing = false
   async function write(entries: ActionLogEntry[], mode: { queued: boolean }): Promise<void> {
     try {
       await writer().append({ file, entries, ...(mode.queued && options.purgeable ? { existingFolder: true as const } : {}) })
       options.health?.succeeded(filePath)
+      if (failing) logger.info('The action log takes writes again', { filePath })
+      failing = false
     } catch (error) {
-      logger.error('Could not durably write the action log', { filePath, error })
+      if (!failing) logger.error('Could not durably write the action log', { filePath, error })
+      failing = true
       // Another process held the pending-audit state past the wait: temporary, so the caller is told
       // to retry, as for any busy state, and the storage is not unhealthy.
       if (error instanceof StateBusyError) throw error
