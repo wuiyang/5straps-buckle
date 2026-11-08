@@ -327,7 +327,10 @@ describe('a stdio MCP form answer', () => {
     expect(readFileSync(join(workspace, 'one', 'b.md'), 'utf8')).toBe('b')
     expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', subject: join(folder, 'one'), scope: 'session', sessionId: 'mcp' })])
     const entries = await auditEntries(runtime.actions, 50)
-    expect(entries.filter(entry => entry.tool === 'fs_write').map(entry => entry.event)).toEqual(Array.from({ length: 3 }, () => ['attempt', 'result']).flat())
+    // By call, not across the file: a run call's result is queued with the log service and can land after the next call's attempt,
+    // which is awaited. Within a call the attempt is written before the tool runs, so its result always follows it.
+    const writeCalls = Object.values(Object.groupBy(entries.filter(entry => entry.tool === 'fs_write'), entry => entry.auditId ?? 'no audit id'))
+    expect(writeCalls.map(call => call!.map(entry => entry.event))).toEqual(Array.from({ length: 3 }, () => ['attempt', 'result']))
     expect(entries.filter(entry => entry.tool === 'approval_decision').map(entry => [entry.event, entry.outcome, entry.args])).toEqual([
       ['attempt', 'started', expect.objectContaining({ token, outcome: 'approve', scope: 'session', source: SOURCES.forms })],
       ['result', 'ok', expect.objectContaining({ token, source: SOURCES.forms, assurance: 'local', save: 'saved' })],

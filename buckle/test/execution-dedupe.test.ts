@@ -79,7 +79,8 @@ describe('execution dedupe by requestId (review M2 of B13-B14)', () => {
     expect(runs.runs()).toBe(1)
     // Told it was answered by the earlier run (whether that still ran, and so had no time, depends on the timing).
     expect(onReplayed).toHaveBeenCalledOnce()
-    expect((await results(runtime, 'rings-1')).map(entry => entry.detail ?? 'ran')).toEqual(['ran', 'REPLAYED'])
+    // Without regard to the file's order: the run's result is queued with the log service and can land after the replay's, which is awaited.
+    expect((await results(runtime, 'rings-1')).map(entry => entry.detail ?? 'ran').sort()).toEqual(['REPLAYED', 'ran'])
   })
 
   it('answers a re-send after the call settled with its kept response, without asking or running again', async () => {
@@ -101,7 +102,8 @@ describe('execution dedupe by requestId (review M2 of B13-B14)', () => {
     const fresh = vi.fn()
     await runtime.invoke({ sessionId: 'chat-1', request: read('rings-2b'), onReplayed: fresh })
     expect(fresh).not.toHaveBeenCalled()
-    expect((await results(runtime, 'rings-2')).map(entry => `${entry.outcome}:${entry.detail ?? 'ran'}`)).toEqual(['ok:ran', 'ok:REPLAYED'])
+    // Without regard to the file's order, as above: the first run's queued result can land after the replay's.
+    expect((await results(runtime, 'rings-2')).map(entry => `${entry.outcome}:${entry.detail ?? 'ran'}`).sort()).toEqual(['ok:REPLAYED', 'ok:ran'])
   })
 
   it('does not run again after a session grant would allow it: the re-send gets the first run', async () => {
@@ -157,7 +159,8 @@ describe('execution dedupe by requestId (review M2 of B13-B14)', () => {
     const reused = await runtime.invoke({ sessionId: 'chat-1', request: { ...read('rings-8'), args: { path: 'other.md' } } })
     expect(reused).toMatchObject({ outcome: 'error', error: { code: REQUEST_ID_REUSED, retryable: false } })
     expect(runs.runs()).toBe(1)
-    expect((await results(runtime, 'rings-8')).map(entry => entry.detail ?? 'ran')).toEqual(['ran', REQUEST_ID_REUSED])
+    // Without regard to the file's order, as above: the run's queued result can land after the refusal's.
+    expect((await results(runtime, 'rings-8')).map(entry => entry.detail ?? 'ran').sort()).toEqual([REQUEST_ID_REUSED, 'ran'])
   })
 
   it('keeps nothing for a call that did not run: a re-send after approval_required asks again', async () => {
