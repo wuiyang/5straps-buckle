@@ -42,8 +42,9 @@ export interface FormsBackend extends ApprovalBackend {
   forms(approvals: ApprovalRequest[]): ReturnType<typeof inputRequired>
   /**
    * Decides each accepted answer through the host, with the sender the face's transport authenticated: an approval form's
-   * under its ask's token, and a save form's under `save:<token>`, read only where this backend drew that sender that
-   * save form. A save answer is settled once and draws no further save form.
+   * under its ask's token, sent only for an ask waiting for that sender, and a save form's under `save:<token>`, settled
+   * once where this backend drew that sender that save form and drawing no further one; a skip with none goes to the
+   * host's skipSave.
    */
   answer(responses: Record<string, unknown> | undefined, sender?: AnswerSender): Promise<FormsAnswered>
   /** One save form per decision that did not save, drawn for `sender`; none where every decision saved. */
@@ -81,10 +82,10 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
 
   async function decideAnswers(responses: Record<string, unknown>, sender: AnswerSender | undefined): Promise<FormsAnswered> {
     const answered: FormsAnswered = { tokens: [], unsaved: [], holds: false }
-    const host = live()
-    if (!host) return answered
-    const keys = roundKeys({ host, responses })
-    const waiting = answerableAsks({ host, sender, keys })
+    const reading = live()
+    if (!reading) return answered
+    const keys = roundKeys({ host: reading, responses })
+    const waiting = answerableAsks({ host: reading, sender, keys })
     for (const key of keys) {
       const opened = live()
       if (!opened) break
