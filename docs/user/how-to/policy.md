@@ -69,9 +69,10 @@ Each workspace has one approved list, shared by `web_fetch`, browser navigation,
 pushes: its own, else the node's (`BUCKLE_NETWORK_ALLOW` and `BUCKLE_ALLOWED_HOSTS` as one). With
 a list, they reach only what it names. An entry naming a host exactly, or a URL prefix, lets
 `web_fetch` reach it even at a private address; a host a wildcard covers is refused there where it
-resolves into one. Browser navigation and forge pushes judge the name as written and never resolve
+resolves into one outside the [private ranges](sandbox-and-tools-02.md#private-ranges). Browser navigation and forge pushes judge the name as written and never resolve
 it ([known limits](../caveats/known-limits-04.md#the-url-list)). Without a list, public hosts are reachable,
-and loopback, private, and other reserved addresses ask, per host and port. `web_fetch` checks every resolved address and every redirect hop, up to
+and loopback, private, and other reserved addresses ask, per host and port, unless a private range
+holds the address. `web_fetch` checks every resolved address and every redirect hop, up to
 five ([how it follows them](sandbox-and-tools-02.md#fetching-urls)). With no public-suffix list, `*.com` would cover every `.com` name. An empty approved list is
 no list: `buckle policy remove` warns when it takes out the last entry.
 

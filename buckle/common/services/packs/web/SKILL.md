@@ -19,7 +19,9 @@ default. That covers a public hostname that *resolves* into one, and a public UR
 Without an approved list, reaching a private address on purpose (a dev server, a Tailscale
 host) needs approval, and the grant is per host and port. With a list, only what it names is
 reached, and a private address only through an entry naming its host exactly; a host a wildcard
-covers is refused where it resolves into one.
+covers is refused where it resolves into one. An address in a CIDR range the owner lists
+(`network.privateRanges`) is reached without asking, wherever a name resolves into it; a name such
+as `localhost` still asks.
 
 ## Secrets in headers
 

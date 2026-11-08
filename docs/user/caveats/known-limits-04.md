@@ -48,6 +48,9 @@
 - Browser navigation and forge pushes judge a host by its name and never resolve it: a host a
   wildcard entry covers is reached wherever it resolves, a private address included, where
   `web_fetch` refuses it.
+- A [private range](../how-to/sandbox-and-tools-02.md#private-ranges) covers every name that
+  resolves into it: with `10.0.0.0/8` listed, a public name pointed at an address there reaches
+  it, as the address itself would.
 - With a list, no grant decides: an unlisted host is refused, never asked, so the browser's
   `--allowed-domains` is the list's entries alone; grants join it once a mode that asks about
   an unlisted host exists.

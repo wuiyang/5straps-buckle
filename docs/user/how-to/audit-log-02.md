@@ -33,11 +33,18 @@ result of a call that did not run, each dangerously-allowed use, an egress hop t
 the transport attempt of an `/mcp` POST or a workbench change, workbench entries, and the stdio
 transport's entries. When one cannot be written, the call does not run.
 
+Your own changes wait for their attempt too: `cli_*` commands, `policy_dangerously_allow_changed`,
+`setup_*`, and `workspace_*`. Where it cannot be written, the command prints the write's error and
+stops with exit 6, changing nothing, and a setup request answers 503. To make the change anyway,
+as `buckle policy dangerously-allow off` on a broken log, pass `--ignore-warning`, before or after
+the command word, or send `ignoreWarning=true` in a setup request's query (`buckle client` takes
+`--ignore-warning` and signs it): the change runs, and its attempt goes to the log service, which
+keeps trying it. A tool call takes no such flag.
+
 Every other entry goes to the log service and never waits: the result of a call that ran, refusals,
-transport and setup results, [decision records](audit-log-03.md#decision-records), and your own changes (`cli_*`
-commands, `policy_dangerously_allow_changed`, `setup_*`, and `workspace_*`). So a broken log never
-stops `buckle grants revoke`, `buckle approve`, `buckle policy dangerously-allow off`, a setup
-change, or an answer to an ask on any route.
+transport and setup results, the results of your own changes, and
+[decision records](audit-log-03.md#decision-records). So a broken log never stops an answer at the
+serve terminal, or in a `buckle approvals --watch` already running.
 A queued entry may land after a later one that waited, so read entries by `at`.
 
 The queue shares the 30 entries each Buckle process holds with its log lines

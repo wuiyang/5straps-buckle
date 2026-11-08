@@ -76,6 +76,7 @@ checked as a workspace's own would be:
 | `command-deny` (`BUCKLE_COMMAND_DENY`) | the command deny list, for every workspace |
 | `command-destructive` (`BUCKLE_COMMAND_DESTRUCTIVE`) | the destructive list, for every workspace |
 | `network-allow` (`BUCKLE_NETWORK_ALLOW`) and `allowed-hosts` (`BUCKLE_ALLOWED_HOSTS`) | the approved hosts and URLs, the two lists as one |
+| `network-private-ranges` (`BUCKLE_NETWORK_PRIVATE_RANGES`) | `network.privateRanges` |
 | `mounts` (`BUCKLE_MOUNTS`) and `scratch-roots` (`BUCKLE_SCRATCH_ROOTS`) | the [mounts](mounts.md#the-nodes-mounts), read-only entries and folders writable without asking |
 | `browser-cdp`, `browser-profile`, `browser-args`, and `browser-headed` (`BUCKLE_BROWSER_*`) | the `browser.*` settings |
 | `shell-network` and `shell-isolation` (`BUCKLE_SHELL_*`) | `shell.network` and `shell.isolation` |

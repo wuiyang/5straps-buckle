@@ -32,6 +32,14 @@ by `entryId`, from where its failed attempt on that file began, as best effort. 
 every route calls. It polls the queue every 400 ms, so an answer `buckle approve` writes from
 another process wakes the waiting call. One session may keep 50 asks waiting and one workspace 500.
 
+An owner's own change (`common/services/audit/audit-operation.ts`, and the setup and registry audits
+in `layers/admin/server/utils/audit.ts`) waits for its attempt as a call does, while
+`OWNER_RECORDS_WAIT` in `common/runtime/log-budget.ts` holds. An attempt that cannot be written
+throws `OwnerRecordError`: the CLI prints it with the write's own error and exits 6
+(`cli/ignore-warning.ts`), and the setup face answers 503. The owner's `--ignore-warning`, taken in
+`main.ts` with the other global flags, or `ignoreWarning=true` in a setup request's query, hands
+the attempt to the log service instead (`ActionLog.ownerAttempt`).
+
 ## The pack system
 
 A pack (`common/domain/pack.ts`) has an id, tools, skills, an `unavailableReason`, and an
@@ -47,6 +55,11 @@ own records under (`isRecordTool` in `common/domain/record-tools.ts`): `approval
 `log_dropped`, `approval_session_ended`, and any starting `cli_`, `setup_`, `workspace_`, or
 `policy_`. A plugin with such a tool fails to load, shows as an unavailable pack, and the node's
 log names the tool.
+
+The `network_egress` rule and `web_fetch`'s hop check (`services/packs/web/egress.ts`) both take
+the workspace's `network.privateRanges`, parsed by `parseCidr` in `common/domain/ip.ts`: an address
+`rangeCovering` finds in one is reached without asking. The ranges are a swap input, so a change
+rebuilds the packs for the next call.
 
 [Code mode](architecture-03.md), the pack that runs an agent's script, continues on part three.
 

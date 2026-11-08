@@ -4,8 +4,8 @@ Each [workspace](workspaces.md) of a node of Buckle, the approval and sandbox ru
 machine, keeps its own settings in `workspaces/<id>/workspace.json` in the state directory. The
 node keeps its own in `buckle.env`, and those are every workspace's defaults: a setting a
 workspace leaves unset is the node's, else Buckle's built-in one. [Node
-defaults](workspaces-03.md) covers how each setting resolves, the deny lists every workspace is
-held to, and the node's own settings.
+defaults](workspaces-03.md) covers how settings resolve, the deny lists, and the node's own
+settings.
 
 ## Settings
 
@@ -29,6 +29,7 @@ node's applies again:
 | `packs.hostLsp` | `on` or `off`: language servers in the `dev` pack | off |
 | `shell.network` | `on` or `off`: shell commands may reach the network while no approved list is set | off |
 | `shell.isolation` | `on` or `off`: each shell command runs on a private copy of the folder | on |
+| `network.privateRanges` | CIDR ranges, comma separated, whose private addresses network tools reach without asking ([how](sandbox-and-tools-02.md#private-ranges)) | none |
 | `browser.idleTimeoutMs` | milliseconds an idle browser lives, `60000` to `86400000` | `300000` |
 | `browser.profile`, `browser.cdp`, `browser.args`, `browser.headed` | the browser's profile folder, attached Chrome, arguments, and window ([Using your own browser](browser-login.md)) | a fresh, headless browser |
 | `approval.forms` | `on` or `off`: an MCP host's [form answers](approvals-06.md) decide its asks | off |
@@ -40,7 +41,7 @@ node's applies again:
 | `approval.quickJudge` | what Jev, TypeSafe AI's quick decision model, rates: `off`, `interpreters`, `asks`, or `all` | `off` |
 | `approval.quickJudgeProvider` | Jev's provider: `typesafe` | `typesafe` |
 | `approval.quickJudgeModel` | Jev's model name | `jev-latest` |
-| `secrets.enabled` | `on` or `off`: whether Buckle reads [secret references](secrets.md) in shell words, browser fill text, and `web_fetch` headers | on |
+| `secrets.enabled` | `on` or `off`: whether Buckle reads [secret references](secrets.md) | on |
 | `secrets.files` | files whose secret references need no ask, comma separated, such as `.env.local` | none |
 | `files.deleteInWorkspace` | `allow` or `ask`: whether a delete inside the folder runs where its writes are granted, or asks a person ([deletes](policy-05.md)) | `allow` |
 | `files.massDeleteLimit` | entries one call may delete inside the folder before a person is asked anyway, `0` to `10000`, `0` for no limit | `100` |
@@ -63,8 +64,8 @@ starting `BUCKLE_`, and the names Buckle passes to every command (`PATH`, `HOME`
 `LOGNAME`, `SHELL`, and `TMPDIR`), are refused. So is a value that contains a secret the node
 holds (the admin token, `BUCKLE_AUTH_TOKEN`, the forge token, the Brave search key, the report
 token, or the approval webhook's URL) or a workspace's agent token as a
-word of it. Keep real secrets in your own store: `buckle workspace show` prints the variables,
-and every command can read them. A call's own `env` is set over them.
+word of it. Keep real secrets in your own store: `buckle workspace show` prints the variables.
+A call's own `env` is set over them.
 
 The policy lists change with `buckle policy` ([Policy](policy.md)). A profile folder or an
 attached Chrome belongs to one workspace at a time: naming one another workspace holds is
