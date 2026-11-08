@@ -57,8 +57,8 @@ schema, a service, or the node's logger.
 5. An approval commits, then its grant, written on next open if owed. A lasting denial drops
    the owed approvals it replaces, is written, and is withdrawn if its decision cannot commit.
 6. The audit hears it applied, refused, or failed, outside the lock. The runtime's
-   `logged-decision-audit.ts` writes each as `approval_decision` through the log service, never
-   holding up the answer.
+   `logged-decision-audit.ts` writes each as `approval_decision`, naming who answered, through the
+   log service, never holding up the answer.
 
 ## Sources and their rights
 

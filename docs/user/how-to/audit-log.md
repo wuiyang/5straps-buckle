@@ -32,7 +32,7 @@ before it reaches its tool, because the workspace is offline or a settings chang
 work, writes the same two lines, the second `error` with the detail `WORKSPACE_REFUSED`.
 
 Owner commands are logged too, such as `cli_policy`, `cli_approve`, and `cli_init`, and each
-answer as `approval_decision` ([part two](audit-log-02.md#decision-records)). So are refused HTTP
+answer as `approval_decision` ([part three](audit-log-03.md#decision-records)). So are refused HTTP
 requests, each use of the dangerously-allow switch (`policy_dangerously_allowed`, whose `args.mode` names `on` or `safe`), and each change of it
 (`policy_dangerously_allow_changed`, its detail the mode set). Entries an earlier build wrote keep
 their `args.level`, `command` or `all`, and details such as `on command`.

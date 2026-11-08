@@ -1,6 +1,7 @@
 # The audit log, part two
 
-[Part one](audit-log.md) covers the log's file, its entries, and how they are trimmed.
+[Part one](audit-log.md) covers the log's file, its entries, and how they are trimmed;
+[part three](audit-log-03.md) covers the records of each answer to an ask.
 
 ## How it is written
 
@@ -33,7 +34,7 @@ the transport attempt of an `/mcp` POST or a workbench change, workbench entries
 transport's entries. When one cannot be written, the call does not run.
 
 Every other entry goes to the log service and never waits: the result of a call that ran, refusals,
-transport and setup results, [decision records](#decision-records), and your own changes (`cli_*`
+transport and setup results, [decision records](audit-log-03.md#decision-records), and your own changes (`cli_*`
 commands, `policy_dangerously_allow_changed`, `setup_*`, and `workspace_*`). So a broken log never
 stops `buckle grants revoke`, `buckle approve`, `buckle policy dangerously-allow off`, a setup
 change, or an answer to an ask on any route.
@@ -41,36 +42,24 @@ A queued entry may land after a later one that waited, so read entries by `at`.
 
 The queue shares the 30 entries each Buckle process holds with its log lines
 ([lines that cannot be written](approvals-02.md#lines-that-cannot-be-written)). When another
-arrives, the oldest waiting entry is dropped, whichever log it is for. A write that fails is tried
-again after 250 ms, 1 s, and 4 s, and then its entries are dropped. The first drop prints one
-`Audit log entries dropped` warning on stderr, as JSON. Once the log takes writes again, a
+arrives, the oldest waiting entry is dropped, whichever log it is for; a refusal, which anyone can
+make Buckle write, gives way first and never pushes out another entry. A write that fails is tried
+again after 250 ms, 1 s, and 4 s, and then its entries are dropped. A failing log logs
+`Could not durably write the action log` once, until it takes writes again. The first drop prints
+one `Audit log entries dropped` warning on stderr, as JSON. Once the log takes writes again, a
 `log_dropped` entry goes first, its `args` holding the count and the time span (`dropped`,
 `firstAt`, `lastAt`). A result dropped this way leaves its attempt, which the next process to open
-the log marks `interrupted`.
+the log marks `interrupted`: a call's effects are then unknown, while a decision's or your own
+change's detail names what holds its outcome (the approvals ledger, or the grants, settings, or
+registry).
 
 An entry past the 64 KiB limit is queued without its arguments, effects, rules, judge, and detail,
 and its detail says so. A command that ends, and a node that stops, wait up to 2 seconds for the
 queue, then print `Audit log entries left unwritten at close` with the count. Removing a workspace
-with `--purge`, and `buckle workspace prune --yes`, wait up to 2 seconds for it too, so no late
-entry makes the deleted records' folder again.
-
-## Decision records
-
-Every answer to an ask writes two `approval_decision` entries in its workspace's log, whichever
-route it came by: the serve terminal, `buckle approve`, `buckle approvals --watch`,
-`--approve-if-safe`, a stdio MCP form, or the setup and device routes. The attempt is written as Buckle
-receives the answer, and the result once it applied (`ok`) or was refused (`error`, its detail the
-refusal's code, such as `scope_not_offered`). An answer that stopped on an error ends with an
-`error` result and no code.
-
-Their `args` hold the `token`, the `outcome` (`approve` or `deny`), the `scope`, the `source` (its
-`id` and `kind`), and the `proof` (`none`, `device`, or `envelope`), with `decidedBy` where an
-enrolled key or the decision AI decided. A result adds the `assurance`, `repeated`, and
-`grantOwed`, or the refusal's `code`. A refusal's reason is not kept, since it can name a path.
-
-`buckle approve` also keeps its `cli_approve` entries, and `buckle approvals --watch` its
-`cli_approvals` entries for the whole watch; each answer the watch takes is in the decision records
-alone.
+with `--purge`, and `buckle workspace prune --yes`, drop what the queue holds for it, since its
+records go, after up to 1 second for a write under way. A workspace's queued entry is written only
+while its records' folder exists, so one queued in another Buckle process is dropped and does not
+make the folder again, unless its write had begun as the folder went.
 
 ## Sending it elsewhere
 

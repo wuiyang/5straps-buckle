@@ -23,7 +23,7 @@ shows what Buckle does today and what is still open.
   and cost](how-to/judge-04.md), and [why it rates nothing](how-to/judge-05.md) continue it.
 - [Secret references](how-to/secrets.md): values from dotenv files in commands, browser fills, and
   fetch headers, never shown. [Secret masking](how-to/secrets-02.md) lists the forms.
-- [Audit log](how-to/audit-log.md): what `actions.jsonl` records and trims. [Part two](how-to/audit-log-02.md)
+- [Audit log](how-to/audit-log.md): what `actions.jsonl` records and trims. [Part two](how-to/audit-log-02.md), [part three](how-to/audit-log-03.md)
   covers posting it to a URL.
 - [Workspaces](how-to/workspaces.md): one node, many folders, and their tokens.
   [Settings](how-to/workspaces-02.md), [node defaults](how-to/workspaces-03.md), [moving from

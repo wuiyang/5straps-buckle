@@ -69,7 +69,7 @@ A node with no terminal logs `Approval pending` for each ask it cannot put to an
 tool, the rule, the scopes, the workspace, and the command that shows the action, never its
 subject; [known limits](../caveats/known-limits-05.md#a-serve-at-a-terminal) lists what the console does not
 yet do. Each answer you give here is also recorded in the workspace's audit log
-([decision records](audit-log-02.md#decision-records)); a log that cannot be written never holds
+([decision records](audit-log-03.md#decision-records)); a log that cannot be written never holds
 up the answer.
 
 ### Lines that cannot be written
