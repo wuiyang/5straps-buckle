@@ -33,17 +33,24 @@ export function recordRefusal(actions: ActionLog, input: { tool: string; workspa
     tool: input.tool, outcome: input.outcome ?? outcomeOf(input.status), durationMs: 0, effects: [], args: input.args ?? {}, ...(input.detail === undefined ? {} : { detail: input.detail }) }, UNTRUSTED)
 }
 
+/** How a transport's attempt is written: before an agent's change, as the owner's own change is, or queued. */
+export type TransportAttempt = 'required' | 'owner' | 'queued'
+
+const ATTEMPT_WRITES: Readonly<Record<TransportAttempt, (actions: ActionLog, entry: ActionLogEntry) => Promise<void>>> = {
+  required: (actions, entry) => actions.record(entry),
+  owner: (actions, entry) => actions.ownerAttempt(entry),
+  queued: async (actions, entry) => actions.append(entry),
+}
+
 /**
  * Transport status beside tool completion (an attempt, then the result with the HTTP status), for faces whose request
  * is not itself one tool call. A `required` attempt is durable before the work runs, so an agent's change does not run
- * without it; any other attempt, and every result, goes through the log service.
+ * without it; every result goes through the log service.
  */
-export async function withTransportAudit<T>(actions: ActionLog, input: { tool: string; workspaceId: string; required: boolean; actorId?: string }, run: () => Promise<T>): Promise<T> {
+export async function withTransportAudit<T>(actions: ActionLog, input: { tool: string; workspaceId: string; attempt: TransportAttempt; actorId?: string }, run: () => Promise<T>): Promise<T> {
   const entry = transportEntry(input)
   const started = performance.now()
-  const attempt: ActionLogEntry = { ...entry, event: 'attempt', outcome: 'started' }
-  if (input.required) await actions.record(attempt)
-  else actions.append(attempt)
+  await ATTEMPT_WRITES[input.attempt](actions, { ...entry, event: 'attempt', outcome: 'started' })
   let result: T
   try {
     result = await run()

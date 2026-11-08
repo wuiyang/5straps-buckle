@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs'
 import type { LogDrops } from '@5straps/runtime'
 import { z } from 'zod'
+import { OWNER_RECORDS_WAIT } from '../../runtime/log-budget.js'
 import { logger } from '../../runtime/log.js'
 import { maskHeldJson, masksHeld } from '../../services/secrets/mask.js'
 import type { ActionLog, ActionLogEntry, AuditHealth } from '../../types/ports/action-log.js'
@@ -74,6 +75,10 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
     record: entry => log.recordMany([entry]),
     // Its id now, kept across every attempt the service makes at writing it, so a retry never writes it twice.
     append: (entry, appendOptions) => service().append(destination, withinSizeLimit(withEntryId(prepared(entry))), appendOptions),
+    async ownerAttempt(entry) {
+      if (OWNER_RECORDS_WAIT) return log.record(entry)
+      log.append(entry)
+    },
     async recordMany(entries) {
       if (entries.length === 0) return
       await write(entries.map(prepared), { queued: false })

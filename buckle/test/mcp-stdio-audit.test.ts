@@ -104,7 +104,7 @@ describe('stdio audit before MCP SDK validation', () => {
 
 function fakeFixture(record?: (entry: ActionLogEntry) => void | Promise<void>) {
   const entries: ActionLogEntry[] = []
-  const actions: ActionLog = { record: async entry => { await record?.(entry); entries.push(entry) }, append: entry => { entries.push(entry) }, recordMany: async batch => { for (const entry of batch) await actions.record(entry) }, recoverInterrupted: async () => 0, read: () => entries, page: () => ({ entries, nextCursor: null }) }
+  const actions: ActionLog = { record: async entry => { await record?.(entry); entries.push(entry) }, append: entry => { entries.push(entry) }, ownerAttempt: async entry => { entries.push(entry) }, recordMany: async batch => { for (const entry of batch) await actions.record(entry) }, recoverInterrupted: async () => 0, read: () => entries, page: () => ({ entries, nextCursor: null }) }
   const wire: Transport = { start: vi.fn(async () => undefined), close: vi.fn(async () => { wire.onclose?.() }), send: vi.fn(async () => undefined) }
   const transport = createAuditedStdioTransport({ transport: wire, actions, workspaceId: 'default', isKnownTool: name => name === 'fs_read' })
   const forwarded = vi.fn()

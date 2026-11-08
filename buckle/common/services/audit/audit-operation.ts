@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { ActionLog, ActionLogEntry } from '../../types/ports/action-log.js'
 
-/** An owner's operation between its attempt and its result entry, both through the log service: a broken log never stops it. */
+/** An owner's operation between its attempt and its result entry; the attempt waits only as OWNER_RECORDS_WAIT says. */
 export async function auditOperation<T>(input: {
   actions: ActionLog
   workspaceId: string
@@ -19,7 +19,7 @@ export async function auditOperation<T>(input: {
   const entry = { auditId, workspaceId: input.workspaceId, tool: input.tool, sessionId: input.sessionId,
     requestId: auditId, at: new Date().toISOString(), effects: [], args: {}, durationMs: 0,
   }
-  input.actions.append({ ...entry, event: 'attempt', outcome: 'started' })
+  await input.actions.ownerAttempt({ ...entry, event: 'attempt', outcome: 'started' })
   let value: T
   try { value = await input.operation() }
   catch (error) {

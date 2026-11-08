@@ -16,6 +16,13 @@ export const LOG_WRITE_DEADLINE_MS = 1_000
 /** At most this many entries of one log go to its writer at once, so one stalled log never holds the whole budget. */
 export const LOG_BATCH_LIMIT = 10
 
+/**
+ * APPROVAL-16 working choice: the owner's own changes (cli_* commands, the dangerously-allow switch, setup and registry
+ * changes) do not wait for their attempt's record, so a broken log never stops one. True records each attempt before its
+ * change runs, so a broken log stops the change, as it stops an agent's call.
+ */
+export const OWNER_RECORDS_WAIT: boolean = false
+
 /** How long a closing process waits for its logs to drain; what is left is counted on stderr. */
 export const LOG_CLOSE_DEADLINE_MS = 2_000
 

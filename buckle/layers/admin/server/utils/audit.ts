@@ -16,8 +16,8 @@ export function resourceOf(event: H3Event): string {
 /**
  * The admin audit wrapper: `setup_<method>_<resource>` on the workspace's own log, an attempt before a
  * change and a result with the HTTP status after every request, in the workspace-admin session, naming
- * the actor. Both go through the log service, so a broken log never stops the owner inspecting or
- * changing the node.
+ * the actor. The results go through the log service, and the attempt waits only as the owner's records
+ * do (ActionLog.ownerAttempt), so by default a broken log never stops the owner inspecting or changing the node.
  */
 export async function withSetupAudit<T>(event: H3Event, input: { actions: ActionLog; workspaceId: string; resource: string; actorId: string; args?: () => Record<string, JsonValue> }, run: () => Promise<T>): Promise<T> {
   const auditId = crypto.randomUUID()
@@ -25,7 +25,7 @@ export async function withSetupAudit<T>(event: H3Event, input: { actions: Action
   // actorId names who the guard let in: admin:<workspace>, or key:<fingerprint> for a signed request (review H4 of B23-B25).
   const entry: ActionLogEntry = { auditId, workspaceId: input.workspaceId, at: new Date().toISOString(), requestId: auditId, sessionId: 'workspace-admin',
     tool: `setup_${event.req.method.toLowerCase()}_${input.resource}`, outcome: 'started', durationMs: 0, effects: [], args: {}, ...(input.actorId ? { actorId: input.actorId } : {}) }
-  if (isMutation(event)) input.actions.append({ ...entry, event: 'attempt' })
+  if (isMutation(event)) await input.actions.ownerAttempt({ ...entry, event: 'attempt' })
   // What the route said it did, on its result (review L14 of B23-B25): never a value the caller sent unless the route names it.
   const result = (status: number): ActionLogEntry => ({ ...entry, event: 'result', outcome: status >= 200 && status < 300 ? 'ok' : 'error', durationMs: Math.round(performance.now() - started), detail: `HTTP ${status}`, args: input.args?.() ?? {} })
   let value: T
@@ -42,14 +42,14 @@ export async function withSetupAudit<T>(event: H3Event, input: { actions: Action
 /**
  * An owner change to the registry: `workspace_*` on the node's log, an attempt and then its result, in the
  * node-admin session, each naming the actor the guard let in, so a token mint is tied to the key or
- * credential that asked for it (review item 19 of the proof-of-possession fixes). Both go through the log
- * service, so a broken log never stops the change.
+ * credential that asked for it. The result goes through the log service, and the attempt waits only as
+ * the owner's records do (ActionLog.ownerAttempt).
  */
 export async function withRegistryAudit<T>(actions: ActionLog, input: { tool: string; workspaceId: string; workspaceName?: string; actorId: string; named?: (value: T) => { workspaceId: string; workspaceName: string } }, run: () => Promise<T>): Promise<T> {
   const auditId = crypto.randomUUID()
   const entry = (outcome: ActionLogEntry['outcome'], event: 'attempt' | 'result', whose: { workspaceId: string; workspaceName?: string } = input): ActionLogEntry => ({ auditId, event, workspaceId: whose.workspaceId, ...(whose.workspaceName === undefined ? {} : { workspaceName: whose.workspaceName }), at: new Date().toISOString(), requestId: auditId,
     sessionId: 'node-admin', tool: input.tool, outcome, durationMs: 0, effects: [], args: {}, ...(input.actorId ? { actorId: input.actorId } : {}) })
-  actions.append(entry('started', 'attempt'))
+  await actions.ownerAttempt(entry('started', 'attempt'))
   let value: T
   try {
     value = await run()

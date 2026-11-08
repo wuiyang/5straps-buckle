@@ -102,6 +102,11 @@ export interface ActionLog {
    * nothing waits on: a refusal, the result of work already done, and the owner's own change.
    */
   append(entry: ActionLogEntry, options?: AppendOptions): void
+  /**
+   * The attempt of the owner's own change: recorded before the change runs while OWNER_RECORDS_WAIT (log-budget.ts) holds,
+   * so a broken log stops it, and appended otherwise. Rejects only where it is recorded.
+   */
+  ownerAttempt(entry: ActionLogEntry): Promise<void>
   /** The entries as one batch, one append and one sync, in their order; resolves once all are durable, or rejects for all. */
   recordMany(entries: readonly ActionLogEntry[]): Promise<void>
   recoverInterrupted(): Promise<number>

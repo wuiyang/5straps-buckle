@@ -114,8 +114,7 @@ export function defineRegistryHandler(definition: { access: AdminAccess; handler
         audited: (input, run) => withRegistryAudit(actions, { ...input, actorId }, run),
         body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams),
       }
-      // The owner's change: its transport attempt goes through the log service too, so a broken log never stops it.
-      return mapFailures(() => withTransportAudit(actions, { tool: registryTransportTool(event), workspaceId: NODE_LEVEL, required: false, actorId }, async () => definition.handler(call)))
+      return mapFailures(() => withTransportAudit(actions, { tool: registryTransportTool(event), workspaceId: NODE_LEVEL, attempt: 'owner', actorId }, async () => definition.handler(call)))
     },
   })
 }
