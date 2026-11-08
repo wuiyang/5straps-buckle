@@ -55,5 +55,6 @@ reaches any file your user can, these included.
 ## What a form proves
 
 A form proves the channel, not a person: the app the agent runs in draws it and sends its answer
-back. Turn forms on for a workspace whose agent app you trust to show you each form unchanged.
+back. Over stdio, an answer may decide any ask waiting in the workspace, whichever agent's call
+raised it. Turn forms on for a workspace whose agent app you trust to show you each form unchanged.
 Answers at the node, with `buckle approvals`, stay open to you whichever way the setting is.

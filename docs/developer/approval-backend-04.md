@@ -1,6 +1,6 @@
 # Approval backend: MCP forms
 
-How the forms setting reaches a decision. The [approval backend](approval-backend.md) page covers
+How the forms setting, and over HTTP the caller, reach a decision. The [approval backend](approval-backend.md) page covers
 the port and the guard, and [MCP forms](../user/how-to/approvals-06.md) the setting as an owner
 sets it. Paths are in `buckle/`.
 
@@ -36,6 +36,28 @@ a skip, and a token the ledger does not hold.
 
 A refused answer settles nothing. Grants forms made while the setting was on stay, and an owed one
 is written by the next settling pass, at another decision or at `recover()`.
+
+## The caller
+
+Form answers over HTTP come in under a kind of their own, `http-forms`, rated `relayed`: a
+non-floor `once`, never a lasting scope or a floor approval. Its row also carries `sameCaller`, so
+it decides only the asks its own caller raised. No face opens it yet.
+
+- **Where the caller comes from:** the actor the transport authenticated, as the request's
+  operation scope holds it: `agent:<tokenId>` over HTTP, `mcp-stdio` over stdio. `mcp/server.ts`
+  passes it to the forms backend's `answer` as an `AnswerSender`, never from the body, a header,
+  or `_meta`.
+- **How it reaches core:** `host.decide` and `host.skipSave` each take the sender, and the forms
+  backend passes it with each decision. Core's forms hosts, one per face
+  (`openFormsBackend(backend, face)`), put its caller in the `DecisionClaim`; the terminal host
+  and the core approval API take none.
+- **What it meets:** the ledger keeps each ask's `actor`, on the waiting ask and on its resolved
+  entry. Right after the forms setting, `guardDecision` compares the caller with that actor,
+  before a repeat or a save retry is read, and `guardSkip` before the decision's scope or the
+  source that recorded it. A missing caller or actor, or another one, is `approver_not_allowed`;
+  a token the ledger does not hold stays `unknown_ask`.
+- **stdio:** the `forms` row has no `sameCaller`, so a stdio form answer decides any waiting ask,
+  whichever caller raised it, as before.
 
 ## The files that hold it
 

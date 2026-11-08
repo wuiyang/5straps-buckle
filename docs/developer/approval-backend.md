@@ -50,17 +50,17 @@ schema, a service, or the node's logger.
 3. The guard screens it before the ledger lock: a form answer only while [forms are
    on](approval-backend-04.md), the source's kind may approve, a lasting scope needs `local` or
    above, and a host pattern comes from `cli` alone.
-4. Under the lock, in order: that screen again, a repeat, the ask waiting, the source routed, a device's
-   challenge matching, the call kept whole, a floor approval from a person at `local` or
-   above, the scope offered, no `always` on a destructive command or where the floor policy
-   forbids it, a wider subject from the terminal or `cli` alone, sensitive files, lasting
-   denials for sensitive files alone, a signed `once` inside its deadline, and the host pattern
-   covering the host that asked.
+4. Under the lock, in order: that screen again, [the caller](approval-backend-04.md#the-caller),
+   a repeat, the ask waiting, the source routed, a device's challenge matching, the call kept
+   whole, a floor approval from a person at `local` or above, the scope offered, no `always` on
+   a destructive command or where the floor policy forbids it, a wider subject from the terminal
+   or `cli` alone, sensitive files, lasting denials for sensitive files alone, a signed `once`
+   inside its deadline, and the host pattern covering the host that asked.
 5. An approval commits, then its grant; a lasting denial is written first, and withdrawn if its
    decision cannot commit. [Grant saves](approval-backend-02.md) covers a write that fails.
-6. The audit hears it applied, refused, or failed, outside the lock. The runtime's
-   `logged-decision-audit.ts` writes each as `approval_decision`, naming who answered, through the
-   log service, never holding up the answer.
+6. The audit hears it applied, refused, or failed, outside the lock. `logged-decision-audit.ts`
+   writes each as `approval_decision`, naming who answered, through the log service, never
+   holding up the answer.
 
 ## Sources and their rights
 
@@ -68,6 +68,7 @@ schema, a service, or the node's logger.
 |---|---|---|
 | `terminal`, `cli` | `local` | Any ask, and the wider subject; `cli` alone takes a host pattern |
 | `forms` | `local` | Any ask, lasting scopes and floor asks included, while forms are on |
+| `http-forms` | `relayed` | A non-floor `once` its own caller asked, while forms are on |
 | `devices` | `key` | Any ask it signed the challenge of |
 | `judge` | `relayed` | A non-floor `once`, bound to the code it rated |
 | `sealed` | `relayed` | Nothing; it denies, a sensitive file's lasting denial included |
@@ -84,8 +85,7 @@ question whose ask left the queue.
 
 **The forms** (`mcp/forms-backend.ts`): a stdio MCP host's elicitation, pulled.
 The MCP face draws one form per ask in the call's answer, and decides each answer the
-retried call carries; `submit` declines. Only the stdio face opens it, through `openForms`,
-so nothing the agent's token reaches answers an ask.
+retried call carries; `submit` declines. Only the stdio face opens it, through `openForms`.
 
 Each maps a person's answer to a decision and its scope, and decides through `host.decide`.
 Neither decides which scopes are allowed, rates an answer, writes a grant, or audits.
