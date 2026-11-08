@@ -11,7 +11,7 @@ import { runCli } from './support/cli.js'
 import { recordActivity } from './support/activity.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
-// APPROVAL-16: the owner's own command waits for its record, so a broken log stops it, naming the error, unless the owner
+// The owner's own command waits for its record, so a broken log stops it, naming the error, unless the owner
 // passes --ignore-warning, which runs it and hands the record to the log service. A tool call never runs without its
 // own record, whatever flag it is given.
 

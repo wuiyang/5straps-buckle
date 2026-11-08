@@ -128,14 +128,14 @@ const FilesSchema = z.object({
 /** The most ranges network.privateRanges may list. */
 export const MAX_PRIVATE_RANGES = 64
 
-/** One entry of network.privateRanges: a CIDR range alone, never a hostname or a wildcard (APPROVAL-19). */
+/** One entry of network.privateRanges: a CIDR range alone, never a hostname or a wildcard. */
 export const PrivateRangeSchema = z.string().superRefine((range, context) => {
   const refusal = cidrRefusal(range)
   if (refusal) context.addIssue({ code: 'custom', message: `network.privateRanges: ${range}: ${refusal}` })
 })
 
 /**
- * Its network egress (APPROVAL-19): `privateRanges` lists the CIDR ranges whose private, loopback, or reserved addresses
+ * Its network egress: `privateRanges` lists the CIDR ranges whose private, loopback, or reserved addresses
  * a tool reaches without asking. Absent from a file that sets none, so a workspace.json written before it reads as it did.
  */
 const NetworkSchema = z.object({
@@ -353,7 +353,7 @@ export interface ResolvedSettings {
   secrets: { enabled: boolean; files: readonly string[] }
   /** Its file tools' delete policy (the delete policy brief): the workspace's own, else the node's, else Buckle's. */
   files: { deleteInWorkspace: DeleteInWorkspace; massDeleteLimit: number }
-  /** Its network egress (APPROVAL-19): the workspace's own, else the node's, else none. */
+  /** Its network egress: the workspace's own, else the node's, else none. */
   network: { privateRanges: readonly string[] }
   env: Readonly<Record<string, string>>
   /** Each setting's source, by its key in workspace.json (`packs.shell`, `mount`, `policy.commands.allow`). */

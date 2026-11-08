@@ -56,7 +56,7 @@ export function takeGlobalFlags(argv: readonly string[]): { argv: string[] } & G
   }
 }
 
-/** `ignoreWarning`: the owner's command runs where its record cannot be written (APPROVAL-16). */
+/** `ignoreWarning`: the owner's command runs where its record cannot be written. */
 interface GlobalFlags { skipOwnerOnlyCheck: boolean; ignoreWarning: boolean }
 
 export function selectMode(argv: readonly string[]): Mode {

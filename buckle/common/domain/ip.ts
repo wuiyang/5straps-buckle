@@ -106,7 +106,7 @@ function matchesBytes(candidate: readonly number[], range: readonly number[], pr
 
 /**
  * A range of addresses in CIDR notation, as the owner lists one for network egress to reach without asking
- * (network.privateRanges, APPROVAL-19). Only CIDR: never a hostname or a wildcard, so a range exposes exactly the
+ * (network.privateRanges). Only CIDR: never a hostname or a wildcard, so a range exposes exactly the
  * addresses it names.
  */
 export interface AddressRange {

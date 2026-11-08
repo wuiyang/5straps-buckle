@@ -84,7 +84,7 @@ export const NODE_SETTINGS: readonly NodeSetting[] = [
   { key: 'BUCKLE_COMMAND_DESTRUCTIVE', alias: 'command-destructive', kind: 'command-list', fallback: '(none: the built-in floor alone)', workspace: { key: 'policy.commands.destructive', change: 'buckle policy destructive-command <glob>, which adds to the node\'s' } },
   // Folded into the node's URL list (Phase 2 item 5): an exact host of it clears a private address, as any exact entry does.
   { key: 'BUCKLE_ALLOWED_HOSTS', alias: 'allowed-hosts', kind: 'host-list', fallback: '(none)', workspace: { key: 'policy.network.allow', change: 'buckle policy allow-url <host>' } },
-  // CIDR ranges alone (APPROVAL-19): the private addresses network tools reach without asking, never a name or a wildcard.
+  // CIDR ranges alone: the private addresses network tools reach without asking, never a name or a wildcard.
   { key: 'BUCKLE_NETWORK_PRIVATE_RANGES', alias: 'network-private-ranges', kind: 'cidr-list', fallback: '(none)', workspace: { key: 'network.privateRanges', change: 'buckle workspace set network.privateRanges <ranges>' } },
   { key: 'BUCKLE_NETWORK_ALLOW', alias: 'network-allow', kind: 'url-list', fallback: '(none: the default egress rules)', workspace: { key: 'policy.network.allow', change: 'buckle policy allow-url <host>' } },
   { key: 'BUCKLE_ALLOWED_INTERPRETERS', alias: 'allowed-interpreters', kind: 'interpreter-list', fallback: '(none: every interpreter runs unknown code)', workspace: { key: 'policy.commands.allowedInterpreters', change: 'buckle policy allow-interpreter <name>' } },

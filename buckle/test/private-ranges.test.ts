@@ -20,7 +20,7 @@ import { runCli } from './support/cli.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { idOf, workspacesOf } from './support/workspaces.js'
 
-// APPROVAL-19: config may let network egress reach private, loopback, and reserved addresses without asking, as CIDR
+// Config may let network egress reach private, loopback, and reserved addresses without asking, as CIDR
 // ranges alone (network.privateRanges, else the node's BUCKLE_NETWORK_PRIVATE_RANGES): never a hostname or a wildcard, so
 // what a range exposes is exactly the addresses it names.
 

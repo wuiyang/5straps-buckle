@@ -9,7 +9,7 @@ import { PLAIN_MARKS } from '../../common/domain/permission/decision.js'
 
 // B19: an audit log that will not take writes refuses the agent's calls it would have to record, with a 503 an
 // agent may read, makes readiness 503, and still lets the owner inspect the node and refusals answer. The owner's change
-// stops too (APPROVAL-16), unless its request sends ignoreWarning=true in its query.
+// stops too, unless its request sends ignoreWarning=true in its query.
 
 const AGENT = 'audit-failure-agent-token'
 const ADMIN = 'audit-failure-admin-token'

@@ -286,7 +286,7 @@ describe('the node\'s own key and the admin-only state (review L11 of B23-B25)',
   })
 })
 
-describe('buckle client --ignore-warning (APPROVAL-16)', () => {
+describe('buckle client --ignore-warning', () => {
   it('asks the node, in the signed query, to make a change its log cannot record', async () => {
     const environment = { BUCKLE_CLIENT_DIR: join(scratch(), 'device') }
     capture()

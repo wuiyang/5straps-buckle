@@ -9,7 +9,7 @@ import { ignoresWarning, withRegistryAudit, withSetupAudit } from '../layers/adm
 import { withTransportAudit } from '../layers/common/server/utils/audit.js'
 import { toHttpError } from '../layers/common/server/utils/errors.js'
 
-// APPROVAL-16: the owner's own change waits for its attempt's record, so a broken log stops it before it runs, unless the
+// The owner's own change waits for its attempt's record, so a broken log stops it before it runs, unless the
 // owner ignores the warning, which runs it and hands its record to the log service.
 
 afterEach(() => { vi.restoreAllMocks() })

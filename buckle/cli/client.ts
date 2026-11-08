@@ -136,7 +136,7 @@ async function request(argv: string[], environment: NodeJS.ProcessEnv, ignoreWar
  * Sends one request, signed with this device's key for the node pinned for the URL (its serverId and
  * its key's fingerprint), the workspace, method, path and exact body. An unpinned URL, or a --node
  * that is not the pinned one, signs nothing. `ignoreWarning` asks, in the signed query, for a change the node's log
- * cannot record to be made anyway (APPROVAL-16).
+ * cannot record to be made anyway.
  */
 async function send(input: { environment: NodeJS.ProcessEnv; method: string; url: URL; body: string; purpose: SignedRequestPurpose; node?: string; session?: string; ignoreWarning?: boolean }): Promise<Response> {
   const method = input.method.toUpperCase()

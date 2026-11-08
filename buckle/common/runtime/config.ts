@@ -445,7 +445,7 @@ export interface WorkspaceScope {
   secrets?: { enabled: boolean; files: readonly string[] }
   /** Its delete policy (the delete policy brief). */
   files: { deleteInWorkspace: DeleteInWorkspace; massDeleteLimit: number }
-  /** The CIDR ranges its network egress reaches on private addresses without asking (APPROVAL-19). */
+  /** The CIDR ranges its network egress reaches on private addresses without asking. */
   network: { privateRanges: readonly string[] }
   /** Variables its shell commands see. */
   env: Readonly<Record<string, string>>
@@ -483,7 +483,7 @@ export interface NodeDefaults {
   approval: { forms?: boolean; sessionIdleMs?: number; judge?: JudgeMode; judgeProvider?: JudgeProvider; judgeModel?: string; judgeStandardScripts?: string[]; quickJudge?: QuickJudgeScope; quickJudgeModel?: string }
   /** BUCKLE_DELETE_IN_WORKSPACE and BUCKLE_MASS_DELETE_LIMIT, where buckle.env names them (the delete policy brief). */
   files: { deleteInWorkspace?: DeleteInWorkspace; massDeleteLimit?: number }
-  /** BUCKLE_NETWORK_PRIVATE_RANGES, CIDR ranges separated by commas, where buckle.env names it (APPROVAL-19). */
+  /** BUCKLE_NETWORK_PRIVATE_RANGES, CIDR ranges separated by commas, where buckle.env names it. */
   network: { privateRanges?: string[] }
   env: Readonly<Record<string, string>>
 }

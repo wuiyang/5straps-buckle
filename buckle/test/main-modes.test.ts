@@ -110,7 +110,7 @@ describe('takeGlobalFlags', () => {
     [['fs', 'read', 'notes.txt'], { argv: ['fs', 'read', 'notes.txt'], skipOwnerOnlyCheck: false, ignoreWarning: false }],
     // After a `--` every argument is the command's own, the flag's spelling included.
     [['fs', 'write', '--', '--skip-owner-only-check'], { argv: ['fs', 'write', '--', '--skip-owner-only-check'], skipOwnerOnlyCheck: false, ignoreWarning: false }],
-    // APPROVAL-16: the owner's command runs where its record cannot be written.
+    // The owner's command runs where its record cannot be written.
     [['--ignore-warning', 'grants', 'revoke', 'g-1'], { argv: ['grants', 'revoke', 'g-1'], skipOwnerOnlyCheck: false, ignoreWarning: true }],
     [['grants', 'revoke', 'g-1', '--ignore-warning'], { argv: ['grants', 'revoke', 'g-1'], skipOwnerOnlyCheck: false, ignoreWarning: true }],
     [['--ignore-warning', 'settings', 'set', 'a', 'b', '--skip-owner-only-check'], { argv: ['settings', 'set', 'a', 'b'], skipOwnerOnlyCheck: true, ignoreWarning: true }],

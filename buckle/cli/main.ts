@@ -78,7 +78,7 @@ export function runSettingsCommand(argv: string[], options: OwnerChoice = {}): P
   return stopsForRecord(settingsCommand({ argv, environment: process.env, environmentFile: environmentFilePath(), cwd: process.cwd(), ignoreWarning: options.ignoreWarning === true }))
 }
 
-/** `ignoreWarning`: the owner's --ignore-warning, which runs a command whose record cannot be written (APPROVAL-16). */
+/** `ignoreWarning`: the owner's --ignore-warning, which runs a command whose record cannot be written. */
 interface OwnerChoice { ignoreWarning?: boolean }
 
 /** A command that stopped because its record could not be written answers as such, with the error and how to run it anyway. */

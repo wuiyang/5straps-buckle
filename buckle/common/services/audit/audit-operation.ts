@@ -11,7 +11,7 @@ export async function auditOperation<T>(input: {
   tool: string
   sessionId: string
   operation: () => T | Promise<T>
-  /** The owner's choice where the attempt cannot be recorded (APPROVAL-16): run the operation anyway. */
+  /** The owner's choice where the attempt cannot be recorded: run the operation anyway. */
   ignoreWarning: boolean
   isSuccessful?: (result: T) => boolean
   /** A line for the result entry, from what the operation returned: what a widened approval covers. */

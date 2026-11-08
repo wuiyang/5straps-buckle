@@ -8,7 +8,7 @@ import type { IGNORE_WARNING_QUERY } from '../../../../common/domain/global-flag
 // Checked against the common constant at compile time; the layers take common code as types only.
 const IGNORE_WARNING: typeof IGNORE_WARNING_QUERY = 'ignoreWarning'
 
-/** Whether a setup request makes the owner's choice to run a change whose record cannot be written: ignoreWarning=true in its query (APPROVAL-16). */
+/** Whether a setup request makes the owner's choice to run a change whose record cannot be written: ignoreWarning=true in its query. */
 export function ignoresWarning(event: H3Event): boolean {
   return event.url.searchParams.get(IGNORE_WARNING) === 'true'
 }
