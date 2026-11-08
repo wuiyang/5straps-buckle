@@ -206,6 +206,19 @@ describe('the HTTP MCP face, forms on', () => {
     expect(asked.content?.[0]?.text).toContain('This call needs approval')
   })
 
+  it('closes its forms with the runtime\'s approvals: an answer sent after decides nothing, and the call does not run', async () => {
+    const node = await httpNode({ forms: true })
+    const args = writeOutside(node)
+    await send(node, claudeCodeCall({ tool: 'fs_write', args }))
+    const [token] = node.waitingTokens()
+    await node.runtime.approvalService.close()
+
+    expect((await send(node, claudeCodeCall({ tool: 'fs_write', args, responses: accept(token!, { approve: true, scope: 'once' }) }))).resultType).toBe('input_required')
+    expect(await node.decisions()).toEqual([])
+    expect(node.waitingTokens()).toEqual([token])
+    expect(existsSync(args.path)).toBe(false)
+  })
+
   it('opens one forms backend per workspace runtime, under the HTTP forms source', async () => {
     const node = await httpNode({ forms: true })
     const opening = vi.spyOn(node.runtime.approvalService, 'openFormsBackend')
