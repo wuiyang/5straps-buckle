@@ -1,5 +1,6 @@
 import { clearLine, cursorTo, type Interface } from 'node:readline'
 import type { Writable } from 'node:stream'
+import { settleWithin } from '@5straps/runtime'
 import { printable } from '../domain/approval-instruction.js'
 import { createDateSeparators } from './log-render.js'
 
@@ -111,7 +112,7 @@ export function createConsoleWriter(input: { output: Writable; dates: boolean; f
     write,
     block(lines, at) {
       // A flush that fails still lets the block through: the lines before it are the logger's to report.
-      const written = turn.then(() => flushWithin(input.flush)).catch(() => undefined).then(() => { write(lines, at) })
+      const written = turn.then(() => settleWithin(input.flush ? [input.flush()] : [], BLOCK_FLUSH_DEADLINE_MS)).catch(() => undefined).then(() => { write(lines, at) })
       turn = written.catch(() => undefined)
       return written
     },
@@ -143,15 +144,5 @@ export function createConsoleWriter(input: { output: Writable; dates: boolean; f
         },
       })
     },
-  }
-}
-
-async function flushWithin(flush: (() => Promise<void>) | undefined): Promise<void> {
-  if (!flush) return
-  let timer: NodeJS.Timeout | undefined
-  try {
-    await Promise.race([flush(), new Promise<void>((resolve) => { timer = setTimeout(resolve, BLOCK_FLUSH_DEADLINE_MS) })])
-  } finally {
-    clearTimeout(timer)
   }
 }
