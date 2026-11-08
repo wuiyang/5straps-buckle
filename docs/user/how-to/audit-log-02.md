@@ -13,6 +13,12 @@ failing. A node that stops waits 2 seconds for the entries in flight, then logs
 call, and a call whose result was left unwritten is marked `interrupted` the next time a Buckle
 process opens the log.
 
+Each write takes the log's lock, `actions.jsonl.lock.sqlite` beside it, so two Buckle processes
+never write into each other's lines. A call that waits more than 5 seconds for another process's
+lock does not run, and is refused with `STATE_BUSY`, to retry. A line that a process left half
+written when it died is ended and kept, and `buckle log` skips it. A write that failed partway and
+is tried again reads back what it already wrote, by each line's `entryId`, and leaves those lines out.
+
 ## Sending it elsewhere
 
 With `BUCKLE_REPORT_URL` and `BUCKLE_REPORT_TOKEN` set (Buckle refuses to start with only one),

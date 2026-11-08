@@ -42,6 +42,7 @@ their `args.level`, `command` or `all`, and details such as `on command`.
 | Field | Holds |
 |---|---|
 | `at`, `durationMs` | when, and how long |
+| `entryId` | the line's own id, so a write tried again never adds the line twice |
 | `requestId`, `sessionId`, `workspaceId`, `workspaceName` | which call, session, and workspace, the workspace by its id and by the name it had when the entry was written |
 | `tool`, `outcome`, `event` | the tool, the outcome, and `attempt` or `result` |
 | `effects` | the kinds of effect the call declared: `read_path`, `write_path`, `exec`, `network`, `process_probe` |
