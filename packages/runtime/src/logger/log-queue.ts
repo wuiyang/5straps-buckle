@@ -47,6 +47,8 @@ export interface LogQueueOptions<T> {
   summarize?(drops: LogDrops): T | undefined
   /** The first drop of an episode, which ends once a batch carrying its count is written. */
   onDropping?(notice: LogDropNotice): void
+  /** Each entry dropped unwritten, as it drops; one dropped from a write past its deadline may still land with that write. */
+  onDropped?(entries: readonly T[]): void
 }
 
 /** `expendable`: gives way to every other held entry, and never pushes one of another kind out of a full budget. */
@@ -147,10 +149,11 @@ export function createLogQueue<T>(options: LogQueueOptions<T>): LogQueue<T> {
     dropOldest(onlyExpendable) {
       const found = oldestHeld(onlyExpendable)
       if (!found) return
-      found.list.splice(found.index, 1)
+      const dropped = found.list.splice(found.index, 1)
       if (batch?.late && found.list === batch.entries) batch.droppedLate += 1
       budget.held -= 1
       countDrop(1, 'full')
+      notifyDropped(dropped.map(held => held.value))
     },
   }
   budget.members.add(member)
@@ -159,9 +162,12 @@ export function createLogQueue<T>(options: LogQueueOptions<T>): LogQueue<T> {
     const expendable = pushOptions.expendable === true
     if (closed) {
       counts.dropped += 1
-      return
+      return notifyDropped([entry])
     }
-    if (!admit(budget, expendable)) return countDrop(1, 'full')
+    if (!admit(budget, expendable)) {
+      countDrop(1, 'full')
+      return notifyDropped([entry])
+    }
     budget.held += 1
     pending.push({ value: entry, sequence: budget.sequence++, expendable })
     pumping ??= runDetached(() => pump())
@@ -262,6 +268,7 @@ export function createLogQueue<T>(options: LogQueueOptions<T>): LogQueue<T> {
     budget.held -= current.entries.length
     if (current.drops) drops = mergeDrops(current.drops, drops)
     countDrop(current.entries.length, 'failed')
+    notifyDropped(current.entries.map(held => held.value))
   }
 
   function countDrop(count: number, reason: LogDropReason): void {
@@ -276,6 +283,10 @@ export function createLogQueue<T>(options: LogQueueOptions<T>): LogQueue<T> {
 
   function notifyDropping(reason: LogDropReason): void {
     guarded(() => options.onDropping?.({ destination: options.destination, reason, limit: budget.limit }))
+  }
+
+  function notifyDropped(entries: readonly T[]): void {
+    if (entries.length > 0) guarded(() => options.onDropped?.(entries))
   }
 
   function summarizeSafely(summarized: LogDrops): T | undefined {
@@ -305,13 +316,14 @@ export function createLogQueue<T>(options: LogQueueOptions<T>): LogQueue<T> {
     stopped = true
     pumping = undefined
     wake?.()
-    const left = pending.length + (batch?.entries.length ?? 0)
-    budget.held -= left
-    counts.dropped += left
+    const left = [...(batch?.entries ?? []), ...pending].map(held => held.value)
+    budget.held -= left.length
+    counts.dropped += left.length
     pending.length = 0
     batch = undefined
     budget.members.delete(member)
-    return { left }
+    notifyDropped(left)
+    return { left: left.length }
   }
 
   return {

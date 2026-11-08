@@ -332,6 +332,41 @@ describe('closing a log queue', () => {
   })
 })
 
+describe('the entries a log queue drops', () => {
+  it('hands onDropped each entry as it drops: the oldest for room, a new one refused, and a batch past its retries', async () => {
+    vi.useFakeTimers()
+    const heard: Array<[string, number[]]> = []
+    const hear = (destination: string) => (entries: readonly number[]) => { heard.push([destination, [...entries]]) }
+    const oldest = createLogQueue<number>({ destination: 'oldest', budget: createLogBudget({ limit: 2, overflow: 'drop-oldest' }), write: stuckWriter<number>().write, onDropped: hear('oldest') })
+    for (const entry of range(0, 3)) oldest.push(entry)
+    const newest = createLogQueue<number>({ destination: 'newest', budget: createLogBudget({ limit: 2 }), write: stuckWriter<number>().write, onDropped: hear('newest') })
+    for (const entry of range(0, 3)) newest.push(entry)
+    const failing = createLogQueue<number>({ destination: 'failing', retryDelaysMs: [10], write: () => { throw new Error('disk full') }, onDropped: hear('failing') })
+    failing.push(0)
+    failing.push(1)
+    await vi.advanceTimersByTimeAsync(10)
+
+    expect(heard).toEqual([['oldest', [0]], ['newest', [2]], ['failing', [0, 1]]])
+  })
+
+  it('hands onDropped what it leaves at close, and an entry pushed after', async () => {
+    const heard: number[][] = []
+    const queue = createLogQueue<number>({ destination: 'node', maxBatch: 2, write: stuckWriter<number>().write, onDropped: (entries) => { heard.push([...entries]) } })
+    for (const entry of range(0, 3)) queue.push(entry)
+    await drained()
+    await queue.close({ deadlineMs: 1 })
+    queue.push(3)
+
+    expect(heard).toEqual([[0, 1, 2], [3]])
+  })
+
+  it('never lets an onDropped that throws reach the caller', () => {
+    const queue = createLogQueue<string>({ destination: 'node', budget: createLogBudget({ limit: 1, overflow: 'drop-oldest' }), write: stuckWriter<string>().write, onDropped: () => { throw new Error('hook failed') } })
+    expect(() => { queue.push('a'); queue.push('b') }).not.toThrow()
+    expect(queue.stats().dropped).toBe(1)
+  })
+})
+
 describe('log queue settings', () => {
   it('refuses a malformed limit, overflow rule, or retry delay', () => {
     for (const limit of [0, -1, 1.5, Number.NaN]) expect(() => createLogBudget({ limit })).toThrow(TypeError)
