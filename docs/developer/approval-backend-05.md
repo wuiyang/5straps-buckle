@@ -75,4 +75,6 @@ path reaches it.
 - `test/forms-backend.test.ts`: the forms for each reach, the reach and floor mark core hands, and
   the save form's answers.
 - `test/mcp-save-form.test.ts` and `test/mcp-http-save-form.test.ts`: the save form over stdio,
-  and over HTTP with that row changed for the test alone.
+  and over HTTP with that row changed for the test alone. Each also lets the SDK's own client play
+  all three rounds, a 2025-era one through the server's legacy shim and a 2026-07-28 one over
+  HTTP; a call of two asks sent again with the save answer alone still runs once on both.
