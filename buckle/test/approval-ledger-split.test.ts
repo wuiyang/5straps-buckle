@@ -504,6 +504,34 @@ describe('a lasting denial', () => {
     expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'sensitive_path', scope: 'session', denied: true })])
   })
 
+  it('is recorded when its denial is on disk and the grants lock then fails to release, so a deny once never sits beside it', async () => {
+    const { config, runtime } = await open()
+    const token = await secretAsk(runtime)
+    releasing.path = `${grantsPath(config)}.lock.sqlite`
+
+    expect(await runtime.approvalService.answer(denial(token))).toMatchObject({ ok: true })
+    expect(onDisk(config, token)).toEqual({ pending: false, resolved: true, owes: false })
+    expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'sensitive_path', scope: 'session', denied: true })])
+  })
+
+  it('takes back a denial whose write failed and that cannot then be read for, before answering grant_unsaved', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-ledger-denial-'))
+    roots.push(root)
+    const store = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'workspace-id' })
+    let unreadable = false
+    const grants = {
+      ...store,
+      grant: async (input: Parameters<typeof store.grant>[0]) => { await store.grant(input); unreadable = true; throw new Error('The grants lock failed to release') },
+      list: () => { if (unreadable) { unreadable = false; throw new Error('The grants file is busy') } return store.list() },
+    }
+    const registry = createApprovalRegistry(grants, join(root, 'approvals.json'))
+    const [secret] = (await registry.ask({ tool: 'fs_read', sessionId: 's', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'sensitive_path', subject: '/workspace/.env', reason: 'secret', offeredScopes: ['once'] }], call: { arguments: {}, cwd: '/workspace', description: null, complete: true } })).requests
+
+    expect(await registry.resolve({ token: secret!.token, approved: false, scope: 'session' }, SOURCES.cli)).toMatchObject({ ok: false, code: 'grant_unsaved', retryable: true })
+    expect(store.list()).toEqual([])
+    expect(registry.pending().map(request => request.token)).toEqual([secret!.token])
+  })
+
   it('still answers grant_unsaved when a step after its update fails', async () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-ledger-denial-'))
     roots.push(root)

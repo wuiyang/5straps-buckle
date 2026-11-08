@@ -974,28 +974,45 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
    * A lasting denial stands before its decision commits: the owed approvals it takes the place of in the grant store are
    * dropped and committed first, since one settled after it would replace it there, then it is written, and the saved ones
    * it replaced are dropped with its decision. One that cannot be written is refused as `grant_unsaved`, with nothing
-   * recorded, so its ask waits.
+   * recorded, so its ask waits. A write that fails may still have landed, as where the grants lock fails to release after
+   * it: the denial is looked for by the id it was written under, and recorded where found.
    */
   async function writeDenial(input: { state: State; commit: () => Promise<void>; progress: DecisionProgress; holder: GrantHolder; rule: PermissionRuleId; subject: string; scope: 'session' | 'always'; decider: { decidedBy?: string } }): Promise<Extract<Resolution, { ok: false }> | undefined> {
     const { holder, rule, subject, scope } = input
     const slot: GrantSlot = { rule, subject, scope, sessionId: holder.sessionId, actor: holder.actor ?? null }
     const replaced = (grant: LastingGrant) => writesAgain(grant, slot)
     if (dropGrants(input.state, { saves: OWED_SAVES, undone: replaced }) > 0) await input.commit()
+    const id = randomUUID()
     try {
-      input.progress.denial = await grants.grant({ ...holder, rule, subject, scope, denied: true, ...input.decider })
-      dropGrants(input.state, { saves: SAVED_SAVES, undone: replaced })
-      return undefined
+      input.progress.denial = await grants.grant({ id, ...holder, rule, subject, scope, denied: true, ...input.decider })
     } catch (error) {
-      logger.warn('A lasting denial was not written, so nothing was recorded and its ask still waits', { error: withoutCause(error) })
-      const saveError = saveFailure(error)
-      return { ok: false, code: 'grant_unsaved', reason: `The denial could not be saved (${saveError}), so nothing was recorded and the call still waits`, saveError, retryable: true }
+      const landed = await landedDenial(id)
+      if (landed === undefined) {
+        logger.warn('A lasting denial was not written, so nothing was recorded and its ask still waits', { error: withoutCause(error) })
+        const saveError = saveFailure(error)
+        return { ok: false, code: 'grant_unsaved', reason: `The denial could not be saved (${saveError}), so nothing was recorded and the call still waits`, saveError, retryable: true }
+      }
+      logger.warn('A lasting denial was written though its write reported a failure, so it stands and its decision is recorded', { error: withoutCause(error) })
+      input.progress.denial = landed
+    }
+    dropGrants(input.state, { saves: SAVED_SAVES, undone: replaced })
+    return undefined
+  }
+
+  /** A denial whose write failed, where the grants hold it; one that cannot be looked for is taken back, so none stands unrecorded. */
+  async function landedDenial(id: string): Promise<GrantRecord | undefined> {
+    try {
+      return grantStore.list().find(record => record.id === id)
+    } catch {
+      await withdrawDenial(id)
+      return undefined
     }
   }
 
   // A lasting denial whose decision was not recorded is taken back, so its ask waits with nothing in force.
-  async function withdrawDenial(denial: GrantRecord): Promise<void> {
+  async function withdrawDenial(id: string): Promise<void> {
     try {
-      await grantStore.revoke(denial.id)
+      await grantStore.revoke(id)
     } catch (error) {
       logger.warn('A lasting denial was written, but its decision was not recorded and the denial could not be taken back; it stands until revoked with buckle grants revoke', { error: withoutCause(error) })
     }
@@ -1079,7 +1096,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       const { decided, recorded, denial, refused } = progress
       if (refused !== undefined) return refused
       if (decided === undefined || !recorded) {
-        if (denial !== undefined) await withdrawDenial(denial)
+        if (denial !== undefined) await withdrawDenial(denial.id)
         throw error
       }
       const answer = savedAs({ decided, saveError: progress.saveError })
