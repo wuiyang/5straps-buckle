@@ -1,5 +1,6 @@
 import { mountSourceState, refuseChangedFolder, validateSandboxMounts } from '../../domain/sandbox-mounts.js'
 import { protectedSettingsFiles, protectedStateRoots } from '../../runtime/config.js'
+import { recordedEnvironmentFilesReader } from '../../runtime/environment-files.js'
 import { serviceInstalled } from '../node-service/installed.js'
 import { createWorkbenchManager } from '../workbench/manager.js'
 import { WorkbenchError, workbenchesDirectory, workbenchHash } from '../workbench/storage.js'
@@ -143,6 +144,9 @@ const RESHAPE_WAITS = 'This workspace\'s settings changed in a way that rebuilds
 
 /** Said where a change read but would not apply: the call is refused, never answered under the old settings (fix brief 4, finding 1). No path. */
 const SETTINGS_RETRY = 'This workspace\'s settings changed and could not be taken up yet; retry the call, and if it keeps failing, the owner\'s log says why'
+
+/** Said where the node's record of its settings files will not read or take up: no call runs while a file in it may go unprotected. No path. */
+const RECORD_RETRY = 'The node\'s record of the files that hold its settings could not be read or taken up; retry the call, and if it keeps failing, the owner\'s log says why'
 
 /** Said where the owner's mount change meets work in progress, wherever it runs: a mount reshapes the tools. */
 const POLICY_WAITS = 'Resolve active work and staged changes before changing workspace policy'
@@ -315,10 +319,13 @@ export async function createRuntime(input: RuntimeInput): Promise<CoreRuntime> {
   const { config } = input
   // The sandbox masks this directory by path, so it has to exist before the first command runs.
   mkdirSync(config.stateDirectory, { recursive: true, mode: 0o700 })
+  // The node's record of its environment files as it stands now, which a serve may have grown since the config loaded.
+  const recordedFiles = recordedEnvironmentFilesReader(config.nodeStateDirectory ?? config.stateDirectory)
+  config.recordedEnvironmentFiles = recordedFiles()
   const history = await openChangeHistory({ directory: join(config.stateDirectory, 'history', workspaceStateKey(config.cwd)), excluded: protectedStateRoots(config), maxBytes: config.historyMaxBytes, allowHostGit: config.allowHostGit, untrusted: () => workspaceProgramTrust(input), ...config.history, label: `history:${input.workspaceId ?? config.workspaceId}` })
   let closeApprovals: (() => Promise<void>) | undefined
   try {
-    return await assembleRuntime({ ...input, history, onApprovalCleanup: close => { closeApprovals = close } })
+    return await assembleRuntime({ ...input, history, recordedFiles, onApprovalCleanup: close => { closeApprovals = close } })
   } catch (error) {
     // No close step owns the connection until the runtime exists (runtime.md: clean up after partial initialization).
     try { await closeApprovals?.() } finally { await history.close() }
@@ -326,8 +333,16 @@ export async function createRuntime(input: RuntimeInput): Promise<CoreRuntime> {
   }
 }
 
-async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; onApprovalCleanup: (close: () => Promise<void>) => void }): Promise<CoreRuntime> {
+async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; recordedFiles: () => string[]; onApprovalCleanup: (close: () => Promise<void>) => void }): Promise<CoreRuntime> {
   const { config, history } = input
+  // Buckle's protected paths with the node's record of environment files as it stands, for the routes no call admits:
+  // a workbench's staging, review, apply, and terminal. The rules and packs take the record up at a call's start.
+  const liveProtection = (): BuckleConfig => {
+    try { return { ...config, recordedEnvironmentFiles: input.recordedFiles() } } catch (error) {
+      logger.error('The node\'s record of its settings files cannot be read; workbench steps are refused until it can', { workspaceId: input.workspaceId ?? config.workspaceId, error })
+      throw new WorkbenchError(RECORD_RETRY, 409)
+    }
+  }
   const browserStateDirectory = join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd))
   mkdirSync(browserStateDirectory, { recursive: true })
 
@@ -485,7 +500,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   const workbenches = createWorkbenchManager({
     directory: workbenchesDirectory({ stateDirectory: config.stateDirectory, root: config.cwd }),
     sourceRoot: config.cwd, workspaceId, maxBytes: config.isolationMaxBytes,
-    protectedRoots: protectedStateRoots(config), actions, history,
+    protectedRoots: () => protectedStateRoots(liveProtection()), actions, history,
     ripgrep: () => programOrNull(resolveProgram('rg', untrusted())), environment: hostEnvironment(untrusted), spawnPty: spawnPtyProcess,
     policyHash: () => policyHash(compiled),
     authorizeTool: tool => toolDenial(tool) === null,
@@ -502,7 +517,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       // Credentials inside one are masked where it shows them.
       const scratchRoots = scratchSources(config.mounts).filter(root => !isInside(config.cwd, root) && existsSync(root))
       const binds = [...sandboxBinds(config.mounts), ...scratchRoots.map(root => ({ source: root, target: root, readOnly: true }))]
-      const state = protectedStateRoots(config)
+      const protection = liveProtection()
+      const state = protectedStateRoots(protection)
       const mounts = refusedAsWorkbench(() => validateSandboxMounts(binds.map(mount => ({ ...mount, readOnly: true })), { protectedRoots: state, workspaceRoots: [config.cwd, request.root], workspaceTarget: '/workspace' }))
       const signal = AbortSignal.timeout(15_000)
       const projection = await projectFilesystemSandbox({ root: request.root, policy: compiled.policy, signal })
@@ -511,7 +527,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       const holdingCopy = state.filter(path => isInside(path, request.root))
       // Every host bind here but the copy is read-only, so a settings file not made yet needs no mask there; the copy may
       // make one, which review and apply refuse to publish.
-      const hidden = await collectShellHiddenPaths({ roots: [request.root, ...scratchRoots, ...config.mountReadOnlyPaths], protectedPaths: state.filter(path => !holdingCopy.includes(path)), settingsFiles: protectedSettingsFiles(config), signal })
+      const hidden = await collectShellHiddenPaths({ roots: [request.root, ...scratchRoots, ...config.mountReadOnlyPaths], protectedPaths: state.filter(path => !holdingCopy.includes(path)), settingsFiles: protectedSettingsFiles(protection), signal })
       if (projection.hiddenPaths.some(path => isInside(path, request.cwd))) throw new WorkbenchError('Filesystem restrictions hide this terminal working directory', 403)
       const wrapped = sandbox.sandbox.wrap({ command: 'bash', args: ['--noprofile', '--norc', '-i'], cwd: request.cwd,
         workspaceRoot: request.root, writableRoots: [request.root], mount: { root: request.root, at: '/workspace' }, commandIsPid1: true,
@@ -713,12 +729,18 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
    * call until it does, so no call is answered under settings the owner has replaced (fix brief 4, finding 1).
    */
   function pickUp(): Promise<void> {
-    if (settingsFile.version() === appliedVersion) return Promise.resolve()
+    if (settingsFile.version() === appliedVersion && !recordMoved()) return Promise.resolve()
     pickingUp ??= takeUp().finally(() => { pickingUp = undefined })
     return pickingUp
   }
 
+  /** Whether the node's record names other files than the rules and packs were built with, or will not read, which takeUp refuses. */
+  function recordMoved(): boolean {
+    try { return !sameFiles(input.recordedFiles(), config.recordedEnvironmentFiles) } catch { return true }
+  }
+
   async function takeUp(): Promise<void> {
+    await takeUpRecord()
     const version = settingsFile.version()
     if (version === appliedVersion || version === unreadVersion) return
     let next: WorkspaceSettings
@@ -738,6 +760,31 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     logger.info('Workspace settings changed and took effect', { workspaceId, revision: applied.revision })
   }
 
+  // A record that will not read is said once, until it reads again.
+  let recordUnreadSaid = false
+
+  /**
+   * Takes up the node's record of its settings files where it changed since (`buckle init`, a service install, a serve),
+   * as an owner's write is taken up: the rules and packs are rebuilt with no wait, and a call already running keeps the
+   * masks it started with. Until the record reads and applies, every call is refused.
+   */
+  async function takeUpRecord(): Promise<void> {
+    let files: string[]
+    try { files = input.recordedFiles() } catch (error) {
+      if (!recordUnreadSaid) logger.error('The node\'s record of its settings files cannot be read; calls are refused until it can', { workspaceId, error })
+      recordUnreadSaid = true
+      throw new WorkspaceError(RECORD_RETRY, 409)
+    }
+    recordUnreadSaid = false
+    if (sameFiles(files, config.recordedEnvironmentFiles)) return
+    try { await apply({ version: appliedVersion, settings: applied, rebuildPacks: true, waitForWork: false, recordedEnvironmentFiles: files }) } catch (error) {
+      if (error instanceof WorkspaceError) throw error
+      logger.error('The node\'s record of its settings files changed but could not be taken up; calls are refused until it can', { workspaceId, error })
+      throw new WorkspaceError(RECORD_RETRY, 409)
+    }
+    logger.info('The node\'s record of its settings files changed and took effect', { workspaceId, files: files.length })
+  }
+
   /**
    * Applies settings whole or not at all (findings 7, 8, and 28 of the Phase 1 review, fix brief 1, D). The approval
    * wait and the variables swap in at once. The packs are rebuilt only where what they are built from changed (the
@@ -747,9 +794,9 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
    * failure leaves the settings in force, and packs replaced are retired, so their language servers and browsers end
    * with them.
    */
-  async function apply(input: { version: string; settings: WorkspaceSettings; rebuildPacks: boolean; waitForWork: boolean }): Promise<void> {
+  async function apply(input: { version: string; settings: WorkspaceSettings; rebuildPacks: boolean; waitForWork: boolean; recordedEnvironmentFiles?: string[] }): Promise<void> {
     const fields = workspaceFields(scopeOf(input.settings, config.workspaceDefaults))
-    const nextConfig: BuckleConfig = { ...config, ...fields }
+    const nextConfig: BuckleConfig = { ...config, ...fields, recordedEnvironmentFiles: input.recordedEnvironmentFiles ?? config.recordedEnvironmentFiles }
     const nextCompiled = compilePolicy(fields.policy)
     const nextPaths = createPathView({ root: config.cwd, mount: nextCompiled.mount, mounts: nextConfig.mounts })
     const [resolved, before] = [resolveSettings(input.settings, config.workspaceDefaults), resolveSettings(applied, config.workspaceDefaults)]
@@ -768,8 +815,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     if (policyMoved) await workbenches.policyChanged()
     // A verdict was given under the policy in force, which its key names too; a new policy rates every call afresh.
     if (policyMoved) await judgeCache.clear().catch((error: unknown) => { logger.warn('The decision AI\'s kept verdicts could not be cleared after a policy change', { workspaceId, error }) })
-    Object.assign(config, fields)
-    history.configure({ ...config.history, allowHostGit: config.allowHostGit })
+    Object.assign(config, fields, { recordedEnvironmentFiles: nextConfig.recordedEnvironmentFiles })
+    history.configure({ ...config.history, allowHostGit: config.allowHostGit, excluded: protectedStateRoots(config) })
     applied = input.settings
     appliedVersion = input.version
     unreadVersion = undefined
@@ -1207,3 +1254,8 @@ function refusedAsWorkbench<T>(check: () => T): T {
 }
 
 function workspaceProgramTrust(input: RuntimeInput): UntrustedRoots { return workspaceUntrusted({ root: input.config.cwd, scratchRoots: scratchSources(input.config.mounts), mounts: input.config.mounts }, input.nodeRoots) }
+
+/** Whether two readings of the record name the same files, in the order it keeps them. */
+function sameFiles(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((file, index) => file === right[index])
+}

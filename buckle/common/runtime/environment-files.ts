@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
 import { withFileLock } from '@5straps/runtime/sqlite'
 import { writeEnvironmentFile } from '../adapters/environment-file.js'
+import { fileVersion } from '../adapters/json-file-store.js'
 import { isInside } from '../domain/paths.js'
 import { realPathOf } from './real-path.js'
 
@@ -35,6 +36,20 @@ export function recordedEnvironmentFiles(stateDirectory: string): string[] {
   const parsed = RecordSchema.safeParse(parseJson(text))
   if (!parsed.success) throw new Error(`${path} is not a record of environment files Buckle reads: repair it, or remove it and start the node again, which records its file anew`)
   return parsed.data.files
+}
+
+/**
+ * The record as it stands at each read, read again only once its file changed, so a running process takes up a file
+ * another recorded since it started. Throws as recordedEnvironmentFiles does.
+ */
+export function recordedEnvironmentFilesReader(stateDirectory: string): () => string[] {
+  const path = environmentFilesPath(stateDirectory)
+  let seen: { version: string; files: string[] } | undefined
+  return () => {
+    const version = fileVersion(path)
+    if (seen?.version !== version) seen = { version, files: recordedEnvironmentFiles(stateDirectory) }
+    return seen.files
+  }
 }
 
 /**

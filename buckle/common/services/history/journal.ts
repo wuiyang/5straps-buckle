@@ -105,11 +105,12 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   mkdirSync(input.directory, { recursive: true, mode: 0o700 }); setMode(input.directory, 0o700); requireOwnerOnly(input.directory, 'directory')
   const file = join(input.directory, 'checkpoints.json')
   const now = input.now ?? Date.now
-  const settings = { keepTurns: input.keepTurns ?? DEFAULT_HISTORY_KEEP_TURNS, turnIdleMs: input.turnIdleMs ?? DEFAULT_HISTORY_TURN_IDLE_MS, maxFileBytes: input.maxFileBytes ?? DEFAULT_HISTORY_FILE_BYTES, allowHostGit: input.allowHostGit !== false }
+  // `excluded`: the protected paths, which a runtime widens as the node records another settings file (configure).
+  const settings = { keepTurns: input.keepTurns ?? DEFAULT_HISTORY_KEEP_TURNS, turnIdleMs: input.turnIdleMs ?? DEFAULT_HISTORY_TURN_IDLE_MS, maxFileBytes: input.maxFileBytes ?? DEFAULT_HISTORY_FILE_BYTES, allowHostGit: input.allowHostGit !== false, excluded: input.excluded }
   const objects = openObjectStore(input.directory)
-  const scopeLimits = () => ({ maxFileBytes: settings.maxFileBytes, maxTreeBytes: input.maxBytes, excluded: [...input.excluded, input.directory], ...(input.platform ? { platform: input.platform } : {}) })
+  const scopeLimits = () => ({ maxFileBytes: settings.maxFileBytes, maxTreeBytes: input.maxBytes, excluded: [...settings.excluded, input.directory], ...(input.platform ? { platform: input.platform } : {}) })
   const store = createGitStore({ directory: input.directory, excluded: input.excluded, maxFileBytes: () => settings.maxFileBytes, allowed: () => settings.allowHostGit, ...(input.untrusted ? { untrusted: input.untrusted } : {}), ...(input.platform ? { platform: input.platform } : {}) })
-  const commands = createCommandCapture({ directory: input.directory, objects, excluded: () => [...input.excluded, input.directory], allowed: () => settings.allowHostGit, maxFileBytes: () => settings.maxFileBytes, ...(input.untrusted ? { untrusted: input.untrusted } : {}) })
+  const commands = createCommandCapture({ directory: input.directory, objects, excluded: () => [...settings.excluded, input.directory], allowed: () => settings.allowHostGit, maxFileBytes: () => settings.maxFileBytes, ...(input.untrusted ? { untrusted: input.untrusted } : {}) })
   /** Each running command's state before it ran, by checkpoint, until its finish reads what changed. */
   const baselines = new Map<string, CommandBaseline[]>()
   /** Each running command whose before phase git ran but did not finish: what it wrote is swept after the call (X6). */
@@ -695,7 +696,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     if (!record.after) throw new RestoreRefusedError('Completed checkpoint not found')
     if (record.restorable === false) throw new RestoreRefusedError(record.reason ?? 'Content restoration requires permitted trusted host git')
     const paths = changedPaths(record.before, record.after)
-    assertExcludedUntouched(paths, [...input.excluded, ...record.excluded ?? []])
+    assertExcludedUntouched(paths, [...settings.excluded, ...record.excluded ?? []])
     assertShadowReachable(record, paths)
     // Read first, so nothing waits between the check of each path's current state and its change (X2).
     const content = await restoredContent(record, paths)
@@ -823,7 +824,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
         const paths = changedPaths(expected, target)
         if (!paths.length) return null
         // The history's own protected paths too, as a restore checks them: whoever publishes the copy, none is made or changed.
-        assertExcludedUntouched(paths, [...input.excluded, ...details.excluded ?? []])
+        assertExcludedUntouched(paths, [...settings.excluded, ...details.excluded ?? []])
         const scope = promotionScope({ paths, expected, target, roots: details.roots })
         const limits = scopeLimits()
         const current = await captureScope({ scope, digest: sha256, ...limits, excluded: [...limits.excluded, ...details.excluded ?? []] })

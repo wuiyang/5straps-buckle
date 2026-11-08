@@ -133,7 +133,8 @@ export interface NodeConfig {
   environmentFile: string
   /**
    * The files outside the state directory that init, a service install, or a serve start recorded as the node's settings
-   * (recordedEnvironmentFiles), protected with it in every process, whatever this one's environment names.
+   * (recordedEnvironmentFiles), protected with it in every process, whatever this one's environment names. A runtime
+   * reads the record again as it opens and at each call's start, so one running takes up a file recorded since.
    */
   recordedEnvironmentFiles: string[]
   /** How long a state file update waits for another process's lock; the store's default when absent. Never read from the environment. */

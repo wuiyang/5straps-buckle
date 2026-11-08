@@ -19,7 +19,8 @@ export interface WorkbenchFileOptions {
   sourceRoot: string
   directory: string
   maxBytes: number
-  protectedRoots: string[]
+  /** Buckle's protected paths as they stand at each staging, review, and apply, which grow as the node records another settings file. */
+  protectedRoots: () => string[]
   authorizePath(path: string, operation: 'read' | 'write'): boolean
   /**
    * The ripgrep the staged editor's search runs, by its absolute path (resolveProgram), resolved at each call, so a
@@ -53,7 +54,7 @@ export function createWorkbenchFiles(options: WorkbenchFileOptions) {
     return !sensitivePathReason(join(options.sourceRoot, path)) && !sensitivePathReason(join(options.sourceRoot, path, 'entry')) && options.authorizePath(path || '.', operation)
   }
   function excluded(): string[] {
-    const paths = [...options.protectedRoots]
+    const paths = [...options.protectedRoots()]
     let visited = 0
     function walk(path: string): void {
       if (++visited > 100_000) throw new WorkbenchError('Workspace has too many entries to stage', 413)
@@ -124,11 +125,12 @@ export function createWorkbenchFiles(options: WorkbenchFileOptions) {
       })
     },
     assertWritableChanges(before: Snapshot, after: Snapshot) {
+      const protectedRoots = options.protectedRoots()
       for (const path of changedPaths(before, after)) {
         const name = relative(options.sourceRoot, path) || '.'
         if (!isInside(options.sourceRoot, path) || !permitted(name, 'write') || !permitted(name, 'read')) throw new WorkbenchError('A staged change is outside current workspace permissions', 403)
         // A protected path the folder lacks is not in the copy to leave out, so a terminal can make it there.
-        if (options.protectedRoots.some(root => isInside(root, path) || isInside(path, root))) throw new WorkbenchError('A staged change reaches Buckle\'s own state', 403)
+        if (protectedRoots.some(root => isInside(root, path) || isInside(path, root))) throw new WorkbenchError('A staged change reaches Buckle\'s own state', 403)
       }
     },
     describe(id: string, before: Snapshot, after: Snapshot): WorkbenchChange[] {

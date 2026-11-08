@@ -172,6 +172,98 @@ describe('an env file the state directory records, to a buckle mcp whose environ
   })
 })
 
+// A buckle mcp started before init, a service install, or a serve named a file: it takes the record up at its next call.
+describe('an env file recorded after a process started, to that process', () => {
+  /** A runtime whose environment names no env file, over a state directory that records none until `record` runs. */
+  async function lateNode(input: { at: (root: string, workspace: string) => string; environment?: (root: string) => Record<string, string>; missing?: boolean }) {
+    const root = scratch()
+    const workspace = join(root, 'workspace')
+    mkdirSync(workspace)
+    const state = join(root, 'state')
+    const envFile = input.at(root, workspace)
+    if (input.missing) mkdirSync(dirname(envFile), { recursive: true })
+    else writeSettings(envFile)
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: state, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', ...input.environment?.(root) })
+    const runtime = await createRuntime({ config })
+    runtimes.push(runtime)
+    const call = (tool: string, args: JsonObject) => runtime.invoke({ sessionId: 'agent', request: { requestId: randomUUID(), tool, args, approvalTokens: [], context: { approvalWait: { mode: 'none' } } } })
+    return { root, workspace, state, envFile, config, runtime, call, record: () => recordEnvironmentFile({ stateDirectory: state, file: envFile }) }
+  }
+
+  it('is refused read or changed from the next call on, past always grants over the folder holding it', async () => {
+    const { root, envFile, runtime, call, record } = await lateNode({ at: root => join(root, 'settings', 'buckle.env') })
+    for (const rule of ['read_scope', 'write_scope'] as const) await runtime.grants.grant({ sessionId: 'agent', rule, subject: join(root, 'settings'), scope: 'always' })
+    expect(await call('fs_read', { path: envFile })).toMatchObject({ outcome: 'ok' })
+    await record()
+    refusedAsState(await call('fs_read', { path: envFile }))
+    refusedAsState(await call('fs_write', { path: envFile, content: 'BUCKLE_APPROVAL_FORMS=true\n' }))
+    expect(readFileSync(envFile, 'utf8')).toBe(SETTINGS)
+  })
+
+  it('refuses every call while the record will not read, naming no path, and serves again once it does', async () => {
+    const { workspace, state, call, record } = await lateNode({ at: root => join(root, 'settings', 'buckle.env') })
+    writeFileSync(join(workspace, 'notes.txt'), 'notes')
+    await record()
+    const recorded = readFileSync(environmentFilesPath(state), 'utf8')
+    writeFileSync(environmentFilesPath(state), '{ not json')
+    await expect(call('fs_read', { path: 'notes.txt' })).rejects.toMatchObject({ code: 'WORKSPACE_REFUSED', status: 409, message: expect.not.stringContaining(state) })
+    writeFileSync(environmentFilesPath(state), recorded)
+    expect(await call('fs_read', { path: 'notes.txt' })).toMatchObject({ outcome: 'ok' })
+  })
+
+  it('is masked as a file in a sandboxed shell command from the next call on, where a scratch root shows it', async () => {
+    let runs: () => string[][] = () => []
+    const { workspace, envFile, runtime, call, record } = await lateNode({
+      at: root => join(root, 'scratch', 'buckle.env'),
+      environment: (root) => {
+        runs = fakeBwrap(root)
+        return { BUCKLE_PACKS: 'fs,shell', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SANDBOX: 'bubblewrap', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_SCRATCH_ROOTS: join(root, 'scratch') }
+      },
+    })
+    const policy = emptyWorkspacePolicy()
+    policy.commands.allow = ['true']
+    await runtime.policy.apply(policy)
+    await runtime.grants.grant({ sessionId: 'agent', rule: 'write_scope', subject: workspace, scope: 'session' })
+    expect(await call('shell_exec', { command: 'true', cwd: '.' })).toMatchObject({ outcome: 'ok' })
+    expect(masks(runs()[0]!).files).not.toContain(envFile)
+    await record()
+    expect(await call('shell_exec', { command: 'true', cwd: '.' })).toMatchObject({ outcome: 'ok' })
+    const laid = masks(runs()[1]!)
+    expect(laid.files).toContain(envFile)
+    expect(laid.folders).not.toContain(envFile)
+  })
+
+  it('keeps no version in the change history from the next call on', async () => {
+    const { workspace, envFile, runtime, call, record } = await lateNode({
+      at: (_root, workspace) => join(workspace, 'config', 'buckle.env'),
+      environment: () => ({ BUCKLE_PACKS: 'fs,shell', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SANDBOX: 'none', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_ALLOW_HOST_GIT: 'true' }),
+    })
+    const policy = emptyWorkspacePolicy()
+    policy.commands.allow = ['sh -c *']
+    await runtime.policy.apply(policy)
+    await runtime.grants.grant({ sessionId: 'agent', rule: 'write_scope', subject: workspace, scope: 'session' })
+    await record()
+    // An unsandboxed shell reaches the file (the stated limit); the history still keeps none of it.
+    const ran = await call('shell_exec', { command: 'sh', args: ['-c', 'printf "BUCKLE_APPROVAL_FORMS=true\\n" > config/buckle.env; printf x > other.txt'], cwd: '.' })
+    expect(ran, JSON.stringify(ran)).toMatchObject({ outcome: 'ok' })
+    const [newest] = (await runtime.history.recent(1)).checkpoints
+    expect(newest!.changes.map(change => change.path)).toEqual([join(workspace, 'other.txt')])
+    expect(readFileSync(envFile, 'utf8')).toBe('BUCKLE_APPROVAL_FORMS=true\n')
+  })
+
+  it('is refused at a workbench apply once recorded, though the review before it listed the change', async () => {
+    const { workspace, envFile, config, runtime, record } = await lateNode({ at: (_root, workspace) => join(workspace, 'config', 'buckle.env'), missing: true })
+    const grant = { id: randomUUID(), token: 'workbench-fixture-token-with-enough-bytes', projectId: 'project-a', chatId: 'chat-a', allowShell: false }
+    await runtime.workbenches.provision(grant)
+    writeFileSync(join(workbenchesDirectory({ stateDirectory: config.stateDirectory, root: workspace }), grant.id, 'workspace', 'config', 'buckle.env'), 'BUCKLE_APPROVAL_FORMS=true\n')
+    const { review } = await runtime.workbenches.review(grant.id, 'alice')
+    expect(review.changes).toMatchObject([{ path: 'config/buckle.env', kind: 'created' }])
+    await record()
+    await expect(runtime.workbenches.apply(grant.id, { actorId: 'alice', reviewId: review.id })).rejects.toMatchObject({ status: 403, message: 'A staged change reaches Buckle\'s own state' })
+    expect(existsSync(envFile)).toBe(false)
+  })
+})
+
 describe('an env file outside the state directory, to the file tools', () => {
   it('is refused read or changed, past always grants over the folder holding it, and stays as it was', async () => {
     const { root, envFile, runtime, call } = await node({ at: root => join(root, 'settings', 'buckle.env') })
