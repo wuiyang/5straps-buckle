@@ -1,7 +1,8 @@
 # Buckle developer documentation
 
 - [Architecture](architecture.md), with [state and packs](architecture-02.md) and the [approval
-  backend](approval-backend.md), with its [grant saves](approval-backend-02.md).
+  backend](approval-backend.md), with its [grant saves](approval-backend-02.md) and [their
+  routes](approval-backend-03.md).
 - [Building and testing](building-and-testing.md).
 - [Releasing](releasing.md), with [setup](releasing-04.md), [repeats and
   approval](releasing-02.md), and [what ships](releasing-03.md).

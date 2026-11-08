@@ -69,7 +69,8 @@ A `session` or `always` answer whose grant could not be written asks once more:
 ```
 
 One key answers it: `r` sends the same decision again and asks again if that fails too, `s`
-gives up the lasting part, and any other key leaves it to be written later. The outcome is logged
+gives up the lasting part, and any other key leaves it to be written later; a lasting denial left
+so is asked again. The outcome is logged
 below it ([when a grant cannot be saved](approvals-05.md)).
 
 ## The log beside it

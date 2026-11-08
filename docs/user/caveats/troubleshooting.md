@@ -135,4 +135,5 @@ Not approved: buckle approve records an approval only after a person at a termin
 ```
 
 Run it in an interactive terminal, without redirecting its input or output, and type `yes`.
-`buckle approve <token> --deny` works anywhere.
+`buckle approve <token> --deny` works anywhere. A grant it cannot save is covered in
+[when a grant cannot be saved](../how-to/approvals-05.md).

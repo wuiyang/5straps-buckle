@@ -17,8 +17,9 @@ does not parse) writes none: the setup POST's `setup_post_approvals` entries rec
 
 Their `args` hold the `token`, the `outcome` (`approve` or `deny`), the `scope`, the `source` (its
 `id` and `kind`), and the `proof` (`none`, `device`, or `envelope`), with `decidedBy` where an
-enrolled key or the decision AI decided. A result adds the `assurance`, `repeated`, and
-`grantOwed`, or the refusal's `code`. A refusal's reason is not kept, since it can name a path.
+enrolled key or the decision AI decided. A result adds the `assurance`, `repeated`, and, for a
+`session` or `always` approval, `save`: where its grant stands (`owed`, `saved`, `skipping`,
+`skipped`, or `dropped`), or the refusal's `code`. A refusal's reason is not kept, since it can name a path.
 Each names who answered as its `actorId`: the key or judge that decided, else `local-owner` for the
 terminal and the CLI, the route's name (`forms`, `sealed`), or `backend:<id>`.
 
@@ -27,13 +28,14 @@ Skipping the save of an approval whose grant could not be written
 `args` hold the `token`, the `outcome` `skip_save`, and the `source`; a result adds `repeated`
 (the save was skipped already) and `removed` (its grant had saved and is gone), or the refusal's
 `code`, such as `approver_not_allowed` for a route that did not record the decision. A skip whose
-saved grant could not be removed ends with an `error` result and no code. A retry of the save is
+grant is not confirmed removed ends `ok` with `removed: false` and `unfinished: true`. A retry of the save is
 the same decision sent again, recorded as any decision is, with `repeated`.
 
 No tool takes a name Buckle writes its own records under: `approval_decision`, `log_dropped`, and
 those starting `cli_`, `setup_`, `workspace_`, or `policy_`. An agent's call naming one is refused
 as an unknown tool, and leaves no entry.
 
-`buckle approve` also keeps its `cli_approve` entries, and `buckle approvals --watch` its
+`buckle approve` also keeps its `cli_approve` entries, whose result reads `ok` for a decision that
+applied though its grant did not save, and `buckle approvals --watch` its
 `cli_approvals` entries for the whole watch; each answer the watch takes is in the decision records
 alone.

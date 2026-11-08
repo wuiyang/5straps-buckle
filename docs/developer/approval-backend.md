@@ -19,7 +19,7 @@ asks out and decisions in, and enforces nothing. Paths are in `buckle/`.
   decision AI's notes, the deadline, and the call. Without a kept call it has no `action`.
 - **Receipts:** `applied` with the assurance core rated, `repeated`, or `refused` with an
   `ApprovalErrorCode`; one for a lasting approval names its grant's `save` state, and a pathless
-  `saveError` while owed. Core checks each decision's shape first. A failure is no decision.
+  `saveError` while unsettled. Core checks each decision's shape first. A failure is no decision.
 
 ## The module boundary
 
