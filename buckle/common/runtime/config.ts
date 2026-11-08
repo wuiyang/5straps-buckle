@@ -730,7 +730,7 @@ export const ENVIRONMENT_FILE_NAME = 'buckle.env'
 export function environmentFilePath(environment: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
   const named = environment.BUCKLE_ENV_FILE
   if (!named) return defaultEnvironmentFile(environment, platform)
-  // Relative, it would name another file in every directory a command starts in (review L9 of B18-B19).
+  // Relative, it would name another file in every directory a command starts in.
   if (!isAbsolute(named)) throw new Error(`BUCKLE_ENV_FILE must be an absolute path, not ${named}: Buckle never resolves its settings against the working directory`)
   return typedPath(named, platform)
 }
