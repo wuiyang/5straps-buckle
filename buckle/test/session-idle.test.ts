@@ -142,6 +142,10 @@ describe('the idle window setting', () => {
     expect(shown.out.slice(shown.out.indexOf('Workspace defaults'))).toMatch(/approval-session-idle\s+BUCKLE_APPROVAL_SESSION_IDLE_MS\s+900000\s+default/)
     expect((await settings(['set', 'approval-session-idle', '1800000'])).exitCode).toBe(0)
     expect(readFileSync(file, 'utf8')).toContain('BUCKLE_APPROVAL_SESSION_IDLE_MS=1800000\n')
+    // Every process ends all of its workspace's sessions at the window it started with, so a running buckle mcp is named.
+    for (const argv of [['set', 'approval-session-idle', '0'], ['unset', 'approval-session-idle']]) {
+      expect((await settings(argv)).out).toContain('A buckle mcp an MCP client started keeps the window it started with, and ends every session of its workspace at it, until the client starts it again; buckle workspace set approval.sessionIdleMs changes a workspace\'s window from its next call.\n')
+    }
     const refused = await settings(['set', 'approval-session-idle', '10'])
     expect(refused.exitCode).toBe(1)
     expect(refused.printed).toContain('BUCKLE_APPROVAL_SESSION_IDLE_MS is milliseconds')
