@@ -31,9 +31,9 @@ written is marked `interrupted` the next time a Buckle process opens the log. A 
 before it reaches its tool, because the workspace is offline or a settings change waits for active
 work, writes the same two lines, the second `error` with the detail `WORKSPACE_REFUSED`.
 
-Owner commands are logged too, under names such as `cli_policy`, `cli_approve`,
-`cli_approvals`, `cli_settings`, and `cli_init`. So are refused HTTP requests, each use of the
-dangerously-allow switch (`policy_dangerously_allowed`, whose `args.mode` names `on` or `safe`), and each change of it
+Owner commands are logged too, such as `cli_policy`, `cli_approve`, and `cli_init`, and each
+answer as `approval_decision` ([part two](audit-log-02.md#decision-records)). So are refused HTTP
+requests, each use of the dangerously-allow switch (`policy_dangerously_allowed`, whose `args.mode` names `on` or `safe`), and each change of it
 (`policy_dangerously_allow_changed`, its detail the mode set). Entries an earlier build wrote keep
 their `args.level`, `command` or `all`, and details such as `on command`.
 

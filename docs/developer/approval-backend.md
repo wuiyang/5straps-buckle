@@ -56,7 +56,9 @@ schema, a service, or the node's logger.
    covering the host that asked.
 5. An approval commits, then its grant, written on next open if owed. A lasting denial drops
    the owed approvals it replaces, is written, and is withdrawn if its decision cannot commit.
-6. The audit hears it applied or refused, outside the lock.
+6. The audit hears it applied, refused, or failed, outside the lock. The runtime's
+   `logged-decision-audit.ts` writes each as `approval_decision` through the log service, never
+   holding up the answer.
 
 ## Sources and their rights
 
@@ -95,8 +97,6 @@ Neither decides which scopes are allowed, rates an answer, writes a grant, or au
 - **Form answers:** the `forms` entry in `assurance.ts` counts them as a person's; rated
   `relayed`, they would be held to a non-floor `once`, which the forms do not offer alone.
 - **The dangerously-allow switch:** each mode's reach is a row of `DANGEROUSLY_ALLOW_REACH`.
-- **Decision audit:** it runs on every answer, but the runtime plugs in `NO_DECISION_AUDIT`,
-  which writes nothing; `blockOnAuditFailure` is off.
 
 ## What remote backends will need
 
