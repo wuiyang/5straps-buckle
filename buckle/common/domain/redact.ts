@@ -4,6 +4,8 @@ import { baseCommand, shellBodyIndexes, SHELL_COMMANDS } from './argv.js'
 import { isSecretName } from './environment.js'
 
 const MAX_STRING_LENGTH = 200
+/** The audit log's bound on caller-chosen ids; the join and dedupe keys hash the whole requestId instead. */
+export const MAX_LOGGED_ID = 200
 const MAX_ARRAY_ITEMS = 20
 const MAX_DEPTH = 6
 

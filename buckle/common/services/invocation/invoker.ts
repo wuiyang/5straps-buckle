@@ -10,7 +10,7 @@ import { summarizeEffect, type ResolvedEffect } from '../../domain/effect.js'
 import type { PathView } from '../../domain/path-view.js'
 import type { PermissionEngine, PermissionOutcome } from '../../domain/permission/engine.js'
 import { commandMarks } from '../../domain/permission/decision.js'
-import { redactAuditArguments, reviewableArguments } from '../../domain/redact.js'
+import { MAX_LOGGED_ID, redactAuditArguments, reviewableArguments } from '../../domain/redact.js'
 import { describeCall } from '../../domain/describe-call.js'
 import { DANGEROUSLY_ALLOW, dangerousUses, redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
 import { CODE_CHANGED_REASON, CodeChangedError, JUDGE, passKey, QUICK_FLAG_REASON, withFlagged, withJudged, type CodeBinding } from '../../domain/permission/judged.js'
@@ -43,8 +43,6 @@ export class InvocationsClosedError extends Error {
   constructor() { super('Buckle is shutting down') }
 }
 
-/** The audit log's bound on caller-chosen ids. The join and dedupe keys hash the whole requestId instead (review L2 of B18-B19). */
-const MAX_LOGGED_ID = 200
 /**
  * The longest session id a caller may choose. It is stored with every ask and grant it makes, so an
  * unbounded one would let a caller grow approvals.json by its request size per ask (review L2 of B13-B14).
