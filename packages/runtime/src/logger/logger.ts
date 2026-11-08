@@ -1,7 +1,7 @@
 import { runDetached, sinkStorage } from '../internal/async-slots.js'
 import { readOptionalTimer, readTimerList, settleWithin } from '../internal/timeouts.js'
 import { useScopeSafe } from '../scope/als.js'
-import { createLogBudget, createLogQueue, DEFAULT_LOG_LIMIT, type LogBudget, type LogDropNotice, type LogDrops, type LogQueue } from './log-queue.js'
+import { createLogBudget, createLogQueue, DEFAULT_LOG_LIMIT, type LogBudget, type LogDropNotice, type LogDrops, type LogPushOptions, type LogQueue } from './log-queue.js'
 import { DEFAULT_MAX_STRING_BYTES, normalizeError, sanitizeFields, sanitizeString, truncateText, type SanitizeOptions } from './sanitize.js'
 import { levelRank, LOG_LEVELS, type LogEvent, type LogFields, type Logger, type LogLevel, type LogSink, type NormalizedError } from './types.js'
 
@@ -81,7 +81,7 @@ export function createLogger(options: LoggerOptions): LoggerRoot {
   const stats = { droppedAfterClose: 0, sinkFailures: 0 }
   let closed = false
 
-  function emit(level: LogLevel, component: string, bindings: LogFields, message: string, fields: LogFields | undefined): void {
+  function emit(level: LogLevel, component: string, bindings: LogFields, message: string, fields: LogFields | undefined, lineOptions: LogPushOptions | undefined): void {
     if (levelRank(level) < threshold) return
     if (closed) {
       stats.droppedAfterClose += 1
@@ -89,7 +89,7 @@ export function createLogger(options: LoggerOptions): LoggerRoot {
     }
     const event = buildEventSafely({ level, component, bindings, message, fields })
     if (sinkStorage.getStore() === rootId) return fallback(JSON.stringify(event))
-    for (const queue of queues) queue.push(event)
+    for (const queue of queues) queue.push(event, lineOptions)
   }
 
   // One queue per sink, so a sink that fails retries its own events alone. One event per write, as a sink takes them.
@@ -219,7 +219,7 @@ export function createLogger(options: LoggerOptions): LoggerRoot {
   }
 
   function createChild(component: string, bindings: LogFields): Logger {
-    const method = (level: LogLevel) => (message: string, fields?: LogFields) => emit(level, component, bindings, message, fields)
+    const method = (level: LogLevel) => (message: string, fields?: LogFields, lineOptions?: LogPushOptions) => emit(level, component, bindings, message, fields, lineOptions)
     const logger = Object.fromEntries(LOG_LEVELS.map(level => [level, method(level)])) as Record<LogLevel, Logger['info']>
     return {
       ...logger,

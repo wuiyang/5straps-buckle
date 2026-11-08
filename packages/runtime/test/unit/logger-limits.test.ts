@@ -553,6 +553,22 @@ describe('one budget and retries', () => {
     await audit.close({ deadlineMs: 1 })
   })
 
+  it('lets a line logged as expendable give way to another log\'s entries, so a flood of such lines pushes none of them out', async () => {
+    const budget = createLogBudget({ limit: 30, overflow: 'drop-oldest' })
+    const audit = createLogQueue<string>({ destination: 'actions', budget, write: () => new Promise<void>(() => {}) })
+    const sink = memorySink()
+    const root = createLogger({ component: 'svc', sinks: [sink], budget, fallback: () => {} })
+    root.logger.info('kept')
+    audit.push('decision attempt')
+    audit.push('decision result')
+    for (let index = 0; index < 100; index += 1) root.logger.info(`request ${index}`, undefined, { expendable: true })
+    expect([audit.stats().dropped, budget.held()]).toEqual([0, 30])
+    await root.flush()
+
+    expect(sink.events.map(event => event.message)).toEqual(['log events dropped', 'kept', ...Array.from({ length: 27 }, (_, index) => `request ${index + 73}`)])
+    await audit.close({ deadlineMs: 1 })
+  })
+
   it('tries a failed sink write again after each delay and writes no event twice', async () => {
     vi.useFakeTimers()
     try {

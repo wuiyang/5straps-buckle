@@ -1,3 +1,5 @@
+import type { LogPushOptions } from './log-queue.js'
+
 export const LOG_LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const
 export type LogLevel = typeof LOG_LEVELS[number]
 export type LogFields = Record<string, unknown>
@@ -29,7 +31,8 @@ export interface LogSink {
   close?(): void | Promise<void>
 }
 
-export type LogMethod = (message: string, fields?: LogFields) => void
+/** `options.expendable`: for a line anyone can make the process write, such as one per request it answers. */
+export type LogMethod = (message: string, fields?: LogFields, options?: LogPushOptions) => void
 
 export interface Logger {
   trace: LogMethod
