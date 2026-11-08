@@ -408,6 +408,28 @@ describe('a lasting denial', () => {
     expect(runtime.grants.list()).toEqual([])
   })
 
+  it.each([
+    ['waking the webhook sender', (fail: () => void) => ({ durableNotices: true, onNoticeQueued: fail })],
+    ['reporting an expired ask', (fail: () => void) => ({ onExpired: fail })],
+  ])('keeps its denial in force once its decision is on disk, when %s fails after', async (_step, hooks) => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-ledger-denial-'))
+    roots.push(root)
+    const store = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'workspace-id' })
+    let armed = false
+    const registry = createApprovalRegistry(store, join(root, 'approvals.json'), 0, hooks(() => { if (armed) throw new Error('A step after the decision failed') }))
+    const call = { arguments: {}, cwd: '/workspace', description: null, complete: true as const }
+    const [secret] = (await registry.ask({ tool: 'fs_read', sessionId: 's', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'sensitive_path', subject: '/workspace/.env', reason: 'secret', offeredScopes: ['once'] }], call })).requests
+    // An ask made an hour ago has expired, so the decision's update drops it and reports it.
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() - 60 * 60_000)
+    await registry.ask({ tool: 'fs_write', sessionId: 'other', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }], call })
+    clock.mockRestore()
+    armed = true
+
+    expect(await registry.resolve({ token: secret!.token, approved: false, scope: 'session' }, SOURCES.cli)).toMatchObject({ ok: true })
+    expect(store.list()).toEqual([expect.objectContaining({ rule: 'sensitive_path', scope: 'session', denied: true })])
+    expect(registry.wasDenied([secret!.token])).toBe(true)
+  })
+
   it.each(['session', 'always'] as const)('stands over an earlier %s approval of the same secret file whose grant was left owed, and after reopening', async (scope) => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-ledger-denial-'))
     roots.push(root)

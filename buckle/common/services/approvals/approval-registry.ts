@@ -116,10 +116,13 @@ const revocationSchema = z.union([z.object({ grant: GrantRecordSchema }), z.obje
 type Revocation = z.infer<typeof revocationSchema>
 const revocationsSchema = z.object({ version: z.literal(1), revoked: z.array(revocationSchema) })
 type PendingEntry = State['pending'][number]
-/** A decision on disk, with the answer it gives and its resolved entry, whose `owedGrant` stays while its grant is unwritten. */
+/** A decision, with the answer it gives and its resolved entry, whose `owedGrant` stays while its grant is unwritten. */
 interface AppliedDecision { resolution: Extract<Resolution, { ok: true }>; entry: State['resolved'][number] }
-/** How far a decision got: on disk (`applied`), or a lasting denial written to the grant store before that (`denial`). */
-interface DecisionProgress { applied?: AppliedDecision; denial?: GrantRecord }
+/**
+ * How far a decision got: made under the lock (`decided`), then on disk (`recorded`), with a lasting denial written to the
+ * grant store before either (`denial`).
+ */
+interface DecisionProgress { decided?: AppliedDecision; recorded?: true; denial?: GrantRecord }
 /**
  * An ask waiting in the queue, with the whole call it came from, read from its file. `callRef` names the file,
  * which every ask of one request group shares, so a listing carries the group's call once and each ask names it
@@ -468,7 +471,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
    * Every change starts by dropping what expired; this workspace's unanswered asks among them are reported once
    * written, and the call files no waiting ask names any longer are removed once the index no longer names them.
    */
-  async function update<R>(change: (state: State, commit: () => Promise<void>) => R | Promise<R>): Promise<R> {
+  async function update<R>(change: (state: State, commit: () => Promise<void>) => R | Promise<R>, committed?: () => void): Promise<R> {
     let expired: ApprovalRequest[] = []
     let released: string[] = []
     let queued = false
@@ -499,6 +502,8 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       // released, even when the change then threw, as the store forgot its own report (slice 7g review R7G-RG-1).
       if (readable) unreadableVersion = undefined
     })
+    // The change is on disk, so a step below that fails undoes none of it.
+    committed?.()
     queueVersion = undefined
     calls.remove(released)
     departed(expired.map(request => request.token), EXPIRED)
@@ -694,8 +699,8 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
   }
 
   /**
-   * One decision under the approvals lock: the guard's verdict, then the resolved entry, its notice and its once. A
-   * decision that makes a grant, or meets one owed, commits before any grant is written, and `progress` then holds it.
+   * One decision under the approvals lock: the guard's verdict, then the resolved entry, its notice and its once, which
+   * `progress` holds. A decision that makes a grant, or meets one owed, commits before any grant is written.
    */
   async function applyDecision(input: { state: State; commit: () => Promise<void>; claim: DecisionClaim; options: ResolveOptions; progress: DecisionProgress }): Promise<Resolution> {
     const { state, commit, options, progress } = input
@@ -712,10 +717,12 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     if (!verdict.ok) return { ok: false, code: verdict.code, reason: verdict.reason }
     if ('repeated' in verdict) {
       const repeated: Extract<Resolution, { ok: true }> = { ok: true, repeated: true, ...(verdict.asked ? { asked: verdict.asked } : {}) }
-      if (previous === undefined || !owesGrants(state)) return repeated
-      progress.applied = { resolution: repeated, entry: previous }
+      if (previous === undefined) return repeated
+      progress.decided = { resolution: repeated, entry: previous }
+      progress.recorded = true
+      if (!owesGrants(state)) return repeated
       await settleGrants(state, commit)
-      return owedOf(progress.applied)
+      return owedOf(progress.decided)
     }
     if (approval === undefined) throw new Error('The decision guard applied a decision to an ask the approvals ledger does not hold')
     const { wider, widenedTo } = verdict.apply
@@ -749,15 +756,14 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     if (decision.approved && decision.scope === 'once') state.once.push({ workspace, token: decision.token, subject: { rule, subject }, sessionId: approval.sessionId, ...(actor === undefined ? {} : { actor }), tool, expiresAt, ...(requestId === undefined ? {} : { requestId }), ...bound, ...decider, ...coded })
     const answered = { rule, subject }
     const resolution: Extract<Resolution, { ok: true }> = wider ? { ok: true, asked: answered, granted: wider } : widenedTo ? { ok: true, widened: { pattern: widenedTo, askedBy: subject }, asked: answered } : { ok: true, asked: answered }
-    if (owesGrants(state)) {
-      await commit()
-      progress.applied = { resolution, entry: resolved }
-    }
+    progress.decided = { resolution, entry: resolved }
     // The subject can carry a command's arguments, so the log names its size only; the action log keeps it.
     if (decision.approved) logger.info('Approval granted', { rule, scope: decision.scope, tool, subjectLength: subject.length, ...(widenedTo || wider ? { widened: true } : {}) })
-    if (!progress.applied) return resolution
+    if (!owesGrants(state)) return resolution
+    await commit()
+    progress.recorded = true
     await settleGrants(state, commit)
-    return owedOf(progress.applied)
+    return owedOf(progress.decided)
   }
 
   /**
@@ -841,16 +847,18 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
         return await update(async (state, commit) => {
           await applyRevocations(state, commit)
           return applyDecision({ state, commit, claim, options, progress })
-        })
+        }, () => { progress.recorded = true })
       } catch (error) {
-        // A failure after the decision is on disk leaves it applied: the answer says so, and names a grant it still owes.
-        const { applied, denial } = progress
-        if (applied === undefined) {
+        // A failure after the decision is on disk leaves it applied, its denial in force: the answer says so, and names a
+        // grant it still owes.
+        const { decided, recorded, denial } = progress
+        if (decided === undefined || !recorded) {
           if (denial !== undefined) await withdrawDenial(denial)
           throw error
         }
-        logger.warn('A decision was recorded, but a grant it owes was not confirmed written; it is written when the workspace opens again or the same decision is sent again', { error: withoutCause(error) })
-        return owedOf(applied)
+        const answer = owedOf(decided)
+        logger.warn('A decision was recorded, but a step after it failed', { error: withoutCause(error), ...(answer.grantOwed ? { grantOwed: true } : {}) })
+        return answer
       }
     },
 
