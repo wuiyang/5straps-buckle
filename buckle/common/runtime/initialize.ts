@@ -2,14 +2,27 @@ import { createRuntimeOwner, type Logger, type RequestCli, type RuntimeOwner } f
 import { requireOwnerOnly } from '../adapters/file-modes.js'
 import type { NodeConfig } from './config.js'
 import { logger } from './log.js'
+import { SERVE_SESSION, stdioSession, type FaceSession } from '../services/workspaces/face-session.js'
 import type { WorkspaceManager } from '../services/workspaces/workspace-manager.js'
 import type { AskName } from '../services/workspaces/migration.js'
 import { createServiceAccessors, currentInteraction, defineBuckleServices, serviceList, type BuckleServices } from './services.js'
 
 export type RuntimeRole = 'server' | 'mcp' | 'cli'
 
+/**
+ * The session each role's face holds in the workspaces it opens: serve's HTTP MCP, and each MCP process's own. A CLI
+ * process holds none: its calls share `cli`, which only idling or a revoke ends.
+ */
+const FACE_SESSIONS: Record<RuntimeRole, () => FaceSession | undefined> = {
+  server: () => SERVE_SESSION,
+  mcp: stdioSession,
+  cli: () => undefined,
+}
+
 export interface BuckleCommon {
   readonly role: RuntimeRole
+  /** The session this process's face holds, ended as each workspace opens or as the process closes, as it says. */
+  readonly faceSession: FaceSession | undefined
   readonly owner: RuntimeOwner
   readonly services: BuckleServices
   /**
@@ -36,11 +49,13 @@ export function initializeCommon(input: InitializeCommonInput): BuckleCommon {
   let requester: RequestCli | undefined
   // The owner needs the definitions; their factories run after it exists and register close steps on it.
   const interaction = currentInteraction({ owner: () => owner, requester: () => requester })
-  const definitions = defineBuckleServices({ config: input.config, interaction, onClose: (stage, name, closer) => owner.onClose(stage, name, closer), ...(input.askName ? { askName: input.askName } : {}) })
+  const faceSession = FACE_SESSIONS[input.role]()
+  const definitions = defineBuckleServices({ config: input.config, interaction, onClose: (stage, name, closer) => owner.onClose(stage, name, closer), ...(faceSession ? { faceSession } : {}), ...(input.askName ? { askName: input.askName } : {}) })
   const owner = createRuntimeOwner({ name: `buckle-${input.role}`, services: serviceList(definitions), logger: input.logger })
   const services = createServiceAccessors({ owner, definitions, config: input.config })
   return {
     role: input.role,
+    faceSession,
     owner,
     services,
     bindRequester(requestCli) {

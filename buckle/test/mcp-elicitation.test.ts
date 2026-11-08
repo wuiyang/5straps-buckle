@@ -69,7 +69,7 @@ function gatedServer(decide: ApprovalHost['decide'] = async () => APPLIED, waiti
   const forms = createFormsBackend({ workspace: () => ({ id: 'default', name: 'Fixture workspace' }), node: 'node-7', approves: () => judgeApproves })
   void forms.open({ source: SOURCES.forms, reach: { lasting: true, floor: true, sameCaller: false }, decide, skipSave: async () => ({ status: 'skipped' }), pending: asks, ask: token => asks().find(ask => ask.token === token), log: () => undefined })
 
-  return createMcpServer({ runtime, serverName: 'buckle-test', serverId: 'node-7', version: '0.0.0', forms })
+  return createMcpServer({ runtime, serverName: 'buckle-test', serverId: 'node-7', version: '0.0.0', sessionId: 'mcp', forms })
 }
 
 /** The handler the server registered, which is where the elicitation branch is chosen. */

@@ -33,9 +33,9 @@ function stdioCall(approvalTimeoutMs: number | null) {
     approvalForms: () => false, invoke,
   } as unknown as BuckleRuntime
   bindFormsOpener(runtime, () => undefined)
-  const server = createStdioServer({ runtime, config: { serverName: 'stdio-test', serverId: 'node-1', approvalTimeoutMs }, callScope: run => run(), beforeCall: async () => undefined })
+  const server = createStdioServer({ runtime, config: { serverName: 'stdio-test', serverId: 'node-1', approvalTimeoutMs }, sessionId: 'stdio:hold', callScope: run => run(), beforeCall: async () => undefined })
   const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown, context: ServerContext) => Promise<unknown> }> })._registeredTools
-  const context = { sessionId: 'stdio-1', mcpReq: { id: 1, method: 'tools/call', requestState: () => undefined } } as unknown as ServerContext
+  const context = { mcpReq: { id: 1, method: 'tools/call', requestState: () => undefined } } as unknown as ServerContext
   return { invoke, call: () => tools['held_tool']!.handler({}, context) as Promise<unknown> }
 }
 

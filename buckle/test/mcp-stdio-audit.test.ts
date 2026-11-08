@@ -35,7 +35,7 @@ async function sdkFixture() {
     for (const line of chunk.toString('utf8').trim().split('\n')) replies.push(JSON.parse(line) as Record<string, unknown>)
   })
   const transport = createAuditedStdioTransport({ transport: createStdioWire({ stdin, stdout, maxBufferBytes: 1_048_576 }), actions: runtime.actions, workspaceId: 'default', isKnownTool: name => runtime.registry().has(name) })
-  const handle = serveStdio(() => createMcpServer({ runtime, serverName: 'audit-test', version: '0.0.0' }), { transport })
+  const handle = serveStdio(() => createMcpServer({ runtime, serverName: 'audit-test', version: '0.0.0', sessionId: 'stdio:audit' }), { transport })
   cleanup.push(async () => { await handle.close(); stdin.destroy(); stdout.destroy() })
   const call = async (id: string | number, method: string, params: Record<string, unknown>) => {
     stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)

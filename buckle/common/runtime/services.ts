@@ -13,6 +13,7 @@ import { createFileClientKeys } from '../adapters/keys/file-client-keys.js'
 import { openFileNonceStore } from '../adapters/approval/file-nonce-store.js'
 import { clientKeysPath, nodeKeyPath, requestNoncesPath, setupSessionsPath, type NodeConfig } from './config.js'
 import type { AskName } from '../services/workspaces/migration.js'
+import type { FaceSession } from '../services/workspaces/face-session.js'
 
 // Typed accessors over the runtime owner's registry (nitro/runtime.md, Lifetimes).
 export interface BuckleServices {
@@ -53,38 +54,40 @@ export interface BuckleServiceDefinitions {
 type OnClose = (stage: CloseStage, name: string, closer: Closer) => void
 
 /**
- * What each workspace runtime closes at shutdown, stage by stage (runtime.md, Lifecycle): the settings watcher at
- * 'timers', so a removed folder wakes no closed runtime; approval waits at 'waiters', keeping their asks; running tool
+ * What each workspace runtime closes at shutdown, stage by stage (runtime.md, Lifecycle): at 'timers', the settings
+ * watcher, so a removed folder wakes no closed runtime, and the process's face session, before any wait is settled, so
+ * its asks are withdrawn; the other approval waits at 'waiters', keeping their asks; running tool
  * calls at 'jobs', answering before connections close; terminals, language servers, and browser sessions at 'streams';
  * the ownership lock at 'locks' and the history database at 'databases', after the services that use them; queued
  * audit entries and action reports at 'sinks', before the logger and the action log writer.
  */
 function closeWithOwner(input: { onClose: OnClose; runtimes: () => Promise<BuckleRuntime[]> }): void {
   const each = (step: (runtime: BuckleRuntime) => Promise<unknown>) => async () => { for (const runtime of await input.runtimes()) await step(runtime) }
-  // Browser sessions and language servers close for every workspace at once, inside the step's one limit (review L14 of B20-B22).
-  const all = (step: (runtime: BuckleRuntime) => Promise<unknown>) => async () => {
+  // Every workspace at once, inside the step's one limit, so one that fails stops none of the others (review L14 of B20-B22).
+  const all = (step: (runtime: BuckleRuntime) => Promise<unknown>, failed: string) => async () => {
     const results = await Promise.allSettled((await input.runtimes()).map(step))
     const failures = results.flatMap(result => (result.status === 'rejected' ? [result.reason] : []))
-    if (failures.length > 0) throw new AggregateError(failures, 'Some workspaces could not close their sessions')
+    if (failures.length > 0) throw new AggregateError(failures, failed)
   }
   input.onClose('timers', 'settings watchers', each(async runtime => runtime.closeWatchers()))
+  input.onClose('timers', 'face sessions', all(runtime => runtime.endFaceSession(), 'Some workspaces could not end this process\'s session, whose approvals then end at idle or by revoke'))
   input.onClose('waiters', 'approval waits', each(runtime => runtime.closeApprovals()))
   input.onClose('jobs', 'tool calls', each(runtime => runtime.cancelInvocations()))
   input.onClose('streams', 'workbench terminals', each(runtime => runtime.workbenches.stopTerminals()))
-  input.onClose('streams', 'language servers and browser sessions', all(runtime => runtime.closeSessions()))
+  input.onClose('streams', 'language servers and browser sessions', all(runtime => runtime.closeSessions(), 'Some workspaces could not close their sessions'))
   input.onClose('locks', 'workbench ownership', each(runtime => runtime.workbenches.close()))
   input.onClose('databases', 'workspace history', each(runtime => runtime.history.close()))
   input.onClose('sinks', 'action reports', each(runtime => runtime.reporter.flush()))
   input.onClose('sinks', 'audit log queue', async () => { await closeLogService({ deadlineMs: LOG_CLOSE_DEADLINE_MS }) })
 }
 
-export function defineBuckleServices(input: { config: NodeConfig; interaction: InteractionSource; onClose: OnClose; askName?: AskName }): BuckleServiceDefinitions {
+export function defineBuckleServices(input: { config: NodeConfig; interaction: InteractionSource; onClose: OnClose; faceSession?: FaceSession; askName?: AskName }): BuckleServiceDefinitions {
   // One set of roots for every workspace on the node: a program found in any of them is run by none (NodeRoots).
   const nodeRoots = nodeRootsOf(input.config)
   const workspaces = defineSingleton<WorkspaceManager>({
     name: 'WorkspaceManager',
     create: async () => {
-      const manager = await openWorkspaceManager({ config: input.config, interaction: input.interaction, nodeRoots, ...(input.askName ? { askName: input.askName } : {}) })
+      const manager = await openWorkspaceManager({ config: input.config, interaction: input.interaction, nodeRoots, ...(input.faceSession ? { faceSession: input.faceSession } : {}), ...(input.askName ? { askName: input.askName } : {}) })
       closeWithOwner({ onClose: input.onClose, runtimes: () => manager.opened() })
       return manager
     },

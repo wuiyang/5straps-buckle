@@ -169,11 +169,11 @@ describe('a call inside a script that needs a person', () => {
 
   it('shows the nested ask whole in an MCP host\'s form, and runs once the host retries with the answer', async () => {
     const { workspace, runtime } = await node({ BUCKLE_APPROVAL_FORMS: 'true' })
-    const server = createMcpServer({ runtime, serverName: 'buckle-test', serverId: 'node-7', version: '0.0.0', forms: openForms(runtime, { face: 'stdio', node: 'node-7' }), followToolChanges: false })
+    const server = createMcpServer({ runtime, serverName: 'buckle-test', serverId: 'node-7', version: '0.0.0', sessionId: 'mcp-1', forms: openForms(runtime, { face: 'stdio', node: 'node-7' }), followToolChanges: false })
     const call = (responses?: Record<string, unknown>) => {
       const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown, context: ServerContext) => Promise<unknown> }> })._registeredTools
       const envelope = { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } }
-      return tools['code_run']!.handler({ script: READ_THEN_WRITE }, { sessionId: 'mcp-1', mcpReq: { id: 1, method: 'tools/call', requestState: () => undefined, envelope, ...(responses ? { inputResponses: responses } : {}) } } as unknown as ServerContext)
+      return tools['code_run']!.handler({ script: READ_THEN_WRITE }, { mcpReq: { id: 1, method: 'tools/call', requestState: () => undefined, envelope, ...(responses ? { inputResponses: responses } : {}) } } as unknown as ServerContext)
     }
 
     const first = await call() as { resultType: string; inputRequests: Record<string, { params: { message: string } }> }

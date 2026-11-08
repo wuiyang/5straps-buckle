@@ -262,7 +262,7 @@ async function formsNode() {
   await settings.update(current => ({ ...current, approval: { ...current.approval, forms: true } }))
   const runtime = await createRuntime({ config, interaction: fixedInteraction(NOBODY) })
   runtimes.push(runtime)
-  const server = createMcpServer({ runtime, serverName: 'caller-mcp', version: '0', followToolChanges: false, forms: openForms(runtime, { face: 'stdio' }) })
+  const server = createMcpServer({ runtime, serverName: 'caller-mcp', version: '0', sessionId: 'mcp', followToolChanges: false, forms: openForms(runtime, { face: 'stdio' }) })
   return { workspace, runtime, write: hostTool(server, 'fs_write') }
 }
 

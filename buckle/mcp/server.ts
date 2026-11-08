@@ -22,6 +22,8 @@ export interface McpServerOptions {
   /** The node's serverId, which an elicited action names as the node's terminal names it. */
   serverId?: string
   version: string
+  /** The session every call it serves runs in: the face's own, as no transport here names one. */
+  sessionId: string
   /**
    * The face's forms, through which a host's answers decide under the face's forms source while the workspace's forms
    * setting is on, read at each call: over stdio as the forms source, over HTTP as http-forms, which the agent's token
@@ -109,7 +111,7 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
           const wait = elicits && answered?.holds !== true ? { mode: 'none' as const } : shorterWait(options.approvalWait?.(), hints.approvalWait)
 
           const { response, replay } = await invokeJoined({
-            runtime, joins: joinsOf(runtime), tool: tool.capability.name, args: args as JsonObject, hints, approvalTokens, sessionId: mcpSessionId(context), signal: context.mcpReq?.signal,
+            runtime, joins: joinsOf(runtime), tool: tool.capability.name, args: args as JsonObject, hints, approvalTokens, sessionId: options.sessionId, signal: context.mcpReq?.signal,
             ...(options.isCancel ? { isCancel: options.isCancel } : {}), ...(wait ? { wait } : {}),
           })
 
@@ -122,7 +124,7 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
         } catch (error) {
           return failedCall(error)
         }
-      }, { sessionId: mcpSessionId(context) }),
+      }, { sessionId: options.sessionId }),
     ))
   }
   return registrations
@@ -350,8 +352,4 @@ function toCallToolResult(response: Extract<InvokeResponse, { outcome: 'ok' | 'e
 function transportSender(): AnswerSender | undefined {
   const caller = useScopeSafe()?.context.actor
   return caller === undefined ? undefined : { caller }
-}
-
-function mcpSessionId(context: { sessionId?: string }): string {
-  return context.sessionId ?? 'mcp'
 }

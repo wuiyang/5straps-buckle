@@ -93,7 +93,7 @@ const accepted = (token: string, content: { approve: boolean; scope: 'once' | 's
  */
 async function mcpNode(input: { trusted: boolean }) {
   const context = await node({ forms: input.trusted })
-  const server = createMcpServer({ runtime: context.runtime, serverName: 'current-mcp', version: '0', followToolChanges: false, ...(input.trusted ? { forms: openForms(context.runtime, { face: 'stdio' }) } : {}) })
+  const server = createMcpServer({ runtime: context.runtime, serverName: 'current-mcp', version: '0', sessionId: 'mcp', followToolChanges: false, ...(input.trusted ? { forms: openForms(context.runtime, { face: 'stdio' }) } : {}) })
   return { ...context, tool: (name: string) => mcpTool(server, name), waiting: () => context.runtime.approvalService.pending().map(request => request.token) }
 }
 

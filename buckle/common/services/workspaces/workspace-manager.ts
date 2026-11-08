@@ -29,6 +29,7 @@ import { NODE_SCOPE } from '../../types/ports/client-keys.js'
 import { workspaceIdFor } from './workspace-id.js'
 import { assertNodeDefaults, browserInForceRefusal, defaultSettings, openSettingsFile, ownerMounts, ownMount, resolveSettings, scopeOf, settingsPath, withOwnerMounts, withPolicy, WorkspaceSettingsError, type WorkspaceSettings } from './workspace-settings.js'
 import type { OwnerMount } from '../../domain/mount-table.js'
+import type { FaceSession } from './face-session.js'
 
 export { WorkspaceError, WorkspaceRegistryError, WORKSPACE_REGISTRY_UNREADABLE } from './registry.js'
 
@@ -127,7 +128,7 @@ export function registeredRoots(stateDirectory: string, workspaces: readonly Pic
 }
 
 /** The node's workspaces (D83): migrates a node set up before the workspace model first (migrateNode), then serves the registry. */
-export async function openWorkspaceManager(input: { config: NodeConfig; interaction?: InteractionSource; platform?: NodeJS.Platform; nodeRoots?: NodeRoots; askName?: AskName; storedPath?: (path: string) => string }): Promise<WorkspaceManager> {
+export async function openWorkspaceManager(input: { config: NodeConfig; interaction?: InteractionSource; platform?: NodeJS.Platform; nodeRoots?: NodeRoots; faceSession?: FaceSession; askName?: AskName; storedPath?: (path: string) => string }): Promise<WorkspaceManager> {
   assertNodeDefaults(input.config.workspaceDefaults)
   for (const notice of await migrateNode({ node: input.config, ...(input.platform ? { platform: input.platform } : {}), ...(input.askName ? { askName: input.askName } : {}) })) logger.warn(notice)
   const manager = createWorkspaceManager(input)
@@ -135,7 +136,7 @@ export async function openWorkspaceManager(input: { config: NodeConfig; interact
   return manager
 }
 
-function createWorkspaceManager(input: { config: NodeConfig; interaction?: InteractionSource; platform?: NodeJS.Platform; nodeRoots?: NodeRoots; storedPath?: (path: string) => string }) {
+function createWorkspaceManager(input: { config: NodeConfig; interaction?: InteractionSource; platform?: NodeJS.Platform; nodeRoots?: NodeRoots; faceSession?: FaceSession; storedPath?: (path: string) => string }) {
   const node = input.config
   const platform = input.platform ?? process.platform
   const stateRoot = nativePath(realpathSync.native(node.stateDirectory))
@@ -495,7 +496,7 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
           // `reportUrl`, `reportToken` and `approvalWebhook` come with the node's settings on purpose: every action a
           // workspace reports carries its own workspaceId, and a notification names the workspace that answers it.
           const config = workspaceConfig(node, { id, name: workspace.name, nodeFolder: workspace.nodeFolder === true, dir, ...scopeOf(settings, node.workspaceDefaults) })
-          const opening: Promise<ManagedWorkspace> = createRuntime({ config, workspaceId: id, nodeRoots, auditHealth, executionBudget, serving: () => serving(id), browserHeldBy: () => manager.browserHeldBy(id), ...(input.interaction ? { interaction: input.interaction } : {}) })
+          const opening: Promise<ManagedWorkspace> = createRuntime({ config, workspaceId: id, nodeRoots, auditHealth, executionBudget, serving: () => serving(id), browserHeldBy: () => manager.browserHeldBy(id), ...(input.faceSession ? { faceSession: input.faceSession } : {}), ...(input.interaction ? { interaction: input.interaction } : {}) })
             .then((runtime) => {
               const managed = { config, runtime }
               registrations.set(managed, { dir: workspace.dir, createdAt: workspace.createdAt })

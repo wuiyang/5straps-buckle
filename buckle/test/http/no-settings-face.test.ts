@@ -50,7 +50,7 @@ describe('no face exposes node settings', () => {
 
   it('registers no MCP tool that reads or writes settings', async () => {
     const { runtime } = await node()
-    const server = createMcpServer({ runtime, serverName: 'no-settings', version: '0.0.0' })
+    const server = createMcpServer({ runtime, serverName: 'no-settings', version: '0.0.0', sessionId: 'mcp' })
     const names = Object.keys((server as unknown as { _registeredTools: Record<string, unknown> })._registeredTools)
 
     expect(names.length).toBeGreaterThan(0)

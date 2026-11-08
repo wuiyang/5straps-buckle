@@ -143,7 +143,7 @@ describe('a once decided through MCP elicitation', () => {
 
   it('S2: answers the ask it names, and a retry carrying that answer with other arguments still asks', async () => {
     const setup = await node({ forms: true })
-    const server = createMcpServer({ runtime: setup.runtime, serverName: 'buckle-test', version: '0.0.0', forms: openForms(setup.runtime, { face: 'stdio' }), followToolChanges: false })
+    const server = createMcpServer({ runtime: setup.runtime, serverName: 'buckle-test', version: '0.0.0', sessionId: SESSION, forms: openForms(setup.runtime, { face: 'stdio' }), followToolChanges: false })
     const token = await asked(setup, approved('A-1'))
 
     // The answer is recorded for the ask it names, and the other arguments it rides with ask again.

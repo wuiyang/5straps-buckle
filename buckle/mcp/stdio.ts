@@ -31,6 +31,8 @@ export function mcpTarget(options: readonly string[]): McpTarget {
  */
 export async function serveMcpStdio(input: { config: NodeConfig; common: BuckleCommon; logger: Logger; target: McpTarget }): Promise<void> {
   const { common } = input
+  const session = common.faceSession
+  if (session === undefined) throw new Error('buckle mcp serves only on a common runtime opened for MCP, which mints the process\'s own session')
   await common.start()
   const workspaces = await common.services.getWorkspaces()
   const legacy = input.target.workspace === undefined && input.target.dir === undefined && input.config.callerWorkspaceRoot !== undefined ? { dir: input.config.callerWorkspaceRoot } : {}
@@ -40,19 +42,20 @@ export async function serveMcpStdio(input: { config: NodeConfig; common: BuckleC
     actions: { ...runtime.actions, record: entry => loggedIn(workspaces, runtime).record(entry) }, workspaceId: runtime.workspaceId, isKnownTool: name => runtime.registry().has(name),
   })
   const callScope = stdioCallScope(common)
-  const stdio = serveStdio(() => createStdioServer({ runtime, config, callScope, beforeCall: stillServed(workspaces, runtime) }), { transport })
+  const stdio = serveStdio(() => createStdioServer({ runtime, config, sessionId: session.sessionId, callScope, beforeCall: stillServed(workspaces, runtime) }), { transport })
   common.owner.onClose('accept', 'mcp stdio', () => stdio.close())
   input.logger.info('5straps Buckle MCP stdio ready', { serverId: config.serverId, workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), tools: runtime.registry().capabilities().length })
 }
 
 /**
- * The MCP server a stdio session is served by. The owner's own host answers an ask, so its answers count as a person's
- * while the workspace's forms setting is on; a call that asks waits the workspace's own wait, which a caller's hint may
- * shorten, where the HTTP face holds at most MCP_HOLD_MS (the MCP asks brief, item 1).
+ * The MCP server a stdio session is served by, every call in the process's own session. The owner's own host answers an
+ * ask, so its answers count as a person's while the workspace's forms setting is on; a call that asks waits the
+ * workspace's own wait, which a caller's hint may shorten, where the HTTP face holds at most MCP_HOLD_MS (the MCP asks
+ * brief, item 1).
  */
-export function createStdioServer(input: { runtime: BuckleRuntime; config: Pick<BuckleConfig, 'serverName' | 'serverId' | 'approvalTimeoutMs'>; callScope: ToolCallScope; beforeCall: () => Promise<void> }) {
+export function createStdioServer(input: { runtime: BuckleRuntime; config: Pick<BuckleConfig, 'serverName' | 'serverId' | 'approvalTimeoutMs'>; sessionId: string; callScope: ToolCallScope; beforeCall: () => Promise<void> }) {
   const { runtime, config } = input
-  return createMcpServer({ runtime, serverName: config.serverName, serverId: config.serverId, version: runtime.manifest().version, forms: openForms(runtime, { face: 'stdio', node: config.serverId }), callScope: input.callScope, isCancel: isExplicitCancel, beforeCall: input.beforeCall, approvalWait: () => workspaceWait(config.approvalTimeoutMs) })
+  return createMcpServer({ runtime, serverName: config.serverName, serverId: config.serverId, version: runtime.manifest().version, sessionId: input.sessionId, forms: openForms(runtime, { face: 'stdio', node: config.serverId }), callScope: input.callScope, isCancel: isExplicitCancel, beforeCall: input.beforeCall, approvalWait: () => workspaceWait(config.approvalTimeoutMs) })
 }
 
 /**

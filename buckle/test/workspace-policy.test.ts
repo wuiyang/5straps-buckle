@@ -172,7 +172,7 @@ it('keeps its tool denials across policy replacement and exposes disabled instal
 
 it('refreshes MCP registrations when a workspace disables and re-enables tools', async () => {
   const runtime = await workspace(policy())
-  const server = createMcpServer({ runtime, serverName: 'policy-test', version: '1.0.0' })
+  const server = createMcpServer({ runtime, serverName: 'policy-test', version: '1.0.0', sessionId: 'mcp' })
   const names = () => Object.keys((server as unknown as { _registeredTools: Record<string, unknown> })._registeredTools)
   expect(names()).toContain('fs_read')
   await runtime.policy.apply({ ...policy(), tools: { allow: [], deny: [] } })

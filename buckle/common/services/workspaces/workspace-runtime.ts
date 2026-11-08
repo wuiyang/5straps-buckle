@@ -75,6 +75,7 @@ import type { LedgerGrants } from '../../types/ports/grant-store.js'
 import { nullReporter, type Reporter } from '../../types/ports/reporter.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../approvals/approval-registry.js'
 import { bindFormsOpener } from './forms-opener.js'
+import type { FaceSession } from './face-session.js'
 import { approvalFaceOf, createApprovalService, type ApprovalService } from '../approvals/approval-service.js'
 import type { CoreApprovalApi } from '../approvals/core-approval-api.js'
 import { createApprovalGate, type ApprovalGate } from '../approvals/approval-gate.js'
@@ -263,6 +264,8 @@ export interface BuckleRuntime {
   reload(): Promise<void>
   /** Shutdown's timers step: closes the settings-folder watcher (Q2) and stops the idle sweep. Idempotent. */
   closeWatchers(): void
+  /** Shutdown's face session step: ends the session this process's face holds here, where it holds one. */
+  endFaceSession(): Promise<void>
   onToolsChanged(listener: () => void): void
 }
 
@@ -289,6 +292,8 @@ interface RuntimeInput {
   packageScanner?: PackageScanner
   /** The decision AI's quick stage, for a test; absent, each provider's is built from the node's BUCKLE_QUICK_JUDGE_API_KEY. */
   quickJudge?: QuickJudge
+  /** The session this process's face holds here, ended as the runtime opens where it says so, and at endFaceSession. */
+  faceSession?: FaceSession
 }
 
 /** The settings watcher's debounce (Q2): a change is taken up this long after the last write, within the 100 to 250 ms the brief allows. */
@@ -405,6 +410,9 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     decisionAudit: createLoggedDecisionAudit({ actions, workspaceId }),
   })
   input.onApprovalCleanup(() => approvalService.close())
+  // Before any call is served: a face session an earlier process left cannot clear one. A failure fails the open.
+  const face = input.faceSession
+  if (face?.endsAtOpen) await approvalService.endSessions({ ending: { sessionId: face.sessionId }, cause: face.endsAtOpen })
   const approvalGate = createApprovalGate({ ledger: approvals, grants, service: approvalService, sessionsFrom: () => sessionIdle.sessionsFrom() })
   const switchStore = createFileDangerouslyAllowStore({ filePath: dangerouslyAllowPath(config), workspace: workspaceId, lockDeadlineMs })
   const reporter = input.reporter ?? (config.reportUrl && config.reportToken
@@ -662,6 +670,9 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
 
     onToolsChanged: listener => void listeners.push(listener),
     closeWatchers: () => { watcherClosed = true; clearInterval(sessionSweep); if (watcherPending) clearTimeout(watcherPending); watcherPending = undefined; settingsWatcher?.close(); settingsWatcher = undefined },
+    async endFaceSession() {
+      if (face) await approvalService.endSessions({ ending: { sessionId: face.sessionId }, cause: face.endsAtClose })
+    },
   }
 
   // A one-shot command does not stay open for it: the next call anywhere checks before it runs.

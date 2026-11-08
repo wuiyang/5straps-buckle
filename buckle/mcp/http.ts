@@ -1,4 +1,5 @@
 import { createMcpHandler } from '@modelcontextprotocol/server'
+import { HTTP_MCP_SESSION } from '../common/services/workspaces/face-session.js'
 import type { ManagedWorkspace } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { McpHttpHandlers } from '../common/types/ports/mcp-http.js'
@@ -25,7 +26,7 @@ export function createMcpHttpHandlers(): McpHttpHandlers {
     const forms = openForms(runtime, { face: 'http', node: config.serverId })
     // A per-request server answers one request, so it does not follow tool changes itself.
     // The workspace's wait is read at each call, so a change to it applies from the next one, and at most MCP_HOLD_MS.
-    const handler = createMcpHandler(() => createMcpServer({ runtime, serverName: config.serverName, serverId: config.serverId, version: runtime.manifest().version, forms, followToolChanges: false, approvalWait: () => mcpWait(config.approvalTimeoutMs) }))
+    const handler = createMcpHandler(() => createMcpServer({ runtime, serverName: config.serverName, serverId: config.serverId, version: runtime.manifest().version, sessionId: HTTP_MCP_SESSION, forms, followToolChanges: false, approvalWait: () => mcpWait(config.approvalTimeoutMs) }))
     runtime.onToolsChanged(() => handler.notify.toolsChanged())
     handlers.set(runtime, handler)
     open.add(handler)

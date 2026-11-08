@@ -272,7 +272,7 @@ async function stdioNode(input: { forms: boolean }) {
   const runtime = await createRuntime({ config, interaction: fixedInteraction(NOBODY) })
   runtimes.push(runtime)
   const forms = openForms(runtime, { face: 'stdio' })
-  const server = createMcpServer({ runtime, serverName: 'forms-mcp', version: '0', followToolChanges: false, forms })
+  const server = createMcpServer({ runtime, serverName: 'forms-mcp', version: '0', sessionId: 'mcp', followToolChanges: false, forms })
   const waitingTokens = () => runtime.approvalService.pending().map(asked => asked.token)
   return { workspace, runtime, forms, setForms, breakSettings, waitingTokens, write: hostTool(server, 'fs_write') }
 }

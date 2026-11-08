@@ -67,7 +67,7 @@ async function stdioNode(failures: number) {
   runtimes.push(runtime)
   Object.assign(failing, { rename: grantsPath(config), count: failures })
   // Every call runs as the stdio face's transport names its caller, as stdioCallScope does.
-  const server = createMcpServer({ runtime, serverName: 'save-form-mcp', version: '0', followToolChanges: false, forms: openForms(runtime, { face: 'stdio' }), callScope: run => runInScope(createOperationScope({ owner, context: { actor: STDIO } }), run) })
+  const server = createMcpServer({ runtime, serverName: 'save-form-mcp', version: '0', sessionId: 'mcp', followToolChanges: false, forms: openForms(runtime, { face: 'stdio' }), callScope: run => runInScope(createOperationScope({ owner, context: { actor: STDIO } }), run) })
   const ledger = () => JSON.parse(readFileSync(approvalsPath(config), 'utf8')) as { once: unknown[]; resolved: Array<{ request?: { token: string }; grant?: { save: string } }> }
   const results = async (tool = 'fs_write') => (await auditEntries(runtime.actions, 200)).filter(entry => entry.tool === tool && entry.event === 'result')
   return { workspace, config, runtime, server, setForms, ledger, results, write: hostTool(server, 'fs_write'), read: hostTool(server, 'fs_read'), batch: hostTool(server, 'fs_write_batch'), waitingTokens: () => runtime.approvalService.pending().map(asked => asked.token) }
@@ -134,7 +134,7 @@ describe('the MCP save form, over stdio', () => {
     const reopened = await createRuntime({ config: node.config, interaction: fixedInteraction(NOBODY) })
     runtimes.push(reopened)
     expect(reopened.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', scope: 'session' })])
-    const server = createMcpServer({ runtime: reopened, serverName: 'save-form-mcp', version: '0', followToolChanges: false, forms: openForms(reopened, { face: 'stdio' }), callScope: run => runInScope(createOperationScope({ owner, context: { actor: STDIO } }), run) })
+    const server = createMcpServer({ runtime: reopened, serverName: 'save-form-mcp', version: '0', sessionId: 'mcp', followToolChanges: false, forms: openForms(reopened, { face: 'stdio' }), callScope: run => runInScope(createOperationScope({ owner, context: { actor: STDIO } }), run) })
     const write = hostTool(server, 'fs_write')
 
     expect((await write({ args: ARGS, responses: { [`save:${token}`]: { action: 'decline' } }, actor: STDIO })).isError).toBeUndefined()
