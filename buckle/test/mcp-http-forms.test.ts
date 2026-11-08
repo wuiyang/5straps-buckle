@@ -9,6 +9,7 @@ import { approvalsPath } from '../common/runtime/config.js'
 import { NO_INTERACTION, type Interaction } from '../common/runtime/interaction.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { openSettingsFile, settingsPath, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
+import type { ApprovalHold } from '../common/types/ports/approval-backend.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 import { createMcpHttpHandlers } from '../mcp/http.js'
 import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
@@ -39,7 +40,7 @@ afterEach(async () => {
 /** No terminal, a hold only while this process asks: a gated call answers at once. */
 const NOBODY: Interaction = { requestCli: NO_INTERACTION.requestCli, hold: 'prompt' }
 
-async function httpNode(input: { forms: boolean; environment?: Record<string, string> }) {
+async function httpNode(input: { forms: boolean; environment?: Record<string, string>; hold?: ApprovalHold }) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-http-forms-')))
   roots.push(root)
   const workspace = join(root, 'workspace')
@@ -47,7 +48,7 @@ async function httpNode(input: { forms: boolean; environment?: Record<string, st
   const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '60000', ...input.environment })
   const settings = openSettingsFile({ filePath: settingsPath(config.nodeStateDirectory ?? config.stateDirectory, config.workspaceId), fallback: () => WorkspaceSettingsSchema.parse({ version: 1 }) })
   await settings.update(current => ({ ...current, approval: { ...current.approval, forms: input.forms } }))
-  const runtime = await createRuntime({ config, interaction: fixedInteraction(NOBODY) })
+  const runtime = await createRuntime({ config, interaction: fixedInteraction(input.hold === undefined ? NOBODY : { ...NOBODY, hold: input.hold }) })
   runtimes.push(runtime)
   const managed = { config, runtime }
   const waitingTokens = () => runtime.approvalService.pending().map(asked => asked.token)
@@ -137,6 +138,25 @@ describe('the HTTP MCP face, forms on', () => {
     expect(denied.isError).toBe(true)
     expect(existsSync(join(node.workspace, 'notes.txt'))).toBe(true)
     expect(node.waitingTokens()).toEqual([])
+  })
+
+  it('holds a call sent again with its floor ask\'s form dismissed, as the serve terminal holds one, so a person\'s approval at the node during the hold runs it', async () => {
+    const node = await httpNode({ forms: true, hold: 'grace', environment: { BUCKLE_DELETE_IN_WORKSPACE: 'ask' } })
+    await node.runtime.grants.grant({ sessionId: 'mcp', rule: 'write_scope', subject: node.runtime.paths().root, scope: 'always' })
+    writeFileSync(join(node.workspace, 'notes.txt'), 'delete me')
+    const args = { paths: ['notes.txt'] }
+    const asked = await send(node, claudeCodeCall({ tool: 'fs_delete', args }))
+    const [token] = node.waitingTokens()
+    expect(formOf(asked, token!).message).toContain('dismissing it holds the call for their answer')
+
+    const before = fileVersion(approvalsPath(node.config))
+    const resent = send(node, claudeCodeCall({ tool: 'fs_delete', args, responses: { [token!]: { action: 'decline' } } }))
+    await vi.waitFor(() => expect(fileVersion(approvalsPath(node.config))).not.toBe(before), { timeout: 20_000 })
+    expect(await node.runtime.approvalService.answer({ decision: { token: token!, approved: true, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: true })
+    const ran = await resent
+    expect(ran.resultType).not.toBe('input_required')
+    expect(ran.isError).toBeUndefined()
+    expect(existsSync(join(node.workspace, 'notes.txt'))).toBe(false)
   })
 
   it('holds a form answer to its own caller: another token\'s answer to the ask is not read, and its own caller\'s runs the call', async () => {

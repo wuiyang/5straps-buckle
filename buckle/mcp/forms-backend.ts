@@ -26,8 +26,12 @@ export interface FormsBackendOptions {
 /** A decision whose lasting part did not save, which a save form asks about before the call runs. */
 export interface UnsavedDecision { decision: DecisionBody; unsaved: Unsaved }
 
-/** What a call's answers came to: the tokens the call sent again spends, and the decisions whose lasting part did not save. */
-export interface FormsAnswered { tokens: string[]; unsaved: UnsavedDecision[] }
+/**
+ * What a call's answers came to: the tokens the call sent again spends, and the decisions whose lasting part did not save.
+ * `holds`: a form came back dismissed whose ask a person at the node may give more than the form offered, so the face holds
+ * the call for their answer, as it would with forms off, before it draws the forms again.
+ */
+export interface FormsAnswered { tokens: string[]; unsaved: UnsavedDecision[]; holds: boolean }
 
 /**
  * An MCP host's forms: drawn in the call's own answer, and decided when the retried call carries them back. Each form
@@ -76,7 +80,7 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
   const live = () => (closed ? undefined : host)
 
   async function decideAnswers(responses: Record<string, unknown>, sender: AnswerSender | undefined): Promise<FormsAnswered> {
-    const answered: FormsAnswered = { tokens: [], unsaved: [] }
+    const answered: FormsAnswered = { tokens: [], unsaved: [], holds: false }
     const host = live()
     if (!host) return answered
     const keys = roundKeys({ host, responses })
@@ -89,7 +93,12 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
         if (await settleSave({ host: opened, token, answer: saveAnswerIn(responses, key), sender })) answered.tokens.push(token)
         continue
       }
-      if (!waiting.has(key)) continue
+      const ask = waiting.get(key)
+      if (ask === undefined) continue
+      if (dismissed(responses, key)) {
+        if (moreAtTheNode(ask, opened.reach)) answered.holds = true
+        continue
+      }
       const answer = acceptedContent(responses, key, FormAnswerSchema)
       if (!answer) continue
       const decision = decisionOf(key, answer)
@@ -164,7 +173,7 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
     },
 
     answer(responses, sender) {
-      if (!live() || !responses) return Promise.resolve({ tokens: [], unsaved: [] })
+      if (!live() || !responses) return Promise.resolve({ tokens: [], unsaved: [], holds: false })
       const run = decideAnswers(responses, sender)
       answering.add(run)
       const forget = () => { answering.delete(run) }
@@ -207,6 +216,17 @@ function skipEndingOf(receipt: SkipReceipt): SaveEnding {
   if (receipt.status === 'refused') return { ending: 'refused', error: receipt.error }
   if (receipt.status === 'unfinished') return { ending: 'left', kind: 'removal' }
   return { ending: 'skipped', removed: receipt.removed === true }
+}
+
+function dismissed(responses: Record<string, unknown>, key: string): boolean {
+  const view = inputResponse(responses, key)
+  return view.kind === 'elicit' && view.action !== 'accept'
+}
+
+/** Whether a person at the node may give an ask more than its form offers: a floor ask's approval, or a scope past the call. */
+function moreAtTheNode(ask: FullAsk, reach: SourceReach): boolean {
+  if (ask.action === undefined) return false
+  return (ask.policy.floor && !reach.floor) || (!reach.lasting && ask.policy.offeredScopes.some(scope => scope !== 'once'))
 }
 
 /** A save form's answer: retry or skip as accepted, a decline as a skip, and a cancel, or none, as leaving it. */
@@ -268,11 +288,11 @@ function formsFor(input: { approvals: ApprovalRequest[]; waiting: FullAsk[]; rea
 }
 
 function floorNote(command: string): string {
-  return `  approve:  a person approves this at the node, at the serve terminal or with ${command}; this form only denies it`
+  return `  approve:  a person approves this at the node, at the serve terminal or with ${command}; this form only denies it, and dismissing it holds the call for their answer`
 }
 
 function onceNote(command: string): string {
-  return `  scope:    this form approves it once; for the session or always, approve it at the serve terminal or with ${command}`
+  return `  scope:    this form approves it once; for the session or always, approve it at the serve terminal or with ${command}, then dismiss this form to hold the call for that answer`
 }
 
 /** The whole call a form shows, where the ask came with one. */

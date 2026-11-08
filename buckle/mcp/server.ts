@@ -105,7 +105,8 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
           const saving = elicits?.saveForms(answered?.unsaved ?? [], sender)
           if (saving) return saving
           const approvalTokens = answered?.tokens ?? []
-          const wait = elicits ? { mode: 'none' as const } : shorterWait(options.approvalWait?.(), hints.approvalWait)
+          // A dismissed form a person at the node may answer further holds the call for them, as forms off does.
+          const wait = elicits && answered?.holds !== true ? { mode: 'none' as const } : shorterWait(options.approvalWait?.(), hints.approvalWait)
 
           const { response, replay } = await invokeJoined({
             runtime, joins: joinsOf(runtime), tool: tool.capability.name, args: args as JsonObject, hints, approvalTokens, sessionId: mcpSessionId(context), signal: context.mcpReq?.signal,
