@@ -108,13 +108,18 @@ export interface ApprovalError {
 
 export type AskState = 'pending' | 'abandoned' | 'approved' | 'denied' | 'expired' | 'withdrawn'
 
-/** Where a session or always approval's grant stands: `owed` until written, then `saved`, or `skipped` once given up. */
-export const GRANT_SAVES = ['owed', 'saved', 'skipped'] as const
+/**
+ * Where a session or always approval's grant stands: `owed` until written, then `saved`; `skipped` once its person gave it
+ * up, and `skipping` while a grant given up that may have saved is not yet confirmed removed, which the next decision or
+ * the workspace opening again removes.
+ */
+export const GRANT_SAVES = ['owed', 'saved', 'skipping', 'skipped'] as const
 export type GrantSave = (typeof GRANT_SAVES)[number]
 
 /**
  * `save`: where the grant of a session or always approval stands. While it is `owed`, only the call that asked runs on
- * it, and `saveError` says why, naming no path; the same decision sent again tries the write again.
+ * it, and `saveError` says why, naming no path; the same decision sent again tries the write again. While it is
+ * `skipping`, `saveError` says why its removal is not confirmed.
  */
 export type DecisionReceipt =
   | { status: 'applied'; state: 'approved' | 'denied'; assurance: Assurance; save?: GrantSave; saveError?: string }
@@ -123,12 +128,13 @@ export type DecisionReceipt =
 
 /**
  * What a skip came to: `repeated` where the save was skipped already, `removed` where its grant had saved and is gone.
- * `unfinished`: skipped, but the grant had saved and could not be removed, so it stands until the skip is sent again;
- * `message` says why, naming no path.
+ * `unfinished`: skipped, but a grant that may have saved is not confirmed removed: `stands` where it had saved and could
+ * not be removed, false where the grants could not be read. The next decision, the workspace opening again, or the skip
+ * sent again removes it; `saveError` says why, naming no path.
  */
 export type SkipReceipt =
   | { status: 'skipped' | 'repeated'; removed?: true }
-  | { status: 'unfinished'; message: string }
+  | { status: 'unfinished'; stands: boolean; saveError: string }
   | { status: 'refused'; error: ApprovalError }
 
 export type EventType =

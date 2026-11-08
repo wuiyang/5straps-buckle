@@ -211,5 +211,6 @@ export function backendReceipt(receipt: CoreDecisionReceipt): DecisionReceipt {
 /** What a skip came to, as a backend or a core client reads it. */
 export function skipReceiptOf(result: SkipResolution): SkipReceipt {
   if (!result.ok) return { status: 'refused', error: { code: result.code, message: result.reason, retryable: false } }
+  if (result.unfinished) return { status: 'unfinished', ...result.unfinished }
   return { status: result.repeated ? 'repeated' : 'skipped', ...(result.removed ? { removed: true } : {}) }
 }

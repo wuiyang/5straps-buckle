@@ -16,12 +16,21 @@ export function unsavedApproval(input: { scope: 'session' | 'always'; reason: st
   return `Approved for this call; saving it ${LASTING_SCOPE_WORDS[input.scope]} failed${input.reason === undefined ? '' : `: ${input.reason}`}`
 }
 
+/**
+ * The warning of a skip whose grant is not confirmed removed: one that had saved and could not be removed stands; where the
+ * grants could not be read, it may never have saved.
+ */
+export function unfinishedSkip(input: { stands: boolean; reason: string | undefined }): string {
+  const why = input.reason === undefined ? '' : `: ${input.reason}`
+  return input.stands ? `Skipped, but its grant had saved and could not be removed${why}` : `Skipped, but its grant, if it saved, could not be confirmed removed${why}`
+}
+
 /** A decision's receipt as each route reads it for its save: a backend's and a core client's alike. */
 export type SaveReceipt =
   | { status: 'applied' | 'repeated'; save?: GrantSave; saveError?: string }
   | { status: 'refused'; error: ApprovalError }
 
-/** What did not save: an approval's lasting grant, a lasting denial, or the removal of a saved grant a skip gave up. */
+/** What did not save: an approval's lasting grant, a lasting denial, or the removal of a grant a skip gave up. */
 export type UnsavedKind = 'approval' | 'denial' | 'removal'
 export interface Unsaved { kind: UnsavedKind; warning: string }
 export type SaveAnswer = 'retry' | 'skip'
@@ -56,8 +65,8 @@ const SAVE_QUESTIONS: Readonly<Record<UnsavedKind, { keys: ReadonlyMap<string, S
   },
   removal: {
     keys: new Map([['r', 'retry']]),
-    choices: 'r retries the removal; anything else leaves the grant until buckle grants revoke removes it',
-    left: 'Left: the grant stands until buckle grants revoke removes it',
+    choices: 'r retries the removal; anything else leaves it to the next decision or the workspace opening again, which remove it',
+    left: 'Left: the next decision or the workspace opening again removes it',
   },
 }
 
@@ -69,11 +78,15 @@ const SAVE_STEPS: Readonly<Record<UnsavedKind, Partial<Record<SaveAnswer, SaveSt
   removal: { retry: skipped },
 }
 
-/** What did not save of a decision, by its receipt: an approval left owed, or a lasting denial refused `grant_unsaved`. */
+/**
+ * What did not save of a decision, by its receipt: an approval left owed, one whose skip is not confirmed removed, or a
+ * lasting denial refused `grant_unsaved`.
+ */
 export function unsavedOf(input: { decision: DecisionBody; receipt: SaveReceipt }): Unsaved | undefined {
   const { decision: { scope }, receipt } = input
   if (scope === 'once') return undefined
   if (receipt.status === 'refused') return receipt.error.code === 'grant_unsaved' ? { kind: 'denial', warning: unsavedDenial({ scope, reason: receipt.error.saveError }) } : undefined
+  if (receipt.save === 'skipping') return { kind: 'removal', warning: unfinishedSkip({ stands: false, reason: receipt.saveError }) }
   if (receipt.save !== 'owed') return undefined
   return { kind: 'approval', warning: unsavedApproval({ scope, reason: receipt.saveError }) }
 }
@@ -119,10 +132,10 @@ async function retried(input: { decision: DecisionBody; route: SaveRoute }): Pro
   return receipt.save === 'skipped' ? { ending: 'skipped', removed: false } : { ending: 'saved' }
 }
 
-// A skip whose saved grant could not be removed asks again, about that removal.
+// A skip whose grant is not confirmed removed asks again, about that removal.
 async function skipped(input: { route: SaveRoute }): Promise<Unsaved | SaveEnding> {
   const receipt = await input.route.skipSave()
-  if (receipt.status === 'unfinished') return { kind: 'removal', warning: receipt.message }
+  if (receipt.status === 'unfinished') return { kind: 'removal', warning: unfinishedSkip({ stands: receipt.stands, reason: receipt.saveError }) }
   if (receipt.status === 'refused') return { ending: 'refused', error: receipt.error }
   return { ending: 'skipped', removed: receipt.removed === true }
 }

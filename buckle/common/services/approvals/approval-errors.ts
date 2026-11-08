@@ -21,5 +21,3 @@ export class ActionTooLargeError extends Error {
   readonly code = 'ACTION_TOO_LARGE'
 }
 
-/** A skip recorded whose grant, already saved, could not be removed: the grant stands until the skip is sent again. */
-export class SkipUnfinishedError extends Error {}

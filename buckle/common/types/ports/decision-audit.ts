@@ -30,8 +30,8 @@ export interface AuditEnding<Applied> {
 }
 
 export type DecisionEnding = AuditEnding<{ assurance: Assurance; repeated: boolean; grantOwed: boolean }>
-/** `repeated`: the save was skipped already; `removed`: its grant had saved and is gone. */
-export type SkipEnding = AuditEnding<{ repeated: boolean; removed: boolean }>
+/** `repeated`: the save was skipped already; `removed`: its grant had saved and is gone; `unfinished`: its removal is not confirmed. */
+export type SkipEnding = AuditEnding<{ repeated: boolean; removed: boolean; unfinished?: true }>
 
 /**
  * Each decision's audit, and each skip's: received before the ledger reads it, then how it ended, never inside the

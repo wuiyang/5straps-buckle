@@ -91,6 +91,18 @@ describe('the decision audit seam', () => {
     await service.close()
   })
 
+  it('tells the audit of a skip whose grant is not confirmed removed as applied, marked unfinished', async () => {
+    const { audit, entries } = recordingDecisionAudit()
+    const { registry, service, token } = await asked({ decisionAudit: audit })
+    vi.spyOn(registry, 'skipSave').mockResolvedValueOnce({ ok: true, unfinished: { stands: true, saveError: 'permission denied' } })
+    expect(await service.skip({ token, source: SOURCES.cli })).toMatchObject({ ok: true, unfinished: { stands: true } })
+    expect(entries).toEqual([
+      { step: 'skip_received', fields: { token, source: SOURCES.cli } },
+      { step: 'skip_applied', fields: { token, source: SOURCES.cli, repeated: false, removed: false, unfinished: true } },
+    ])
+    await service.close()
+  })
+
   it('audits a terminal decision the host refuses before the guard, as received and refused', async () => {
     const { audit, entries } = recordingDecisionAudit()
     const decided = Promise.withResolvers<void>()

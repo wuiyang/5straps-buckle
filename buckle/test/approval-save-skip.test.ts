@@ -14,7 +14,9 @@ import type { GrantStore } from '../common/types/ports/grant-store.js'
 import { settleAuditLogs } from './support/action-log-writer.js'
 import { fixedInteraction } from './support/interaction.js'
 import { holdLockInProcess, killHolder } from './support/lock-holder.js'
+import { inSecondProcess } from './support/registry-process.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 
 // A person may skip the save of an approval whose grant did not save: its lasting part is given up for good. Skip and the
 // settling pass each run under the approvals lock, so one goes first: a skip first leaves nothing for the pass to write,
@@ -67,13 +69,17 @@ function files(): { approvals: string; store: GrantStore } {
 
 const denied = (path: string) => Object.assign(new Error(`EACCES: permission denied, open '${path}'`), { code: 'EACCES' })
 
-/** The store, with its first `grant` writes and `revoke`s failing as a locked grants file does. */
-function flaky(store: GrantStore, fails: { grant?: number; revoke?: number }): GrantStore & { revokes: string[] } {
-  const left = { grant: fails.grant ?? 0, revoke: fails.revoke ?? 0 }
+/** The store, with its first `grant` writes, `revoke`s, and `list` reads failing as a locked grants file does. */
+function flaky(store: GrantStore, fails: { grant?: number; revoke?: number; list?: number }): GrantStore & { revokes: string[] } {
+  const left = { grant: fails.grant ?? 0, revoke: fails.revoke ?? 0, list: fails.list ?? 0 }
   const revokes: string[] = []
   return {
     ...store,
     revokes,
+    list: () => {
+      if (left.list > 0) { left.list -= 1; throw denied('/state/grants.json') }
+      return store.list()
+    },
     grant: async (input) => {
       if (left.grant > 0) { left.grant -= 1; throw denied('/state/grants.json') }
       return store.grant(input)
@@ -99,7 +105,7 @@ const keptGrant = (approvals: string, token: string): KeptGrant | undefined =>
   (JSON.parse(readFileSync(approvals, 'utf8')) as { resolved: Array<{ decision: { token: string }; grant?: KeptGrant }> }).resolved.find(entry => entry.decision.token === token)?.grant
 
 /** A decision whose grant could not be written: its entry keeps the grant owed. */
-async function owedApproval(input: { fails?: { grant?: number; revoke?: number } } = {}) {
+async function owedApproval(input: { fails?: { grant?: number; revoke?: number; list?: number } } = {}) {
   const { approvals, store } = files()
   const grants = flaky(store, { grant: 1, ...input.fails })
   const registry = createApprovalRegistry(grants, approvals)
@@ -232,22 +238,72 @@ describe('a settling pass before the skip', () => {
     expect(store.list()).toEqual([])
   })
 
-  it('records the skip and says so, naming no path, when the grant it would remove cannot be removed, and a skip again removes it', async () => {
+  it('records the skip and says its saved grant stands, naming no path, when it cannot be removed, and a skip again removes it', async () => {
     const { approvals, store, registry, token, grants } = await owedApproval({ fails: { revoke: 1 } })
     await createApprovalRegistry(store, approvals).recover()
 
-    const failed = await registry.skipSave({ token, source: cli }).then(() => undefined, (error: unknown) => error)
-    expect(failed).toBeInstanceOf(Error)
-    expect((failed as Error).message).toBe('Skipped, but its grant could not be removed: permission denied; skip again to remove it')
-    expect(keptGrant(approvals, token)?.save).toBe('skipped')
-    expect(store.list()).toHaveLength(1)
-    await createApprovalRegistry(store, approvals).recover()
+    expect(await registry.skipSave({ token, source: cli })).toEqual({ ok: true, unfinished: { stands: true, saveError: 'permission denied' } })
+    expect(keptGrant(approvals, token)?.save).toBe('skipping')
     expect(store.list()).toHaveLength(1)
 
     expect(await registry.skipSave({ token, source: cli })).toEqual({ ok: true, repeated: true, removed: true })
     expect(grants.revokes).toHaveLength(2)
     expect(store.list()).toEqual([])
+    expect(keptGrant(approvals, token)?.save).toBe('skipped')
   })
+})
+
+describe('a skip whose removal is not confirmed', () => {
+  it('stays in the ledger past ten minutes, and the workspace opening again removes its grant by the id it kept', async () => {
+    const { approvals, store, registry, token, kept } = await owedApproval({ fails: { revoke: 1 } })
+    await createApprovalRegistry(store, approvals).recover()
+    expect(await registry.skipSave({ token, source: cli })).toMatchObject({ ok: true, unfinished: { stands: true } })
+
+    const later = Date.now() + 11 * 60_000
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(later)
+    await registry.sweep()
+    expect(keptGrant(approvals, token)).toEqual({ ...kept, save: 'skipping' })
+    await createApprovalRegistry(store, approvals).recover()
+    clock.mockRestore()
+
+    expect(store.list()).toEqual([])
+    expect(keptGrant(approvals, token)).toEqual({ ...kept, save: 'skipped' })
+  })
+
+  it('has its grant removed by the next decision\'s settling pass', async () => {
+    const { approvals, store, registry, token } = await owedApproval({ fails: { revoke: 1 } })
+    await createApprovalRegistry(store, approvals).recover()
+    expect(await registry.skipSave({ token, source: cli })).toMatchObject({ ok: true, unfinished: { stands: true } })
+
+    const other = await askIn(registry, 'two')
+    expect(await registry.resolve({ token: other, approved: true, scope: 'once' }, cli)).toMatchObject({ ok: true })
+    expect(store.list()).toEqual([])
+    expect(keptGrant(approvals, token)?.save).toBe('skipped')
+  })
+
+  it('skips while the grants file cannot be read, says its grant is not confirmed removed, and removes it once the file reads', async () => {
+    const { approvals, store, registry, token } = await owedApproval({ fails: { list: 1 } })
+
+    expect(await registry.skipSave({ token, source: cli })).toEqual({ ok: true, unfinished: { stands: false, saveError: 'permission denied' } })
+    expect(keptGrant(approvals, token)?.save).toBe('skipping')
+    await createApprovalRegistry(store, approvals).recover()
+    expect(store.list()).toEqual([])
+    expect(keptGrant(approvals, token)?.save).toBe('skipped')
+  })
+
+  it('is finished when the workspace opens again after a process stopped between recording the skip and removing the grant', async () => {
+    const { approvals, store, token, kept } = await owedApproval()
+    await createApprovalRegistry(store, approvals).recover()
+    const second = { approvals, grants: join(approvals, '..', 'grants.json'), workspace: 'workspace-id' }
+
+    expect(await inSecondProcess(second, { skip: token }, 'removing')).toEqual({ stopped: true })
+    expect(keptGrant(approvals, token)).toEqual({ ...kept, save: 'skipping' })
+    expect(store.list().map(grant => grant.id)).toEqual([kept.id])
+
+    await createApprovalRegistry(store, approvals).recover()
+    expect(store.list()).toEqual([])
+    expect(keptGrant(approvals, token)).toEqual({ ...kept, save: 'skipped' })
+  }, SPAWN_TEST_TIMEOUT_MS)
 })
 
 describe('who may skip, and what', () => {

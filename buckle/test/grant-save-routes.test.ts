@@ -202,7 +202,7 @@ describe('the core approval API, when a skip cannot remove the grant that had sa
     expect(await runtime.approvalApi.decide(decision)).toMatchObject({ status: 'repeated', save: 'saved' })
 
     Object.assign(failing, { rename: grantsPath(config), count: 1 })
-    expect(await runtime.approvalApi.skipSave({ source: 'cli', token })).toEqual({ status: 'unfinished', message: 'Skipped, but its grant could not be removed: permission denied; skip again to remove it' })
+    expect(await runtime.approvalApi.skipSave({ source: 'cli', token })).toEqual({ status: 'unfinished', stands: true, saveError: 'permission denied' })
     expect(runtime.grants.list()).toHaveLength(1)
     expect(await runtime.approvalApi.skipSave({ source: 'cli', token })).toEqual({ status: 'repeated', removed: true })
     expect(runtime.grants.list()).toEqual([])

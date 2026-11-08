@@ -94,12 +94,21 @@ describe('settling a decision that did not save', () => {
     expect(saveEndingLine({ ending: 'left', kind: 'denial' })).toContain('nothing was denied')
   })
 
-  it('asks again about a skip whose saved grant could not be removed, and r skips again', async () => {
-    const unfinished: SkipReceipt = { status: 'unfinished', message: 'Skipped, but its grant could not be removed: permission denied; skip again to remove it' }
-    const { route, asked, sent } = scripted({ answers: ['skip', 'retry'], skips: [unfinished, { status: 'repeated', removed: true }] })
+  it('asks again about a skip whose grant is not confirmed removed, saying whether it stands, and r skips again', async () => {
+    const stands: SkipReceipt = { status: 'unfinished', stands: true, saveError: 'permission denied' }
+    const unread: SkipReceipt = { status: 'unfinished', stands: false, saveError: 'permission denied' }
+    const { route, asked, sent } = scripted({ answers: ['skip', 'retry', 'retry'], skips: [stands, unread, { status: 'repeated', removed: true }] })
     expect(await settleUnsaved({ decision: SESSION, unsaved: approval, route })).toEqual({ ending: 'skipped', removed: true })
-    expect(asked[1]).toEqual({ kind: 'removal', warning: unfinished.message })
-    expect(sent).toEqual(['skip', 'skip'])
+    expect(asked.slice(1)).toEqual([
+      { kind: 'removal', warning: 'Skipped, but its grant had saved and could not be removed: permission denied' },
+      { kind: 'removal', warning: 'Skipped, but its grant, if it saved, could not be confirmed removed: permission denied' },
+    ])
+    expect(sent).toEqual(['skip', 'skip', 'skip'])
+    expect(saveEndingLine({ ending: 'left', kind: 'removal' })).toBe('Left: the next decision or the workspace opening again removes it.')
+  })
+
+  it('takes a decision whose skip is not confirmed removed as that removal', () => {
+    expect(unsavedOf({ decision: SESSION, receipt: { status: 'repeated', save: 'skipping', saveError: 'permission denied' } })).toEqual({ kind: 'removal', warning: 'Skipped, but its grant, if it saved, could not be confirmed removed: permission denied' })
   })
 
   it('ends with a refusal of the retry or the skip, and a skip answered after its save had been skipped elsewhere', async () => {

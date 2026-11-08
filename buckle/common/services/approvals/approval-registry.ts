@@ -18,7 +18,7 @@ import { BUILT_IN_SOURCES, type ApprovalSource } from '../../types/ports/approva
 import { logger, withoutCause } from '../../runtime/log.js'
 import { isPlainName } from '../../domain/paths.js'
 import { dropOnces, liveOnces, onceSchema, spendOnces, unspentOnces, type OnceEntry, type OnceSpend, type UnspentOnce } from './once-store.js'
-import { ActionTooLargeError, ApprovalConflictError, ApprovalLimitError, RequestIdReusedError, SkipUnfinishedError } from './approval-errors.js'
+import { ActionTooLargeError, ApprovalConflictError, ApprovalLimitError, RequestIdReusedError } from './approval-errors.js'
 import { saveFailure } from './grant-save.js'
 
 export const APPROVAL_OUTBOX_COUNT_MAX = 4096
@@ -59,6 +59,8 @@ export const MAX_PENDING_BYTES = 64 * 1_024 * 1_024
 const CALLS_DIRECTORY = 'approval-calls'
 /** The revokes and session ends made while approvals.json could not be read, beside it. */
 const REVOCATIONS_FILE = 'approval-revocations.json'
+/** The saves a settling pass still has work for: a grant to write, or a skipped grant to confirm removed. */
+const UNSETTLED_SAVES: ReadonlySet<GrantSave> = new Set(['owed', 'skipping'])
 const CALL_FILE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.json$/
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
@@ -86,11 +88,12 @@ const callFileSchema = z.object({ id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}
 const marks = { floor: z.boolean().default(true), destructive: z.boolean().default(true) }
 const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...marks, ...joinKey, ...fingerprint, notify: z.literal(true).optional(), call: askedCallSchema.optional(), callFile: callFileSchema.optional(), ...lapse })
 // grant: the session or always grant an approval makes, kept with its resolved entry under the id it is written with.
-// `save` is `owed` until the grant store holds it, then `saved`, or `skipped` once its person gave it up, which nothing
-// writes again. The entry commits first, so a grant never stands without its decision; one left owed is written when the
-// workspace opens again (recover), or by the next decision recorded or sent again, and a revoke or a session end that
-// undoes it drops it. `source`: the route that recorded the decision, which alone may skip it. A lasting denial is never
-// owed: it is written before its decision commits.
+// `save` is `owed` until the grant store holds it, then `saved`; a skip turns it `skipping` until a grant that may have
+// saved is confirmed gone, then `skipped`, which nothing writes again. The entry commits first, so a grant never stands
+// without its decision; one left owed is written, and one left skipping removed, when the workspace opens again
+// (recover) or by the next decision recorded or sent again, and a revoke or a session end that undoes an owed one drops
+// it. `source`: the route that recorded the decision, which alone may skip it. A lasting denial is never owed: it is
+// written before its decision commits.
 const sourceSchema = z.object({ id: z.string(), kind: z.enum([...BUILT_IN_SOURCES, 'backend']) })
 const lastingGrantSchema = z.object({
   id: z.string().uuid(), sessionId: z.string(), actor: z.string().optional(), rule: PermissionRuleIdSchema, subject: z.string(), scope: z.enum(['session', 'always']),
@@ -324,9 +327,15 @@ export type Resolution =
   | { ok: true; widened?: { pattern: string; askedBy: string }; repeated?: true; asked?: { rule: PermissionRuleId; subject: string }; granted?: string; save?: GrantSave; saveError?: string }
   | { ok: false; code: ApprovalErrorCode; reason: string; retryable?: true; saveError?: string }
 
-/** What a skip came to: `repeated` where the save was skipped already, `removed` where its grant had saved and is gone. */
+/** Why a grant given up is not confirmed gone: it `stands`, since it could not be removed, or the grants could not be read. */
+export interface UnfinishedRemoval { stands: boolean; saveError: string }
+
+/**
+ * What a skip came to: `repeated` where the save was skipped already, `removed` where its grant had saved and is gone,
+ * `unfinished` where a grant that may have saved is not confirmed gone, which the next settling pass removes.
+ */
 export type SkipResolution =
-  | { ok: true; repeated?: true; removed?: true }
+  | { ok: true; repeated?: true; removed?: true; unfinished?: UnfinishedRemoval }
   | { ok: false; code: ApprovalErrorCode; reason: string }
 
 /**
@@ -365,7 +374,7 @@ export interface ApprovalRegistry {
   resolve(decision: ApprovalDecision, source: ApprovalSource, options?: ResolveOptions): Promise<Resolution>
   /**
    * Gives up the grant of a session or always approval `source` recorded, under the approvals lock the settling pass takes,
-   * so one of them goes first. A skip whose grant had saved, and could not then be removed, throws SkipUnfinishedError.
+   * so one of them goes first. One whose grant may have saved and is not confirmed removed answers `unfinished`.
    */
   skipSave(input: { token: string; source: ApprovalSource }): Promise<SkipResolution>
   /**
@@ -411,7 +420,7 @@ export interface ApprovalRegistry {
   unspent(sessionId: string): UnspentOnce[]
   /**
    * Run as the workspace opens: applies the revokes recorded while approvals.json could not be read, then writes the grants
-   * decisions left owed when a process stopped between the two writes.
+   * decisions left owed and removes those skips left unconfirmed, when a process stopped between the writes.
    */
   recover(): Promise<void>
 }
@@ -637,14 +646,21 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
   }
 
   /**
-   * Writes this workspace's owed grants under the approvals lock (approvals, then grants), committing each as saved, so a
-   * grant reads owed on disk past its write only where that commit fails. A failure stops the pass and leaves the rest owed
-   * for the next one; it is logged, never thrown, so the change that settles still finishes, and returns why.
+   * Under the approvals lock (approvals, then grants): writes this workspace's owed grants and removes the grants of skips
+   * not confirmed, each committed as it settles, and returns why the first that failed did not. A failure is logged, never
+   * thrown, so the change that settles still finishes; the rest wait for the next pass.
    */
   async function settleGrants(state: State, commit: () => Promise<void>): Promise<string | undefined> {
+    const unwritten = await writeOwed(state, commit)
+    const unremoved = await finishSkips(state, commit)
+    return unwritten ?? unremoved
+  }
+
+  /** Each owed grant committed as saved once written, so a grant reads owed on disk past its write only where that commit fails. */
+  async function writeOwed(state: State, commit: () => Promise<void>): Promise<string | undefined> {
     try {
       for (const entry of state.resolved) {
-        const owed = owedHere(entry)
+        const owed = savedAt(entry, 'owed')
         if (owed === undefined) continue
         const { save: _save, source: _source, ...grant } = owed
         await grants.grant(grant)
@@ -658,9 +674,24 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     }
   }
 
-  /** The lasting grant an entry of this workspace owes, while it is not written yet. */
-  const owedHere = (entry: ResolvedEntry): LastingGrant | undefined => (entry.workspace === workspace && entry.grant?.save === 'owed' ? entry.grant : undefined)
-  const owesGrants = (state: State): boolean => state.resolved.some(entry => owedHere(entry) !== undefined)
+  /** Each skip whose grant is not confirmed gone, committed as skipped once its grant is removed by the id it kept. */
+  async function finishSkips(state: State, commit: () => Promise<void>): Promise<string | undefined> {
+    for (const entry of state.resolved) {
+      const skipping = savedAt(entry, 'skipping')
+      if (skipping === undefined) continue
+      const removal = await removeGrant(skipping.id)
+      if ('saveError' in removal) return removal.saveError
+      entry.grant = { ...skipping, save: 'skipped' }
+      await commit()
+    }
+    return undefined
+  }
+
+  /** The lasting grant of an entry of this workspace, while its save reads `save`. */
+  const savedAt = (entry: ResolvedEntry, save: GrantSave): LastingGrant | undefined => (entry.workspace === workspace && entry.grant?.save === save ? entry.grant : undefined)
+  const owedHere = (entry: ResolvedEntry): LastingGrant | undefined => savedAt(entry, 'owed')
+  /** Whether a settling pass has work: a grant owed, or a skip whose grant is not confirmed gone. */
+  const unsettled = (state: State): boolean => state.resolved.some(entry => entry.workspace === workspace && entry.grant !== undefined && UNSETTLED_SAVES.has(entry.grant.save))
 
   /** Drops this workspace's owed grants that `undone` names, so none is written, and says how many it dropped. */
   function dropOwed(state: State, undone: (grant: LastingGrant) => boolean): number {
@@ -749,7 +780,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       if (previous === undefined) return repeated
       progress.decided = { resolution: repeated, entry: previous }
       progress.recorded = true
-      if (owesGrants(state)) progress.saveError = await settleGrants(state, commit)
+      if (unsettled(state)) progress.saveError = await settleGrants(state, commit)
       return savedAs({ decided: progress.decided, saveError: progress.saveError })
     }
     if (approval === undefined) throw new Error('The decision guard applied a decision to an ask the approvals ledger does not hold')
@@ -787,7 +818,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     progress.decided = { resolution, entry: resolved }
     // The subject can carry a command's arguments, so the log names its size only; the action log keeps it.
     if (decision.approved) logger.info('Approval granted', { rule, scope: decision.scope, tool, subjectLength: subject.length, ...(widenedTo || wider ? { widened: true } : {}) })
-    if (!owesGrants(state)) return resolution
+    if (!unsettled(state)) return resolution
     // The call that asked still runs, once, on an approval whose lasting grant did not save: it gets less than the person
     // granted, never more. Any other call asks until the grant saves. Committed with the decision, so it stands whenever
     // the decision does, and dropped once the grant saves.
@@ -828,18 +859,19 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     }
   }
 
-  // Where the decision's lasting grant stands, and why, while the settling pass left it owed.
+  // Where the decision's lasting grant stands, and why, while the settling pass left it unsettled.
   function savedAs(input: { decided: AppliedDecision; saveError: string | undefined }): Extract<Resolution, { ok: true }> {
     const { decided, saveError } = input
     const save = decided.entry.grant?.save
     if (save === undefined) return decided.resolution
-    return { ...decided.resolution, save, ...(save === 'owed' && saveError !== undefined ? { saveError } : {}) }
+    return { ...decided.resolution, save, ...(UNSETTLED_SAVES.has(save) && saveError !== undefined ? { saveError } : {}) }
   }
 
   /**
-   * One skip under the approvals lock: the entry turns `skipped` and commits first, so no settling pass, retry, or opening
-   * writes its grant again, then a grant already in the store is removed by the id the entry kept. That covers a pass that
-   * went first, and a grant a stopped process wrote while its entry still read `owed`.
+   * One skip under the approvals lock: the entry turns `skipping` and commits first, so no settling pass, retry, or opening
+   * writes its grant again, then a grant already in the store is removed by the id the entry kept, and the entry turns
+   * `skipped`. That covers a pass that went first, and a grant a stopped process wrote while its entry still read `owed`;
+   * one left `skipping` is finished by the next settling pass.
    */
   async function skipIn(input: { state: State; commit: () => Promise<void>; token: string; source: ApprovalSource }): Promise<SkipResolution> {
     const entry = input.state.resolved.find(candidate => candidate.workspace === workspace && candidate.decision.token === input.token)
@@ -847,24 +879,34 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     const verdict = guardSkip({ source: input.source, recorded })
     if (!verdict.ok) return { ok: false, code: verdict.code, reason: verdict.reason }
     // A revoke or a session end already dropped the grant, so none stands and none is written.
-    if (entry?.grant === undefined) return { ok: true, repeated: true }
+    if (entry?.grant === undefined || entry.grant.save === 'skipped') return { ok: true, repeated: true }
     const { grant } = entry
-    const repeated = grant.save === 'skipped'
-    if (!repeated) {
-      entry.grant = { ...grant, save: 'skipped' }
+    const repeated = grant.save === 'skipping' ? { repeated: true as const } : {}
+    if (grant.save !== 'skipping') {
+      entry.grant = { ...grant, save: 'skipping' }
       await input.commit()
     }
-    const removed = await removeSkipped(grant.id)
-    return { ok: true, ...(repeated ? { repeated: true as const } : {}), ...(removed ? { removed: true as const } : {}) }
+    const removal = await removeGrant(grant.id)
+    if ('saveError' in removal) return { ok: true, ...repeated, unfinished: removal }
+    entry.grant = { ...grant, save: 'skipped' }
+    return { ok: true, ...repeated, ...(removal.removed ? { removed: true as const } : {}) }
   }
 
   // Read first: a grant never written needs no write to the grant store, which may be the very file that cannot be written.
-  async function removeSkipped(id: string): Promise<boolean> {
+  async function removeGrant(id: string): Promise<{ removed: boolean } | UnfinishedRemoval> {
+    let held: boolean
     try {
-      return grantStore.list().some(record => record.id === id) && await grantStore.revoke(id)
+      held = grantStore.list().some(record => record.id === id)
     } catch (error) {
-      logger.warn('A skipped grant could not be removed; it stands until the skip is sent again', { error: withoutCause(error) })
-      throw new SkipUnfinishedError(`Skipped, but its grant could not be removed: ${saveFailure(error)}; skip again to remove it`)
+      logger.warn('The grants could not be read to remove a skipped grant; the next settling pass removes it if it saved', { error: withoutCause(error) })
+      return { stands: false, saveError: saveFailure(error) }
+    }
+    if (!held) return { removed: false }
+    try {
+      return { removed: await grantStore.revoke(id) }
+    } catch (error) {
+      logger.warn('A skipped grant could not be removed; it stands until the next settling pass or the skip sent again removes it', { error: withoutCause(error) })
+      return { stands: true, saveError: saveFailure(error) }
     }
   }
 
@@ -984,14 +1026,14 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
 
     async recover() {
       try {
-        const owed = owesGrants(read())
+        const owed = unsettled(read())
         if (!owed && !existsSync(revocationsPath)) return
         const settled = await update(async (state, commit) => {
           await applyRevocations(state, commit)
           await settleGrants(state, commit)
-          return !owesGrants(state)
+          return !unsettled(state)
         })
-        if (owed && settled) logger.info('Wrote the grants a stopped process left owed')
+        if (owed && settled) logger.info('Wrote the grants a stopped process left owed, and removed those it left skipping')
       } catch (error) {
         // Fail closed: the grant stays owed and its calls ask again, while the workspace opens as it did.
         if (!alreadyReported(error)) logger.warn('Could not write the grants decisions left owed; they are written at the next decision', { error: withoutCause(error) })
@@ -1261,8 +1303,8 @@ function prune(state: State): State['pending'] {
   const expired = state.pending.filter(entry => lapseOf(entry) <= now)
   state.pending = state.pending.filter(entry => lapseOf(entry) > now)
   state.once = liveOnces(state.once, now)
-  // A decision whose grant is still owed stays until the grant is written.
-  state.resolved = state.resolved.filter(entry => entry.grant?.save === 'owed' || Date.parse(entry.expiresAt) > now)
+  // A decision whose grant is still owed, or not confirmed removed, stays until the settling pass settles it.
+  state.resolved = state.resolved.filter(entry => (entry.grant !== undefined && UNSETTLED_SAVES.has(entry.grant.save)) || Date.parse(entry.expiresAt) > now)
   return expired
 }
 
