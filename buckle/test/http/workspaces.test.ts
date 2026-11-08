@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { SetupWorkspaceStatusSchema } from '@5straps/protocol'
 import { sandboxBinds, type BuckleConfig } from '../../common/runtime/config.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
+import { auditWritten } from '../support/action-log-writer.js'
 
 const NODE_AGENT = 'node-agent'
 const NODE_SETUP = 'node-setup'
@@ -82,6 +83,8 @@ describe('multiple workspaces on one Buckle', () => {
     const auditPath = '/workspaces/one/setup/audit'
     expect((await app.request(auditPath, { headers: headers(agent('one')) })).status).toBe(401)
     const idOfOne = await app.idOf('one')
+    // The result of the call that ran is with the log service until it writes it, and the route reads the file.
+    await auditWritten()
     const audit = await (await app.request(auditPath, { headers: headers(NODE_SETUP) })).json() as { entries: Array<{ workspaceId: string; event: string }> }
     expect(audit.entries.length).toBeGreaterThan(0)
     expect(audit.entries.every(entry => entry.workspaceId === app.runtime.workspaceId || entry.workspaceId === idOfOne)).toBe(true)

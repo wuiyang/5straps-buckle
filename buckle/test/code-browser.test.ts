@@ -8,7 +8,7 @@ import type { BuckleConfig } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
-import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
+import { auditEntries, auditWritten, settleAuditLogs } from './support/action-log-writer.js'
 
 // Final review of 0.1.4, finding invoker 701: a script's calls carry the caller's own stage, unset where it named
 // none, so a script's browser_command drives the browser the agent opened directly, in the same session, and the
@@ -89,6 +89,9 @@ describe('a code_run script that drives the browser', () => {
     const { config, runtime } = await browsing()
     expect(await call(runtime, 'script-7', 'code_run', { script: SNAPSHOT }, undefined)).toMatchObject({ outcome: 'ok' })
     await runtime.history.close()
+    // A call that ran leaves its result with the log service, which writes it after the call answers, and buckle log reads
+    // the file: wait for the service, or the code_run result may not be there yet.
+    await auditWritten()
 
     let stdout = ''
     const write = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { stdout += String(chunk); return true })

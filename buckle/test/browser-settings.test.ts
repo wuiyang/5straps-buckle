@@ -12,7 +12,7 @@ import { logger } from '../common/runtime/log.js'
 import { chooseBrowser, settingScrubber } from '../common/services/packs/browser/mode.js'
 import { createSetupViews } from '../common/services/setup/setup-views.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { settleAuditLogs } from './support/action-log-writer.js'
+import { auditWritten, settleAuditLogs } from './support/action-log-writer.js'
 
 // A node owner may point the browser pack at a browser that keeps a login, and pass extra Chromium arguments. Fresh
 // sessions stay the default, and nothing an agent sends selects these modes.
@@ -393,6 +393,7 @@ describe('a failing agent-browser in an owner-chosen mode', () => {
     const logged = JSON.stringify(warn.mock.calls)
     warn.mockRestore()
     if (fixture.response.outcome !== 'error') throw new Error(`expected an error, got ${fixture.response.outcome}`)
+    await auditWritten()
     const audit = readFileSync(actionsPath(fixture.config), 'utf8')
     return { ...fixture, message: fixture.response.error.message, audit, logged }
   }
