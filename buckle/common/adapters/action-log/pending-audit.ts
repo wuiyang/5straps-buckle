@@ -31,7 +31,8 @@ export function createPendingAudit(input: {
   /** How long a write waits for another process holding the pending state (the node's state lock wait). */
   lockDeadlineMs?: number
 }) {
-  const store = createJsonFileStore({ filePath: `${input.filePath}.pending.json`, schema: pendingSchema, fallback: { version: 1 as const, pending: {} }, lockDeadlineMs: input.lockDeadlineMs })
+  // Written only after the log beside it, so its lock never makes the folder: one a purge deleted meanwhile stays gone.
+  const store = createJsonFileStore({ filePath: `${input.filePath}.pending.json`, schema: pendingSchema, fallback: { version: 1 as const, pending: {} }, lockDeadlineMs: input.lockDeadlineMs, existingDirectory: true })
   return {
     /**
      * One update for a batch, each entry with the offset its line is at or after: each attempt is held until its result,

@@ -91,14 +91,15 @@ function inTurn<R>(key: string, operation: () => Promise<R>): Promise<R> {
 
 /**
  * Runs `operation` once this process's earlier operations on the file are done, under the file's cross-process lock in
- * `<file>.lock.sqlite`; another process holding it past the wait answers StateBusyError.
+ * `<file>.lock.sqlite`; another process holding it past the wait answers StateBusyError. `existingDirectory`: the lock
+ * fails with ENOENT where the file's folder is gone, and does not make it again.
  */
-export function withFileTurn<R>(input: { filePath: string; lockDeadlineMs?: number }, operation: () => R | Promise<R>): Promise<R> {
+export function withFileTurn<R>(input: { filePath: string; lockDeadlineMs?: number; existingDirectory?: boolean }, operation: () => R | Promise<R>): Promise<R> {
   return inTurn(resolve(input.filePath), async () => {
     // SQLite supplies an OS-released cross-process lock; the file keeps its own format.
     const wait = { deadlineMs: input.lockDeadlineMs ?? LOCK_DEADLINE_MS, pollMs: LOCK_POLL_MS }
     try {
-      return await withFileLock({ path: `${input.filePath}.lock.sqlite`, wait }, async () => operation())
+      return await withFileLock({ path: `${input.filePath}.lock.sqlite`, wait, existingDirectory: input.existingDirectory === true }, async () => operation())
     } catch (error) {
       if (isRuntimeError(error, RuntimeErrorCode.lockBusy)) throw new StateBusyError(`${input.filePath} is busy in another Buckle process; retry shortly`, { cause: error })
       throw error
@@ -109,8 +110,9 @@ export function withFileTurn<R>(input: { filePath: string; lockDeadlineMs?: numb
 /**
  * `silent` is for a look that leaves an unreadable file to the store that opens it for real: the failure is thrown, not
  * logged, so the owner reads one line for it and not one from each store (mounts follow-up, second fix round, item F5).
+ * `existingDirectory`: a write never makes the file's folder, as `withFileTurn` says.
  */
-export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodType<T>; fallback: T; lockDeadlineMs?: number; silent?: boolean }): JsonFileStore<T> {
+export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodType<T>; fallback: T; lockDeadlineMs?: number; silent?: boolean; existingDirectory?: boolean }): JsonFileStore<T> {
   // The failure last logged, with the file's version: met again, it is thrown without a second line. A mode put back
   // keeps the version, so only a read that succeeds forgets it, and a new damage after that is logged again.
   let reported: string | undefined
@@ -138,7 +140,7 @@ export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodT
   }
 
   function locked<R>(operation: () => R | Promise<R>): Promise<R> {
-    return withFileTurn({ filePath: input.filePath, lockDeadlineMs: input.lockDeadlineMs }, operation)
+    return withFileTurn({ filePath: input.filePath, lockDeadlineMs: input.lockDeadlineMs, existingDirectory: input.existingDirectory }, operation)
   }
 
   async function persist(value: T): Promise<void> {

@@ -73,27 +73,32 @@ function createWriterOperations(input: { processInstanceId: string; io: WriterIo
   const append = (request: AppendInput) => appendBatch({ ...request, io: input.io, pending: pendingOf(request.file) })
   return {
     append: async (request) => {
-      // Before the lock, whose file would make the folder again.
-      if (request.existingFolder && !existsSync(dirname(request.file.path))) throw new Error('The log\'s folder is gone, so its entries are not written')
-      return append({ ...request, placed: offset => input.tell({ type: 'placed', id: request.id, offset }) })
+      try {
+        return await append({ ...request, placed: offset => input.tell({ type: 'placed', id: request.id, offset }) })
+      } catch (error) {
+        // Such a write makes no folder or file of its own, so a path it misses is the log's folder, gone.
+        if (request.existingFolder && errorCode(error) === 'ENOENT') throw new Error('The log\'s folder is gone, so its entries are not written', { cause: error })
+        throw error
+      }
     },
     probe: request => withFileTurn(lockOf(request.file), () => probe({ filePath: request.file.path, io: input.io, pending: pendingOf(request.file) })),
     recover: request => pendingOf(request.file).recover(entry => append({ file: request.file, entries: [nameEntry(entry, request.naming)] })),
   }
 }
 
-interface AppendInput { file: LogFile; entries: readonly ActionLogEntry[]; since?: number; untrack?: readonly string[]; placed?: (offset: number) => void }
+interface AppendInput { file: LogFile; entries: readonly ActionLogEntry[]; since?: number; existingFolder?: true; untrack?: readonly string[]; placed?: (offset: number) => void }
 
 /**
  * One batch, in this process's turn for the file and under its lock, so no other Buckle process writes between its tail
  * check, append, sync, and pending update. A batch tried again leaves out the entries already in the file since `since`.
+ * With `existingFolder`, neither the lock nor the append makes the log's folder, so one deleted at any point stays gone.
  */
 function appendBatch(input: AppendInput & { io: WriterIo; pending: PendingAudit }): Promise<void> {
-  return withFileTurn(lockOf(input.file), async () => {
+  return withFileTurn({ ...lockOf(input.file), existingDirectory: input.existingFolder === true }, async () => {
     const entries = input.entries.map(withEntryId)
     const already = await writtenSince({ filePath: input.file.path, since: input.since, entryIds: entries.map(entry => entry.entryId) })
     const lines = Buffer.from(entries.filter(entry => !already.has(entry.entryId)).map(serializeEntry).join(''))
-    const offset = appendSynced({ filePath: input.file.path, io: input.io, data: (size, tail) => endingTornTail(lines, size, tail), placed: input.placed })
+    const offset = appendSynced({ filePath: input.file.path, io: input.io, data: (size, tail) => endingTornTail(lines, size, tail), placed: input.placed, existingFolder: input.existingFolder === true })
     const earlier = input.since ?? offset
     await input.pending.trackMany(entries.map(entry => ({ entry, offset: already.has(entry.entryId) ? earlier : offset })), input.untrack)
   })
@@ -131,12 +136,12 @@ function serializeEntry(entry: ActionLogEntry): string {
 }
 
 /**
- * The one way the log is opened and written: created owner-only, read for its last byte, appended to
- * with what `data` makes of its size and last byte (nothing for a probe), then synced with its
+ * The one way the log is opened and written: created owner-only, its folder too unless `existingFolder`, read for its
+ * last byte, appended to with what `data` makes of its size and last byte (nothing for a probe), then synced with its
  * directory. `placed` hears the size before any byte is written; the size is also returned.
  */
-function appendSynced(input: { filePath: string; io: WriterIo; data: (size: number, tail: number | undefined) => Buffer; placed?: (offset: number) => void }): number {
-  mkdirSync(dirname(input.filePath), { recursive: true, mode: 0o700 })
+function appendSynced(input: { filePath: string; io: WriterIo; data: (size: number, tail: number | undefined) => Buffer; placed?: (offset: number) => void; existingFolder?: boolean }): number {
+  if (!input.existingFolder) mkdirSync(dirname(input.filePath), { recursive: true, mode: 0o700 })
   const descriptor = openSync(input.filePath, 'a+', 0o600)
   try {
     setDescriptorMode(descriptor, 0o600)
@@ -175,8 +180,12 @@ async function probe(input: { filePath: string; io: WriterIo; pending: PendingAu
   await input.pending.probe()
 }
 
+function errorCode(error: unknown): string | undefined {
+  return error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : undefined
+}
+
 function describeFailure(error: unknown): WriterFailure {
   if (!(error instanceof Error)) return { name: 'Error', message: String(error), busy: false }
-  const code = 'code' in error && typeof error.code === 'string' ? error.code : undefined
+  const code = errorCode(error)
   return { name: error.name, message: error.message, busy: error instanceof StateBusyError, ...(error.stack ? { stack: error.stack } : {}), ...(code ? { code } : {}) }
 }

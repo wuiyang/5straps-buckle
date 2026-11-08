@@ -7,6 +7,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { actionLogWriter } from '../common/adapters/action-log/action-log-writer.js'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { createLogService, logService } from '../common/adapters/action-log/log-service.js'
+import { withFileTurn } from '../common/adapters/json-file-store.js'
 import { createLoggedDecisionAudit } from '../common/adapters/approval/logged-decision-audit.js'
 import { DECISION_TOOL, LOG_DROPPED_TOOL } from '../common/domain/record-tools.js'
 import { MAX_ENTRY_BYTES } from '../common/adapters/action-log/writer-protocol.js'
@@ -396,5 +397,29 @@ describe('the log service', () => {
 
     expect(existsSync(folder)).toBe(false)
     expect(logs.stats().logs[path]).toMatchObject({ written: 0, dropped: 1 })
+  })
+
+  it('makes no folder again for a queued entry that waited its turn in the writer while the folder was purged', async () => {
+    const folder = mkdtempSync(join(tmpdir(), 'buckle-log-service-turn-'))
+    const file = { path: join(folder, 'actions.jsonl'), lockDeadlineMs: 20_000 }
+    await actionLogWriter().append({ file, entries: [entry('first')] })
+    // Another Buckle process holds the log's lock, so the first queued batch waits for it and holds the writer's turn.
+    let release = () => {}
+    const held = new Promise<void>((resolve) => { release = resolve })
+    let taken = () => {}
+    const lockTaken = new Promise<void>((resolve) => { taken = resolve })
+    const holding = withFileTurn({ filePath: file.path }, async () => { taken(); await held })
+    await lockTaken
+    const waiting = actionLogWriter().append({ file, entries: [entry('waiting')], existingFolder: true })
+    const late = actionLogWriter().append({ file, entries: [entry('late')], existingFolder: true })
+    // Both reach the writer before the purge: the late one then waits behind the first.
+    await delay(300)
+    rmSync(folder, { recursive: true })
+    release()
+    await holding
+
+    await expect(waiting).rejects.toThrow()
+    await expect(late).rejects.toThrow('The log\'s folder is gone, so its entries are not written')
+    expect(existsSync(folder)).toBe(false)
   })
 })
