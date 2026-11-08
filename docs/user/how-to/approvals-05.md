@@ -13,9 +13,12 @@ fails:
   `once`. It gets less than you granted, never more.
 - **Other calls ask:** until the grant is saved, any other call it would cover asks again, the same
   call sent anew included.
-- **The answer says why:** the reason names no path, such as `permission denied`.
+- **The answer says why:** `Approved for this call; saving it for the session failed:
+  permission denied`. The reason names no path.
 - **Saving again:** send the same decision again to try the write again, as often as you like. The
   next decision in the workspace, and the workspace opening again, also write it.
+- **Skipping:** gives up the `session` or `always` part for good: nothing writes it later, and a
+  grant that had saved meanwhile is removed. The call that asked still runs once.
 
 The decision keeps the id its grant is written under, so `buckle grants revoke <id>` finds the
 grant once it is saved.
@@ -28,9 +31,35 @@ without being in force. When the write fails:
 - **Nothing is recorded:** the call keeps waiting, and the answer is refused with the code
   `grant_unsaved`: `Not denied for the session: saving failed: <reason>; the call still waits`.
 - **Saving again:** send the same denial again.
-- **Refusing just this call:** deny it once, which writes nothing to the file:
-  `buckle approve <token> --deny` with no `--scope`, `d` in `buckle approvals --watch`, or `n` at
-  the serve terminal.
+- **Skipping:** denies this call once, which writes nothing to the file.
+
+## Retry or skip
+
+Each route that warns asks next what to do:
+
+| Route | Retry | Skip | Otherwise |
+|---|---|---|---|
+| The [serve terminal](approvals-02.md), `buckle approvals --watch`, `buckle approve` at a terminal | `r` | `s` | any other answer leaves it |
+| `buckle approve` without a terminal | the same command | a denial: `buckle approve <token> --deny`; an approval: the same command at a terminal | exits 5 |
+| `buckle client approve` | not yet | not yet | prints the warning, exits 5 |
+| MCP forms | not yet | not yet | the node's log warns |
+
+- **Asked again:** a retry that fails again shows the warning and the question again, with no cap.
+- **After the question:** the route says `Saved.`, `Skipped: later calls ask again.` (adding
+  `It had already saved; removed.` where it had), `Denied this call once; nothing was saved.`, or
+  `Left unsaved`, where the grant is written later as above, or the denial is not recorded.
+- **A skip that cannot remove its grant:** the route says so and offers `r` to try the removal
+  again; left, the grant stands until `buckle grants revoke <id>`.
+- **The serve terminal:** the question takes one key once the keyboard rests half a second, and
+  closes after a minute unanswered. An approval's question stays open after its call ran; a
+  denial's closes with its ask. A CLI tool command asking at its own terminal ends without
+  waiting for it, leaving the grant to be written later.
+- **`buckle approve` exit codes:** 0 once saved, skipped, or denied once, and 5 where the save
+  failed and was left. Without a terminal it prints the warning and both commands. A tool command
+  whose call waits for approval still exits 3.
+- **Devices:** the setup route answers an approval left owed with `grantOwed` and `saveError`, and
+  a lasting denial that did not save with 409 and `code: grant_unsaved`. Retry and skip on that
+  route come later.
 
 ## The reasons
 
@@ -46,4 +75,4 @@ without being in force. When the write fails:
 
 Each answer is also recorded in the workspace's audit log
 ([decision records](audit-log-03.md#decision-records)): an approval left unsaved with `grantOwed`,
-and a refused denial with its `code`.
+a refused denial with its `code`, a retry as the same decision again, and a skip as `skip_save`.

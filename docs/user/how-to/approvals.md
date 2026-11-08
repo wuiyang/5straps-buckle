@@ -41,7 +41,8 @@ port; `buckle approve <token> --scope session --host '*.localhost:3000'` widens 
 covering the asking host, `--below` [a delete](policy-05.md) outside the workspace to its folder
 and subfolders. `buckle grants list` shows grants and remembered denials;
 `buckle grants revoke <id>` removes one. A grant that cannot be saved still lets the call that
-asked run once ([when a grant cannot be saved](approvals-05.md)).
+asked run once, and the route warns and offers a retry or a skip
+([when a grant cannot be saved](approvals-05.md)).
 
 ## The destructive floor
 

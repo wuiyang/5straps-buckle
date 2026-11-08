@@ -26,7 +26,9 @@ Skipping the save of an approval whose grant could not be written
 ([when a grant cannot be saved](approvals-05.md)) writes two `approval_decision` entries too. Their
 `args` hold the `token`, the `outcome` `skip_save`, and the `source`; a result adds `repeated`
 (the save was skipped already) and `removed` (its grant had saved and is gone), or the refusal's
-`code`, such as `approver_not_allowed` for a route that did not record the decision.
+`code`, such as `approver_not_allowed` for a route that did not record the decision. A skip whose
+saved grant could not be removed ends with an `error` result and no code. A retry of the save is
+the same decision sent again, recorded as any decision is, with `repeated`.
 
 No tool takes a name Buckle writes its own records under: `approval_decision`, `log_dropped`, and
 those starting `cli_`, `setup_`, `workspace_`, or `policy_`. An agent's call naming one is refused

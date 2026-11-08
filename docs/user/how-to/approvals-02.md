@@ -59,6 +59,19 @@ A question that ends with no answer says why on its row:
 Ctrl-C at a question stops the node, as it does with no question open.
 A question whose ask expired while it waited its turn is not shown.
 
+### When a grant cannot be saved
+
+A `session` or `always` answer whose grant could not be written asks once more:
+
+```
+[my-project] Approved for this call; saving it for the session failed: permission denied.
+[my-project] r retries the save; s skips it, so later calls ask again; anything else leaves it to be saved later.
+```
+
+One key answers it: `r` sends the same decision again and asks again if that fails too, `s`
+gives up the lasting part, and any other key leaves it to be written later. The outcome is logged
+below it ([when a grant cannot be saved](approvals-05.md)).
+
 ## The log beside it
 
 Log lines read `22:22:00 [info] message`, with a date line when the day changes and one line per
