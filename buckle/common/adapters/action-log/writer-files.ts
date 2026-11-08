@@ -1,8 +1,7 @@
 import { closeSync, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readSync, rmSync, writeSync } from 'node:fs'
 import { parentPort, workerData, type MessagePort } from 'node:worker_threads'
 import { dirname } from 'pathe'
-import type { LogEvent, LogSink } from '@5straps/runtime'
-import { configureRootLogger } from '../../runtime/log.js'
+import { forwardRootLogger, type ForwardedLine } from '../../runtime/log.js'
 import type { ActionLogEntry } from '../../types/ports/action-log.js'
 import { setDescriptorMode } from '../file-modes.js'
 import { StateBusyError, withFileTurn } from '../json-file-store.js'
@@ -25,19 +24,26 @@ type Operations = { [Op in WriterRequest['op']]: (request: Extract<WriterRequest
 
 /**
  * The writer worker's program: it owns every write of the process's action logs, so a stalled disk holds this thread
- * and not the node's. Its own log lines go to the main thread's logger, under the process's one log budget.
+ * and not the node's. Its own log lines go straight to the main thread's logger, under the process's one log budget.
  */
 export function startWriterWorker(io: WriterIo = NODE_IO): void {
   const port = parentPort
   if (!port) throw new Error('The action log writer runs in a worker thread')
-  const { processInstanceId } = workerData as WriterWorkerData
-  configureRootLogger({ level: 'trace' }, { sink: forwardingSink(port) })
+  const { processInstanceId, logLevel } = workerData as WriterWorkerData
+  forwardRootLogger({ level: logLevel, forward: forwardTo(port) })
   const operations = createWriterOperations({ processInstanceId, io, tell: reply => port.postMessage(reply) })
   port.on('message', (request: WriterRequest) => { void answer({ port, operations, request }) })
 }
 
-function forwardingSink(port: MessagePort): LogSink {
-  return { name: 'writer-worker', write: (event: LogEvent) => port.postMessage({ type: 'log', event } satisfies WriterReply) }
+// A line whose fields cannot cross to the main thread goes without them, so logging never throws.
+function forwardTo(port: MessagePort): (line: ForwardedLine) => void {
+  return (line) => {
+    try {
+      port.postMessage({ type: 'log', line } satisfies WriterReply)
+    } catch {
+      port.postMessage({ type: 'log', line: { level: line.level, message: line.message, fields: { '[unloggable]': 'fields' } } } satisfies WriterReply)
+    }
+  }
 }
 
 async function answer(input: { port: MessagePort; operations: Operations; request: WriterRequest }): Promise<void> {
@@ -150,11 +156,8 @@ function appendSynced(input: { filePath: string; io: WriterIo; data: (size: numb
 }
 
 /**
- * Whether the log takes writes again, without writing an entry, testing what an append needs (review
- * M4 of B20-B22): the file opens and syncs through the append's own path (read access and the directory
- * sync included, review L13 of B23-B25), one byte beside it is written and synced (a full disk fails
- * here), and the pending store that tracks each attempt reads and writes under its lock. It takes the
- * log's lock first, as an append does.
+ * Whether the log takes writes again, testing what an append needs without writing an entry: the append's own open and
+ * syncs, one byte written and synced beside the log (a full disk fails here), and the pending store under its lock.
  */
 async function probe(input: { filePath: string; io: WriterIo; pending: PendingAudit }): Promise<void> {
   appendSynced({ filePath: input.filePath, io: input.io, data: () => Buffer.alloc(0) })

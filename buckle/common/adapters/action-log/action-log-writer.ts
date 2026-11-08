@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { Worker } from 'node:worker_threads'
-import type { LogEvent } from '@5straps/runtime'
-import { logger } from '../../runtime/log.js'
+import { logger, rootLogLevel, type ForwardedLine } from '../../runtime/log.js'
 import type { ActionLogEntry } from '../../types/ports/action-log.js'
 import { StateBusyError } from '../json-file-store.js'
 import type { LogFile, WorkspaceNaming, WriterFailure, WriterReply, WriterRequest, WriterWorkerData } from './writer-protocol.js'
@@ -65,7 +64,7 @@ export function createActionLogWriter(options: { entry?: WriterEntry } = {}): Ac
 
   function connect(): Connection {
     if (connection) return connection
-    const workerData: WriterWorkerData & Record<string, unknown> = { ...entry.workerData, processInstanceId: PROCESS_INSTANCE_ID }
+    const workerData: WriterWorkerData & Record<string, unknown> = { ...entry.workerData, processInstanceId: PROCESS_INSTANCE_ID, logLevel: rootLogLevel() }
     const worker = new Worker(entry.url, { workerData, ...loaderFor(entry.url) })
     const opened: Connection = { worker, waiting: new Map(), idle: [] }
     // Idle, the worker never keeps the process alive; a write in flight does.
@@ -95,7 +94,7 @@ export function createActionLogWriter(options: { entry?: WriterEntry } = {}): Ac
   }
 
   function receive(opened: Connection, reply: WriterReply): void {
-    if (reply.type === 'log') return relayLog(reply.event)
+    if (reply.type === 'log') return relayLog(reply.line)
     if (reply.type === 'placed') return opened.waiting.get(reply.id)?.placed?.(reply.offset)
     const waiting = settle(opened, reply.id)
     if (reply.type === 'done') waiting?.resolve(reply.value)
@@ -201,9 +200,9 @@ function loaderFor(url: URL): { execArgv?: string[] } {
   return url.pathname.endsWith('.ts') ? { execArgv: ['--import', import.meta.resolve('tsx')] } : {}
 }
 
-/** A line the worker logged, written by this thread's logger, which applies its level and holds it under the process's one budget. */
-function relayLog(event: LogEvent): void {
-  logger[event.level](event.message, { ...event.fields, ...(event.error ? { error: rebuiltError(event.error) } : {}) })
+/** A line the worker logged, written by this thread's logger, which redacts it and holds it under the one budget. */
+function relayLog(line: ForwardedLine): void {
+  logger[line.level](line.message, { ...line.fields, ...(line.error ? { error: rebuiltError(line.error) } : {}) })
 }
 
 function failureError(failure: WriterFailure): Error {

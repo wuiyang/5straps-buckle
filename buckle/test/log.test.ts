@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { createJsonFileStore } from '../common/adapters/json-file-store.js'
 import { LOG_BATCH_LIMIT, LOG_CLOSE_DEADLINE_MS, LOG_WRITE_DEADLINE_MS, PROCESS_LOG_QUEUE, processLogBudget } from '../common/runtime/log-budget.js'
-import { configureRootLogger, flushLogs, logFormatFrom, logger, loggerConfigFrom, stderrFormat, withoutCause } from '../common/runtime/log.js'
+import { configureRootLogger, flushLogs, forwardRootLogger, logFormatFrom, logger, loggerConfigFrom, rootLogLevel, stderrFormat, withoutCause, type ForwardedLine } from '../common/runtime/log.js'
 
 // The root logger writes asynchronously, so every stderr capture flushes before reading.
 async function captureStderr(write: () => void): Promise<Array<Record<string, unknown>>> {
@@ -68,8 +68,8 @@ describe('the Buckle root logger', () => {
   })
 
   it('stops flushing at the close deadline while a sink fails its retries, so a command still exits', async () => {
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
-    const failing = configureRootLogger({}, { sink: { name: 'failing', write: () => { throw new Error('disk full') } } })
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => { throw new Error('stderr is gone') })
+    const failing = configureRootLogger({}, { format: 'json' })
     try {
       logger.info('a line the sink will not take')
       const started = performance.now()
@@ -330,6 +330,28 @@ describe('what the process holds of its logs', () => {
     expect(lines.map(line => line.message)).toEqual([...Array<string>(4).fill('Log sink stderr-json failed'), 'Log events dropped', 'log events dropped', 'next line'])
     expect(lines[4]).toMatchObject({ fields: { destination: 'stderr-json', reason: 'failed', limit: 30 } })
     expect(lines[5]).toMatchObject({ fields: { dropped: 1 } })
+  })
+})
+
+describe('the logger of a worker thread', () => {
+  it('hands each line on as it is logged, at the level it is given, and holds none under a budget of its own', () => {
+    const lines: ForwardedLine[] = []
+    forwardRootLogger({ level: 'info', forward: line => lines.push(line) })
+    for (let index = 0; index < 40; index += 1) logger.info(`line ${index}`, { index })
+    logger.debug('below the level')
+    logger.child({ component: 'store', filePath: 'state.json' }).error('failed', { error: Object.assign(new Error('disk full'), { code: 'ENOSPC' }) })
+
+    expect(lines).toHaveLength(41)
+    expect(lines[0]).toEqual({ level: 'info', message: 'line 0', fields: { index: 0 } })
+    expect(lines[40]).toMatchObject({ level: 'error', message: 'failed', fields: { filePath: 'state.json' }, error: { name: 'Error', message: 'disk full', code: 'ENOSPC' } })
+    expect(processLogBudget.held()).toBe(0)
+  })
+
+  it('takes the level the node\'s logger runs at', () => {
+    configureRootLogger({ level: 'warn' })
+    expect(rootLogLevel()).toBe('warn')
+    configureRootLogger({})
+    expect(rootLogLevel()).toBe('info')
   })
 })
 

@@ -146,8 +146,8 @@ describe('the console writer', () => {
 
     it('writes a block within its bound while the log line before it fails its sink and waits for a retry', async () => {
       const terminal = screen(false)
-      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
-      const failing = configureRootLogger({}, { sink: { name: 'failing', write: () => { throw new Error('disk full') } } })
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => { throw new Error('stderr is gone') })
+      const failing = configureRootLogger({}, { format: 'json' })
       try {
         logger.info('a line the sink will not take')
         const writer = createConsoleWriter({ output: terminal.output, dates: false, flush: flushLogs })

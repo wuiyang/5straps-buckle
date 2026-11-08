@@ -1,5 +1,5 @@
 import { once } from 'node:events'
-import { createLogger, createRotatingFileSink, createStderrJsonSink, LOG_LEVELS, type LogFields, type Logger, type LoggerConfig, type LoggerRoot, type LogLevel, type LogSink } from '@5straps/runtime'
+import { createLogger, createRotatingFileSink, createStderrJsonSink, levelRank, LOG_LEVELS, type LogFields, type Logger, type LoggerConfig, type LoggerRoot, type LogLevel, type LogSink } from '@5straps/runtime'
 import { maskHeld, maskHeldJson, masksHeld } from '../services/secrets/mask.js'
 import { parseList } from './config.js'
 import { createConsoleWriter, type ConsoleWriter } from './console.js'
@@ -12,6 +12,7 @@ const LOG_FILE_MAX_BYTES = 10 * 1_048_576
 const LOG_FILE_MAX_FILES = 5
 // Created on first use with the defaults, until main configures it from the environment.
 let root: LoggerRoot | undefined
+let rootLevel: LogLevel = 'info'
 
 /**
  * The process's root logger, on the runtime logger: seven levels, child bindings, redaction of
@@ -37,17 +38,68 @@ const LOG_FORMATS: readonly LogFormat[] = ['json', 'human']
  * --background`), the one rotating file under its state directory alone, which no agent tool reads (Phase 3, item 6).
  * Plain `stderr` takes its format by the TTY rule and the shell's BUCKLE_LOG_FORMAT, as every line logged before main
  * reads buckle.env does; main names the format once it has read the file, and a serve at a terminal hands in the
- * console writer its workspace list and approval questions share (C3). A worker thread hands in the sink that carries its
- * lines to the main thread's logger.
+ * console writer its workspace list and approval questions share (C3).
  */
-export type LogOutput = { file: string } | 'stderr' | { format: LogFormat; console?: ConsoleWriter } | { sink: LogSink }
+export type LogOutput = { file: string } | 'stderr' | { format: LogFormat; console?: ConsoleWriter }
 
 /** Main calls this once, before anything else logs; a default root made earlier is flushed and replaced. */
 export function configureRootLogger(config: LoggerConfig, output: LogOutput = 'stderr'): LoggerRoot {
+  return replaceRoot(createRoot(config, output), config.level ?? 'info')
+}
+
+/** The level the process's lines are kept at, which a worker thread it starts logs at too. */
+export function rootLogLevel(): LogLevel {
+  return rootLevel
+}
+
+/** A worker thread's line as it reaches the main thread's logger, which redacts it and holds it under the budget. */
+export interface ForwardedLine {
+  level: LogLevel
+  message: string
+  fields?: LogFields
+  error?: { name: string; message: string; stack?: string; code?: string | number }
+}
+
+/**
+ * A worker thread's root logger: each line goes to `forward` as it is logged, at the main thread's level, and is held
+ * nowhere, so the process keeps the one budget the main thread's logger holds it under.
+ */
+export function forwardRootLogger(input: { level: LogLevel; forward: (line: ForwardedLine) => void }): LoggerRoot {
+  const stats = { dropped: 0, sinkFailures: 0 }
+  return replaceRoot({ logger: forwardingLogger({ ...input, bindings: {} }), stats: () => stats, flush: async () => {}, close: async () => {} }, input.level)
+}
+
+function replaceRoot(next: LoggerRoot, level: LogLevel): LoggerRoot {
   const previous = root
-  root = createRoot(config, output)
+  root = next
+  rootLevel = level
   void previous?.close()
-  return root
+  return next
+}
+
+function forwardingLogger(input: { level: LogLevel; forward: (line: ForwardedLine) => void; bindings: LogFields }): Logger {
+  const threshold = levelRank(input.level)
+  const line = (level: LogLevel) => (message: string, fields?: LogFields) => {
+    if (levelRank(level) < threshold) return
+    const { error, ...rest } = { ...input.bindings, ...fields }
+    input.forward({ level, message, ...(Object.keys(rest).length > 0 ? { fields: rest } : {}), ...(error === undefined ? {} : { error: forwardedError(error) }) })
+  }
+  return {
+    trace: line('trace'),
+    debug: line('debug'),
+    info: line('info'),
+    log: line('info'),
+    warn: line('warn'),
+    error: line('error'),
+    fatal: line('fatal'),
+    child: bindings => forwardingLogger({ ...input, bindings: { ...input.bindings, ...bindings } }),
+  }
+}
+
+function forwardedError(error: unknown): NonNullable<ForwardedLine['error']> {
+  if (!(error instanceof Error)) return { name: 'Error', message: String(error) }
+  const code: unknown = 'code' in error ? error.code : undefined
+  return { name: error.name, message: error.message, ...(error.stack ? { stack: error.stack } : {}), ...(typeof code === 'string' || typeof code === 'number' ? { code } : {}) }
 }
 
 /**
@@ -107,7 +159,6 @@ function createRoot(config: LoggerConfig, output: LogOutput = 'stderr'): LoggerR
 }
 
 function sinkFor(output: LogOutput, level: LogLevel): LogSink {
-  if (typeof output === 'object' && 'sink' in output) return output.sink
   if (typeof output === 'object' && 'file' in output) return createRotatingFileSink({ path: output.file, maxBytes: LOG_FILE_MAX_BYTES, maxFiles: LOG_FILE_MAX_FILES })
   const chosen = output === 'stderr' ? { format: stderrFormat(shellFormat()) } : output
   if (chosen.format === 'json') return createStderrJsonSink()

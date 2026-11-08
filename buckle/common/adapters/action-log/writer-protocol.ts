@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import type { LogEvent } from '@5straps/runtime'
+import type { LogLevel } from '@5straps/runtime'
+import type { ForwardedLine } from '../../runtime/log.js'
 import type { ActionLogEntry } from '../../types/ports/action-log.js'
 
 /** One log file as the writer worker opens it: its path, and how long its pending store waits for another process. */
@@ -34,11 +35,12 @@ export type WriterReply =
   | { type: 'placed'; id: number; offset: number }
   | { type: 'done'; id: number; value?: number }
   | { type: 'failed'; id: number; failure: WriterFailure }
-  | { type: 'log'; event: LogEvent }
+  | { type: 'log'; line: ForwardedLine }
 
-/** What the worker is started with, beside what its entry adds. */
+/** What the worker is started with, beside what its entry adds; `logLevel` is the main thread's. */
 export interface WriterWorkerData {
   processInstanceId: string
+  logLevel: LogLevel
 }
 
 /** The log's own workspace's entries carry its name beside the UUID; another workspace's entry, or one naming its own, is left as it is. */
