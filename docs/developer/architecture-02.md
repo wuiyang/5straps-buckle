@@ -21,7 +21,7 @@ directory:
 |---|---|
 | `approvals.json` | pending asks, recent decisions with each lasting approval's grant id and save state, unspent `once` approvals, and undelivered webhook notices |
 | `approval-calls/<uuid>.json` | the whole call of each request group, written once however many asks it made |
-| `approval-revocations.json` | revokes and session ends made while `approvals.json` was unreadable, recorded under its lock; the next decision, ask, spent once, or opening applies them and deletes the file. While it is damaged, those are refused; removing it lets the owed grants those revokes covered be written |
+| `approval-revocations.json` | revokes and session ends not yet finished: made while `approvals.json` was unreadable, or whose grants still stand. Approvals they name clear nothing; the next decision, ask, spent once, or opening finishes them, then deletes it. While it is damaged, those are refused and no session approval clears a call |
 | `grants.json` | `session` and `always` grants and remembered denials (`common/adapters/grant-store/file-grant-store.ts`) |
 
 Every file goes through `common/adapters/json-file-store.ts`: a write is an atomic rename,

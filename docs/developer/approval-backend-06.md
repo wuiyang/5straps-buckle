@@ -86,10 +86,14 @@ approvals lock, then the grants lock:
 - marks the owed and saved lasting grants `dropped`, so the settling pass never writes them;
 - removes the session grants, approvals and denials alike (`GrantStore.endSessions`).
 
-Always grants stay. A read without the lock first skips the lock where nothing would end. Where
-`approvals.json` cannot be read, the end is kept among the revocations (`{ allSessions: true }`
-or `{ sessionId }`) and the grants go; the next decision, ask, once spent, or open applies it
-(`applyRevocations`), withdrawing the asks and onces it could not reach. The service then tells the webhook, wakes each caller held
+Always grants stay. A read without the lock first skips the lock where nothing would end. The end
+is recorded in `approval-revocations.json` (`owed`, with `endedAt`) before the ledger commits, and
+forgotten once the grants are gone. Where removing them fails, the record stays: the approvals it
+names clear no call in any process (`withheld`, read again when the file changes), and the next
+decision, ask, once spent, or open removes them (`applyRevocations`), never one made after
+`endedAt`. A skip of a grant the end dropped removes it too. Where `approvals.json` cannot be
+read, the end is kept as `revoked` and the grants go; the next of those applies it, withdrawing
+the asks and onces it could not reach. A revoke is owed the same way. The service then tells the webhook, wakes each caller held
 on a withdrawn ask, and records each session through `DecisionAudit.sessionEnded`, one
 `approval_session_ended` entry through the log service. The registry's own `grants`
 (`LedgerGrants`) has no session end of its own. The causes are `SessionEndCause`: `idle`, and the
