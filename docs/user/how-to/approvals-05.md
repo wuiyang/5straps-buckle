@@ -23,8 +23,9 @@ fails:
 - **Removed meanwhile:** a revoke, the session's end, or a lasting denial in its place drops the
   grant, so a retry answers that it was not saved.
 
-The decision keeps the id its grant is written under, so `buckle grants revoke <id>` finds the
-grant once it is saved.
+The decision keeps the id its grant is written under. `buckle grants list` shows a grant not
+written yet, marked `(not saved yet)`, and `buckle grants revoke <id>` takes it, saved or not, so
+it is never written.
 
 ## A lasting denial
 

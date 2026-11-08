@@ -29,7 +29,8 @@ rule, subject, and scope, the source that recorded the decision, and `save`:
 - **Dropped:** a revoke or a session end marks the owed and saved grants it undoes `dropped`, under
   the same lock, so the pass never writes them and a retry says so.
 - **One id:** the grant is written under the id its entry keeps, also when a pass writes it again
-  after a lost commit, so a revoke by that id reaches the grant.
+  after a lost commit, so a revoke by that id reaches the grant. `LedgerGrants.owed()` lists those
+  not written yet (`buckle grants`), and a revoke by its id drops one.
 - **Recorded:** the store's update says when its last write is on disk (`persisted`), and the
   ledger marks a decision recorded then, so a lock that then fails to release changes no answer.
 
