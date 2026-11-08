@@ -4,6 +4,7 @@ import { atLeast, reachOf, rightsOf } from '../common/domain/approval/assurance.
 import { guardDecision, screenDecision, type DecisionClaim, type LiveSettings } from '../common/domain/approval/decision-guard.js'
 import { TODAYS_ROUTES } from '../common/domain/approval/routes.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
+import type { SourceReach } from '../common/types/ports/approval-backend.js'
 import { SOURCES, type ApprovalSource } from '../common/types/ports/approval-source.js'
 
 // Each answer names its source, and the guard rates it by the source's kind: only `local` and above decide for longer
@@ -37,13 +38,13 @@ describe('the assurance each source kind carries', () => {
     expect(screenDecision(claim({ id: 'cli', kind: 'backend' }), LIVE)).toEqual({ ok: false, code: 'capability_exceeded', reason: DENIES_ONLY })
   })
 
-  it.each<[keyof typeof SOURCES, { lasting: boolean; floor: boolean }]>([
-    ['terminal', { lasting: true, floor: true }],
-    ['cli', { lasting: true, floor: true }],
-    ['forms', { lasting: true, floor: true }],
-    ['http-forms', { lasting: false, floor: false }],
-    ['devices', { lasting: true, floor: true }],
-    ['judge', { lasting: false, floor: false }],
+  it.each<[keyof typeof SOURCES, SourceReach]>([
+    ['terminal', { lasting: true, floor: true, sameCaller: false }],
+    ['cli', { lasting: true, floor: true, sameCaller: false }],
+    ['forms', { lasting: true, floor: true, sameCaller: false }],
+    ['http-forms', { lasting: false, floor: false, sameCaller: true }],
+    ['devices', { lasting: true, floor: true, sameCaller: false }],
+    ['judge', { lasting: false, floor: false, sameCaller: false }],
   ])('tells a %s backend it may decide %o, read from the same row the guard rates', (source, reach) => {
     expect(reachOf(rightsOf(SOURCES[source].kind))).toEqual(reach)
   })

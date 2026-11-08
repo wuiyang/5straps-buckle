@@ -51,7 +51,7 @@ export function askFor(token: string, overrides: Partial<FullAsk> = {}): FullAsk
 }
 
 /** What a person at the node may decide, as the terminal's source may. */
-const AT_THE_NODE: SourceReach = { lasting: true, floor: true }
+const AT_THE_NODE: SourceReach = { lasting: true, floor: true, sameCaller: false }
 
 /**
  * A host that routes `routed` alone and answers each decision with `receipt`, applied by default; `reach` is what its

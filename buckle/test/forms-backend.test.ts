@@ -5,12 +5,12 @@ import type { ApprovalRequest } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { FILE_FLOOR_MARKS, PLAIN_MARKS, type PermissionDecision } from '../common/domain/permission/decision.js'
-import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
+import { createApprovalRegistry, MAX_PENDING_PER_SESSION } from '../common/services/approvals/approval-registry.js'
 import type { ApprovalService } from '../common/services/approvals/approval-service.js'
 import type { ApprovalHost, DecisionReceipt } from '../common/types/ports/approval-backend.js'
 import { SOURCES, type ApprovalSource, type FormsFace } from '../common/types/ports/approval-source.js'
 import type { DecisionAudit } from '../common/types/ports/decision-audit.js'
-import { createFormsBackend, type FormsBackend } from '../mcp/forms-backend.js'
+import { createFormsBackend, MOST_FORM_ANSWERS, type FormsBackend } from '../mcp/forms-backend.js'
 import { askFor, fakeHost } from './support/approval-backend-kit.js'
 import { approvalServiceWithTerminal, fixedInteraction } from './support/interaction.js'
 
@@ -82,11 +82,42 @@ describe('the forms backend', () => {
     ])
   })
 
-  it('keeps the token of an answer the host already recorded, so the retried call spends it', async () => {
+  it('keeps the token of an answer the host answers as repeated, so the retried call spends it', async () => {
     const backend = forms()
-    const host = fakeHost({ routed: [], receipt: () => ({ status: 'repeated', state: 'approved' }) })
+    const host = fakeHost({ routed: [askFor('a')], receipt: () => ({ status: 'repeated', state: 'approved' }) })
     await backend.open(host)
     expect((await backend.answer({ a: accepted({ approve: true }) })).tokens).toEqual(['a'])
+  })
+
+  it('sends nothing for an answer naming no waiting ask, and, where the host\'s source answers its own caller\'s asks alone, none for another caller\'s', async () => {
+    const backend = forms()
+    const host = fakeHost({ routed: [askFor('a'), askFor('b', { requester: { actor: 'agent:b', sessionId: 's-1' } })], reach: { ...ONCE_ALONE, sameCaller: true } })
+    await backend.open(host)
+    const once = accepted({ approve: true, scope: 'once' })
+    expect((await backend.answer({ a: once, b: once, gone: once }, { caller: 'agent:a' })).tokens).toEqual(['a'])
+    expect(host.decided.map(input => input.decision.token)).toEqual(['a'])
+    expect((await backend.answer({ a: once })).tokens).toEqual([])
+    expect(host.decided).toHaveLength(1)
+    expect(host.logged).toContainEqual({ level: 'info', message: 'MCP form answers named no ask waiting for their caller, so nothing was sent for them' })
+  })
+
+  it('sends each waiting ask\'s answer where the host\'s source answers any caller\'s, as a stdio host\'s does', async () => {
+    const backend = forms()
+    const host = fakeHost({ routed: [askFor('a'), askFor('b', { requester: { actor: null, sessionId: 's-1' } })] })
+    await backend.open(host)
+    const once = accepted({ approve: true, scope: 'once' })
+    expect((await backend.answer({ a: once, b: once }, { caller: 'mcp-stdio' })).tokens).toEqual(['a', 'b'])
+  })
+
+  it('reads one call\'s worth of answers at most: no more than a session keeps asks waiting', async () => {
+    expect(MOST_FORM_ANSWERS).toBeGreaterThanOrEqual(MAX_PENDING_PER_SESSION)
+    const backend = forms()
+    const tokens = Array.from({ length: MOST_FORM_ANSWERS + 5 }, (_, index) => `t${index}`)
+    const host = fakeHost({ routed: tokens.map(token => askFor(token)) })
+    await backend.open(host)
+    await backend.answer(Object.fromEntries(tokens.map(token => [token, accepted({ approve: true, scope: 'once' })])))
+    expect(host.decided).toHaveLength(MOST_FORM_ANSWERS)
+    expect(host.logged).toContainEqual({ level: 'warn', message: 'An MCP form round carried more answers than one call has forms, so the rest were not read' })
   })
 
   it('sends every accepted answer to the host, and leaves to core whether an ask kept without its call may be approved', async () => {
@@ -217,7 +248,7 @@ describe('the save form', () => {
   })
 })
 
-const ONCE_ALONE = { lasting: false, floor: false }
+const ONCE_ALONE = { lasting: false, floor: false, sameCaller: false }
 const sensitive = (token: string): ApprovalRequest => ({ ...request(token), rule: 'sensitive_path', subject: '/w/.env' })
 const floorAsk = (token: string) => askFor(token, { policy: { ...askFor(token).policy, floor: true } })
 
@@ -307,14 +338,14 @@ describe('the forms host core opens', () => {
     expect(grants.list()).toMatchObject([{ rule: 'write_scope', subject: '/outside', scope: 'session', sessionId: 's-1' }])
     expect(heard).toEqual([{ id: 'forms', kind: 'forms' }])
     expect(host().source).toEqual({ id: 'forms', kind: 'forms' })
-    expect(host().reach).toEqual({ lasting: true, floor: true })
+    expect(host().reach).toEqual({ lasting: true, floor: true, sameCaller: false })
   })
 
   it('tells the HTTP face\'s forms their source decides a non-floor once alone, and marks each waiting ask at the floor or not', async () => {
     const { registry, host } = await opened('http')
     await registry.ask({ tool: 'fs_delete', sessionId: 's-1', requestId: 'r-1', asks: [WRITE, DELETE], call: CALL })
     expect(host().source).toEqual(SOURCES['http-forms'])
-    expect(host().reach).toEqual({ lasting: false, floor: false })
+    expect(host().reach).toEqual({ lasting: false, floor: false, sameCaller: true })
     expect(host().pending().map(ask => [ask.policy.subject, ask.policy.floor])).toEqual([['/outside', false], ['delete:/srv/data', true]])
   })
 

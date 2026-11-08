@@ -52,7 +52,9 @@ const ALLOW_LABELS: Readonly<Record<GrantScope, string>> = { once: 'Allow once',
 type Denial = 'deny' | 'deny_session' | 'always_deny'
 const DENIAL_LABELS: Readonly<Record<Denial, string>> = { deny: 'Deny', deny_session: 'Deny this session', always_deny: 'Always deny' }
 // Forms that are not open draw what nothing that outlives the call or approves a floor ask may answer.
-const NO_REACH: SourceReach = { lasting: false, floor: false }
+const NO_REACH: SourceReach = { lasting: false, floor: false, sameCaller: true }
+/** A call makes at most as many asks as one session keeps waiting (50), so one round of its forms comes back under no more keys. */
+export const MOST_FORM_ANSWERS = 50
 /** The key a save form's answer comes under, before its decision's token, so it never reads as an approval form's. */
 const SAVE_KEY = 'save:'
 const SETTLED: ReadonlySet<SaveEnding['ending']> = new Set(['saved', 'skipped', 'denied_once'])
@@ -75,7 +77,11 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
 
   async function decideAnswers(responses: Record<string, unknown>, sender: AnswerSender | undefined): Promise<FormsAnswered> {
     const answered: FormsAnswered = { tokens: [], unsaved: [] }
-    for (const key of Object.keys(responses)) {
+    const host = live()
+    if (!host) return answered
+    const keys = roundKeys({ host, responses })
+    const waiting = answerableAsks({ host, sender, keys })
+    for (const key of keys) {
       const opened = live()
       if (!opened) break
       if (key.startsWith(SAVE_KEY)) {
@@ -83,6 +89,7 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
         if (await settleSave({ host: opened, token, answer: saveAnswerIn(responses, key), sender })) answered.tokens.push(token)
         continue
       }
+      if (!waiting.has(key)) continue
       const answer = acceptedContent(responses, key, FormAnswerSchema)
       if (!answer) continue
       const decision = decisionOf(key, answer)
@@ -158,6 +165,28 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
       return inputRequired({ inputRequests: Object.fromEntries(unsaved.map(question => [`${SAVE_KEY}${question.decision.token}`, saveForm(question.unsaved)])) })
     },
   }
+}
+
+/** A round's answer keys, at most MOST_FORM_ANSWERS of them, since one call's forms are never more. */
+function roundKeys(input: { host: ApprovalHost; responses: Record<string, unknown> }): string[] {
+  const keys = Object.keys(input.responses)
+  if (keys.length <= MOST_FORM_ANSWERS) return keys
+  input.host.log('warn', 'An MCP form round carried more answers than one call has forms, so the rest were not read', { answers: keys.length, read: MOST_FORM_ANSWERS })
+  return keys.slice(0, MOST_FORM_ANSWERS)
+}
+
+/**
+ * The asks an approval answer under these keys may decide, read once: those waiting, and where the host's source answers
+ * its own caller's asks alone, those its sender raised. A key naming any other is sent nowhere, so it costs no record.
+ */
+function answerableAsks(input: { host: ApprovalHost; sender: AnswerSender | undefined; keys: string[] }): Map<string, FullAsk> {
+  const { host, sender } = input
+  const named = input.keys.filter(key => !key.startsWith(SAVE_KEY))
+  if (named.length === 0) return new Map()
+  const asks = new Map(host.pending().filter(ask => !host.reach.sameCaller || (sender !== undefined && ask.requester.actor === sender.caller)).map(ask => [ask.token, ask]))
+  const unnamed = named.filter(key => !asks.has(key)).length
+  if (unnamed > 0) host.log('info', 'MCP form answers named no ask waiting for their caller, so nothing was sent for them', { answers: unnamed })
+  return asks
 }
 
 /** A save form's answer: retry or skip as accepted, a decline as a skip, and a cancel, or none, as leaving it. */

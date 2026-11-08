@@ -44,7 +44,7 @@ export function rightsOf(kind: SourceKind): SourceRights {
 /** What a backend is told its source may decide, by the rules the decision guard holds these rights to. */
 export function reachOf(rights: SourceRights): SourceReach {
   const local = atLeast(rights.assurance, 'local')
-  return { lasting: local, floor: rights.approves && rights.person && local }
+  return { lasting: local, floor: rights.approves && rights.person && local, sameCaller: rights.sameCaller === true }
 }
 
 export function atLeast(assurance: Assurance, least: Assurance): boolean {

@@ -186,10 +186,10 @@ export type SubmitResult =
 
 /**
  * What the decision guard lets a source decide, read from the row it rates the source's kind by: a scope that outlives the
- * call (`lasting`), and the approval of a floor ask (`floor`). A backend offers no more than this; the guard still checks
- * every answer.
+ * call (`lasting`), the approval of a floor ask (`floor`), and, where `sameCaller` holds, only the asks its answer's own
+ * caller raised. A backend offers no more than this; the guard still checks every answer.
  */
-export interface SourceReach { lasting: boolean; floor: boolean }
+export interface SourceReach { lasting: boolean; floor: boolean; sameCaller: boolean }
 
 /** What core hands a backend at open, bound to the source core holds for it. */
 export interface ApprovalHost {

@@ -205,20 +205,21 @@ function opened(face: FormsFace) {
 }
 
 describe('the caller carried through the forms host core opens', () => {
-  it('opens an HTTP face\'s forms under http-forms, refuses and records another caller\'s answer and skip, and decides its own caller\'s', async () => {
+  it('opens an HTTP face\'s forms under http-forms, sends no answer for another caller\'s ask, refuses and records another caller\'s skip, and decides its own caller\'s', async () => {
     const { registry, backend, heard, callers, refused, askBy, host } = opened('http')
     const token = await askBy('agent:a')
     expect(host().source).toEqual({ id: 'http-forms', kind: 'http-forms' })
 
     expect((await backend.answer({ [token]: accepted({ approve: true, scope: 'once' }) }, { caller: 'agent:b' })).tokens).toEqual([])
     expect(registry.pending().map(asked => asked.token)).toEqual([token])
+    expect(heard).toEqual([])
 
     expect((await backend.answer({ [token]: accepted({ approve: true, scope: 'once' }) }, { caller: 'agent:a' })).tokens).toEqual([token])
     expect(registry.pending()).toEqual([])
     expect(await host().skipSave(token, { caller: 'agent:b' })).toEqual({ status: 'refused', error: { code: 'approver_not_allowed', message: ANOTHER_CALLER.reason, retryable: false } })
-    expect(refused).toEqual([{ token, code: 'approver_not_allowed' }, { token, code: 'approver_not_allowed' }])
-    expect(heard).toEqual([HTTP, HTTP, HTTP])
-    expect(callers).toEqual(['agent:b', 'agent:a', 'agent:b'])
+    expect(refused).toEqual([{ token, code: 'approver_not_allowed' }])
+    expect(heard).toEqual([HTTP, HTTP])
+    expect(callers).toEqual(['agent:a', 'agent:b'])
   })
 
   it('carries a stdio host\'s caller too, which no check compares: its answer decides another caller\'s ask for the session', async () => {

@@ -1,8 +1,11 @@
+import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { fileVersion } from '../common/adapters/json-file-store.js'
+import { approvalsPath } from '../common/runtime/config.js'
 import { NO_INTERACTION, type Interaction } from '../common/runtime/interaction.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { openSettingsFile, settingsPath, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
@@ -136,7 +139,7 @@ describe('the HTTP MCP face, forms on', () => {
     expect(node.waitingTokens()).toEqual([])
   })
 
-  it('holds a form answer to its own caller: another token\'s answer to the ask decides nothing, and its own caller\'s runs the call', async () => {
+  it('holds a form answer to its own caller: another token\'s answer to the ask is not read, and its own caller\'s runs the call', async () => {
     const node = await httpNode({ forms: true })
     const args = writeOutside(node)
     await send(node, claudeCodeCall({ tool: 'fs_write', args }))
@@ -145,10 +148,27 @@ describe('the HTTP MCP face, forms on', () => {
     await send(node, claudeCodeCall({ tool: 'fs_write', args, responses: accept(token!, { approve: true, scope: 'once' }) }), B)
     expect(node.waitingTokens()).toContain(token)
     expect(existsSync(args.path)).toBe(false)
-    expect((await node.decisions()).filter(entry => entry.event === 'result')).toEqual([expect.objectContaining({ actorId: B, detail: 'approver_not_allowed' })])
+    expect(await node.decisions()).toEqual([])
 
     expect((await send(node, claudeCodeCall({ tool: 'fs_write', args, responses: accept(token!, { approve: true, scope: 'once' }) }))).isError).toBeUndefined()
     expect(readFileSync(args.path, 'utf8')).toBe('from the agent')
+  })
+
+  it('reads no answer naming no ask its caller has waiting: many unknown keys and another token\'s ask make no decision record and leave the approvals file untouched', async () => {
+    const node = await httpNode({ forms: true })
+    await send(node, claudeCodeCall({ tool: 'fs_write', args: writeOutside(node) }))
+    const [token] = node.waitingTokens()
+    writeFileSync(join(node.workspace, 'notes.txt'), 'read me')
+    const before = fileVersion(approvalsPath(node.config))
+    const once = { action: 'accept', content: { approve: true, scope: 'once' } }
+    const responses = Object.fromEntries([token!, ...Array.from({ length: 300 }, () => randomUUID())].map(key => [key, once]))
+
+    const read = await send(node, claudeCodeCall({ tool: 'fs_read', args: { path: 'notes.txt' }, responses }), B)
+    expect(read.isError).toBeUndefined()
+    expect(read.content?.[0]?.text).toContain('read me')
+    expect(await node.decisions()).toEqual([])
+    expect(fileVersion(approvalsPath(node.config))).toBe(before)
+    expect(node.waitingTokens()).toEqual([token])
   })
 
   it('gives a 2025-era client the relay text: Claude Code\'s recorded fallback initialize, then a tools/call at 2025-11-25', async () => {
