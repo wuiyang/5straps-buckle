@@ -1,5 +1,5 @@
 import { once } from 'node:events'
-import { createLogger, createRotatingFileSink, createStderrJsonSink, levelRank, LOG_LEVELS, type LogFields, type Logger, type LoggerConfig, type LoggerRoot, type LogLevel, type LogSink } from '@5straps/runtime'
+import { createLogger, createRotatingFileSink, createStderrJsonSink, levelRank, LOG_LEVELS, type LogFields, type Logger, type LoggerConfig, type LoggerRoot, type LogLevel, type LogPushOptions, type LogSink } from '@5straps/runtime'
 import { maskHeld, maskHeldJson, masksHeld } from '../services/secrets/mask.js'
 import { parseList } from './config.js'
 import { createConsoleWriter, type ConsoleWriter } from './console.js'
@@ -197,9 +197,9 @@ function createHumanSink(input: { console: ConsoleWriter; level: LogLevel }): Lo
  * are masked as they are bound.
  */
 function delegate(resolve: () => Logger): Logger {
-  const line = (method: 'trace' | 'debug' | 'info' | 'log' | 'warn' | 'error' | 'fatal') => (message: string, fields?: LogFields) => {
-    if (!masksHeld()) return resolve()[method](message, fields)
-    return resolve()[method](maskHeld(message), fields === undefined ? undefined : maskHeldJson(fields))
+  const line = (method: 'trace' | 'debug' | 'info' | 'log' | 'warn' | 'error' | 'fatal') => (message: string, fields?: LogFields, options?: LogPushOptions) => {
+    if (!masksHeld()) return resolve()[method](message, fields, options)
+    return resolve()[method](maskHeld(message), fields === undefined ? undefined : maskHeldJson(fields), options)
   }
   return {
     trace: line('trace'),

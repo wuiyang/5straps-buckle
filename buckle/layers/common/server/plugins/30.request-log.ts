@@ -3,6 +3,7 @@ import { definePlugin } from 'nitro'
 
 /** Polled by supervisors: logged at debug, so a probe every few seconds does not flood the log. */
 const PROBES: readonly string[] = Object.freeze(['/health', '/health/ready'])
+const EXPENDABLE = Object.freeze({ expendable: true })
 
 /**
  * One structured line per request as its response goes out (B19), refused and unrouted requests
@@ -10,6 +11,7 @@ const PROBES: readonly string[] = Object.freeze(['/health', '/health/ready'])
  * the duration, a correlation id (the operation's, or one for this request when it had none) and who
  * the guard said the caller was. No path, query, body or credential. A streamed response is logged
  * when its headers go out; the runtime's own `request completed` line marks the end of its stream.
+ * Anyone who reaches the port makes one, so it gives way to every other line and record held.
  */
 export default definePlugin((nitroApp) => {
   const started = new WeakMap<object, { at: number; correlationId: string }>()
@@ -32,7 +34,7 @@ export default definePlugin((nitroApp) => {
       ...(operation?.workspaceId ? { workspaceId: operation.workspaceId } : {}),
       ...(operation?.clientRequestId ? { clientRequestId: operation.clientRequestId } : {}),
     }
-    if (route !== null && PROBES.includes(route)) context.logger.debug('request finished', fields)
-    else context.logger.info('request finished', fields)
+    if (route !== null && PROBES.includes(route)) context.logger.debug('request finished', fields, EXPENDABLE)
+    else context.logger.info('request finished', fields, EXPENDABLE)
   })
 })
