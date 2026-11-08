@@ -127,6 +127,21 @@ describe('a session end whose grant removal fails', () => {
     expect(existsSync(revocations)).toBe(false)
   })
 
+  it('keeps one record of every session\'s end however many come while approvals.json is unreadable, and writes no grants for one that finds none', async () => {
+    const { root, store, registry, approvals, revocations } = setUp()
+    await granted(registry, 'chat-1', '/outside/a')
+    writeFileSync(approvals, '{')
+    await registry.endSessions({ ending: { allSessions: true } })
+    const grants = readFileSync(join(root, 'grants.json'), 'utf8')
+    const written = vi.spyOn(store, 'endSessions')
+
+    await registry.endSessions({ ending: { allSessions: true } })
+    await registry.endSessions({ ending: { allSessions: true } })
+    expect((JSON.parse(readFileSync(revocations, 'utf8')) as { revoked: unknown[] }).revoked).toHaveLength(1)
+    expect(written).not.toHaveBeenCalled()
+    expect(readFileSync(join(root, 'grants.json'), 'utf8')).toBe(grants)
+  })
+
   it('removes, at a skip, a grant its session end gave up and left standing', async () => {
     const { store, registry, broken } = setUp()
     const token = await granted(registry, 'chat-1', '/outside/a')
