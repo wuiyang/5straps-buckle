@@ -1,0 +1,94 @@
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { SourceKind } from '../common/types/ports/approval-source.js'
+import { grantsPath } from '../common/runtime/config.js'
+import { NO_INTERACTION, type Interaction } from '../common/runtime/interaction.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { openSettingsFile, settingsPath, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
+import { createMcpHttpHandlers } from '../mcp/http.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
+import { fixedInteraction } from './support/interaction.js'
+import { claudeCodeCall, formOf, sendAs } from './support/mcp-http-call.js'
+import { configFromEnvironment } from './support/workspace-config.js'
+
+// The save form over HTTP. Under today's rights an HTTP form approves once alone, which writes no grant, so it never draws
+// one; were HTTP forms given stdio's rights, their one row in the rights table is all that changes, and the HTTP face then
+// draws the save form as stdio does, held to its own caller. This file makes that change, and only for itself.
+
+vi.mock('../common/domain/approval/assurance.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../common/domain/approval/assurance.js')>()
+  return { ...actual, rightsOf: (kind: SourceKind) => (kind === 'http-forms' ? { ...actual.rightsOf(kind), assurance: 'local' as const } : actual.rightsOf(kind)) }
+})
+
+// The renames onto `rename` to fail, `count` times.
+const failing = vi.hoisted(() => ({ rename: undefined as string | undefined, count: 0 }))
+vi.mock('../common/adapters/replace-file.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../common/adapters/replace-file.js')>()
+  return {
+    ...actual,
+    replaceFile: async (from: string, to: string, io?: Parameters<typeof actual.replaceFile>[2]) => {
+      if (failing.rename === to && failing.count > 0) {
+        failing.count -= 1
+        throw Object.assign(new Error(`EACCES: permission denied, rename '${from}' -> '${to}'`), { code: 'EACCES' })
+      }
+      return actual.replaceFile(from, to, io)
+    },
+  }
+})
+
+const A = 'agent:token-a'
+const B = 'agent:token-b'
+const handlers = createMcpHttpHandlers()
+const roots: string[] = []
+const runtimes: CoreRuntime[] = []
+afterEach(async () => {
+  Object.assign(failing, { rename: undefined, count: 0 })
+  for (const runtime of runtimes.splice(0)) { runtime.closeWatchers(); await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
+
+const NOBODY: Interaction = { requestCli: NO_INTERACTION.requestCli, hold: 'prompt' }
+
+async function httpNode() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-http-save-form-')))
+  roots.push(root)
+  const workspace = join(root, 'workspace')
+  for (const folder of [workspace, join(root, 'outside'), join(root, 'state')]) mkdirSync(folder, { recursive: true, mode: 0o700 })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
+  await openSettingsFile({ filePath: settingsPath(config.nodeStateDirectory ?? config.stateDirectory, config.workspaceId), fallback: () => WorkspaceSettingsSchema.parse({ version: 1 }) })
+    .update(current => ({ ...current, approval: { ...current.approval, forms: true } }))
+  const runtime = await createRuntime({ config, interaction: fixedInteraction(NOBODY) })
+  runtimes.push(runtime)
+  Object.assign(failing, { rename: grantsPath(config), count: 1 })
+  const send = (request: Request, actor = A) => sendAs({ handlers, workspace: { config, runtime }, request, actor })
+  return { root, runtime, send, waitingTokens: () => runtime.approvalService.pending().map(asked => asked.token) }
+}
+
+const accept = (key: string, content: Record<string, unknown>) => ({ [key]: { action: 'accept', content } })
+
+describe('the save form over HTTP, with HTTP forms given stdio\'s rights', () => {
+  it('draws it after an approval whose grant did not save, reads it only from its own caller, and a retry saves the grant before the call runs once', async () => {
+    const node = await httpNode()
+    const args = { path: join(node.root, 'outside', 'note.md'), content: 'saved' }
+    const asked = await node.send(claudeCodeCall({ tool: 'fs_write', args }))
+    const [token] = node.waitingTokens()
+    expect((formOf(asked, token!).requestedSchema.properties as Record<string, { enum?: string[] }>)['scope']?.enum).toEqual(['once', 'session', 'always'])
+
+    const saving = await node.send(claudeCodeCall({ tool: 'fs_write', args, responses: accept(token!, { approve: true, scope: 'session' }) }))
+    expect(Object.keys(saving.inputRequests ?? {})).toEqual([`save:${token}`])
+    expect(formOf(saving, `save:${token}`).message).toContain('saving it for the session failed: permission denied')
+    expect(existsSync(args.path)).toBe(false)
+
+    const stranger = await node.send(claudeCodeCall({ tool: 'fs_write', args, responses: accept(`save:${token}`, { save: 'skip' }) }), B)
+    expect(stranger.resultType).toBe('input_required')
+    expect((await auditEntries(node.runtime.actions, 200)).filter(entry => entry.tool === 'approval_decision' && entry.actorId === B)).toEqual([])
+
+    const ran = await node.send(claudeCodeCall({ tool: 'fs_write', args, responses: accept(`save:${token}`, { save: 'retry' }) }))
+    expect(ran.isError).toBeUndefined()
+    expect(readFileSync(args.path, 'utf8')).toBe('saved')
+    expect(node.runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', scope: 'session' })])
+  })
+})

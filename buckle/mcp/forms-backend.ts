@@ -1,13 +1,18 @@
-import { acceptedContent, inputRequired } from '@modelcontextprotocol/server'
-import type { ApprovalRequest, GrantScope } from '@5straps/protocol'
+import { acceptedContent, inputRequired, inputResponse } from '@modelcontextprotocol/server'
+import { GrantScopeSchema, type ApprovalRequest, type GrantScope } from '@5straps/protocol'
+import { z } from 'zod'
+import { saveEndingLine, settleUnsaved, unsavedOf, type SaveAnswer, type SaveEnding, type SaveRoute, type Unsaved, type UnsavedKind } from '../common/adapters/approval/grant-save-question.js'
 import { approveCommand, describeAsk, describeAskOfShownCall, describeCallAsks, type ShownCall } from '../common/domain/approval-instruction.js'
 import type { AnswerSender, ApprovalBackend, ApprovalHost, BackendCapabilities, DecisionBody, FullAsk, SourceReach, SubmitResult } from '../common/types/ports/approval-backend.js'
 
-interface FormAnswer extends Record<string, unknown> {
-  approve?: boolean
-  action?: 'allow_once' | 'allow_session' | 'allow_always' | 'deny' | 'deny_session' | 'always_deny'
-  scope?: GrantScope
-}
+// An approval form's answer names its approval or its action; one that names neither, a save answer among them, is none.
+const FormAnswerSchema = z.object({
+  approve: z.boolean().optional(),
+  action: z.enum(['allow_once', 'allow_session', 'allow_always', 'deny', 'deny_session', 'always_deny']).optional(),
+  scope: GrantScopeSchema.optional(),
+}).refine(answer => answer.approve !== undefined || answer.action !== undefined)
+type FormAnswer = z.infer<typeof FormAnswerSchema>
+const SaveAnswerSchema = z.object({ save: z.enum(['retry', 'skip']) })
 
 export interface FormsBackendOptions {
   /** The workspace each form names, by id and by its name as it stands. */
@@ -18,6 +23,12 @@ export interface FormsBackendOptions {
   approves: () => boolean
 }
 
+/** A decision whose lasting part did not save, which a save form asks about before the call runs. */
+export interface UnsavedDecision { decision: DecisionBody; unsaved: Unsaved }
+
+/** What a call's answers came to: the tokens the call sent again spends, and the decisions whose lasting part did not save. */
+export interface FormsAnswered { tokens: string[]; unsaved: UnsavedDecision[] }
+
 /**
  * An MCP host's forms: drawn in the call's own answer, and decided when the retried call carries them back. Each form
  * offers what its host's source may decide, and no more.
@@ -26,10 +37,13 @@ export interface FormsBackend extends ApprovalBackend {
   /** One form per ask of the call. */
   forms(approvals: ApprovalRequest[]): ReturnType<typeof inputRequired>
   /**
-   * Decides each accepted answer through the host, with the sender the face's transport authenticated, and gives the
-   * tokens it recorded, which the retried call spends.
+   * Decides each accepted answer through the host, with the sender the face's transport authenticated: an approval form's
+   * under its ask's token, and a save form's under `save:<token>`, read only where this backend drew that sender that
+   * save form. A save answer is settled once and draws no further save form.
    */
-  answer(responses: Record<string, unknown> | undefined, sender?: AnswerSender): Promise<string[]>
+  answer(responses: Record<string, unknown> | undefined, sender?: AnswerSender): Promise<FormsAnswered>
+  /** One save form per decision that did not save, drawn for `sender`; none where every decision saved. */
+  saveForms(unsaved: UnsavedDecision[], sender?: AnswerSender): ReturnType<typeof inputRequired> | undefined
 }
 
 const CAPABILITIES: BackendCapabilities = { contractVersion: 1, decides: true, scopes: ['once', 'session', 'always'], cancels: false, revokes: false }
@@ -39,30 +53,73 @@ type Denial = 'deny' | 'deny_session' | 'always_deny'
 const DENIAL_LABELS: Readonly<Record<Denial, string>> = { deny: 'Deny', deny_session: 'Deny this session', always_deny: 'Always deny' }
 // Forms that are not open draw what nothing that outlives the call or approves a floor ask may answer.
 const NO_REACH: SourceReach = { lasting: false, floor: false }
+/** The key a save form's answer comes under, before its decision's token, so it never reads as an approval form's. */
+const SAVE_KEY = 'save:'
+const SETTLED: ReadonlySet<SaveEnding['ending']> = new Set(['saved', 'skipped', 'denied_once'])
+
+/** Per kind of save: the answers its form takes, and what each answer, a decline, and a cancel do. */
+const SAVE_FORMS: Readonly<Record<UnsavedKind, { answers: SaveAnswer[]; choices: string }>> = {
+  approval: { answers: ['retry', 'skip'], choices: 'Retry the save; skip gives it up, so later calls ask again. Declining skips it, and cancelling leaves it to be saved later. Either way the call runs once.' },
+  denial: { answers: ['retry', 'skip'], choices: 'Retry the save; skip denies this call once instead. Declining skips it, and cancelling leaves the call waiting.' },
+  removal: { answers: ['retry'], choices: 'Retry the removal; declining or cancelling leaves it to the next decision or the workspace opening again, which remove it.' },
+}
 
 export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
   let host: ApprovalHost | undefined
   let closed = false
   // The answers still being decided, which close waits for.
-  const answering = new Set<Promise<string[]>>()
+  const answering = new Set<Promise<FormsAnswered>>()
+  // The save forms drawn and not answered yet, by token, with the caller each was drawn for.
+  const saveQuestions = new Map<string, UnsavedDecision & { caller: string | undefined }>()
   const live = () => (closed ? undefined : host)
 
-  async function decideAnswers(responses: Record<string, unknown>, sender: AnswerSender | undefined): Promise<string[]> {
-    const tokens: string[] = []
-    for (const token of Object.keys(responses)) {
-      const answer = acceptedContent<FormAnswer>(responses, token)
-      if (!answer) continue
+  async function decideAnswers(responses: Record<string, unknown>, sender: AnswerSender | undefined): Promise<FormsAnswered> {
+    const answered: FormsAnswered = { tokens: [], unsaved: [] }
+    for (const key of Object.keys(responses)) {
       const opened = live()
       if (!opened) break
-      const receipt = await opened.decide({ kind: 'plain', decision: decisionOf(token, answer) }, sender)
+      if (key.startsWith(SAVE_KEY)) {
+        const token = key.slice(SAVE_KEY.length)
+        if (await settleSave({ host: opened, token, answer: saveAnswerIn(responses, key), sender })) answered.tokens.push(token)
+        continue
+      }
+      const answer = acceptedContent(responses, key, FormAnswerSchema)
+      if (!answer) continue
+      const decision = decisionOf(key, answer)
+      const receipt = await opened.decide({ kind: 'plain', decision }, sender)
+      const unsaved = unsavedOf({ decision, receipt })
+      if (unsaved) answered.unsaved.push({ decision, unsaved })
       if (receipt.status === 'refused') {
         opened.log('warn', 'Elicited approval was rejected', { reason: receipt.error.message })
         continue
       }
-      tokens.push(token)
-      if (receipt.save === 'owed') opened.log('warn', 'An elicited approval was recorded, but the lasting grant it makes is not written yet, so its calls ask again until it is', { token })
+      answered.tokens.push(key)
+      if (receipt.save === 'owed') opened.log('warn', 'An elicited approval was recorded, but the lasting grant it makes is not written yet, so its calls ask again until it is', { token: key })
     }
-    return tokens
+    return answered
+  }
+
+  /** A save form's answer from the caller it was drawn for: settled once, as the shared save question settles it. */
+  async function settleSave(input: { host: ApprovalHost; token: string; answer: SaveAnswer | undefined; sender: AnswerSender | undefined }): Promise<boolean> {
+    const question = saveQuestions.get(input.token)
+    if (question === undefined || question.caller !== input.sender?.caller) return false
+    saveQuestions.delete(input.token)
+    const { decision, unsaved } = question
+    let given = input.answer
+    const route: SaveRoute = {
+      // One save form per call: a save that fails again is left, and asked about no more.
+      ask: async () => {
+        const answer = given
+        given = undefined
+        return answer
+      },
+      retry: () => input.host.decide({ kind: 'plain', decision }, input.sender),
+      skipSave: () => input.host.skipSave(decision.token, input.sender),
+      denyOnce: () => input.host.decide({ kind: 'plain', decision: { token: decision.token, outcome: 'deny', scope: 'once' } }, input.sender),
+    }
+    const ending = await settleUnsaved({ decision, unsaved, route })
+    input.host.log(SETTLED.has(ending.ending) ? 'info' : 'warn', saveEndingLine(ending), { token: input.token })
+    return true
   }
 
   return {
@@ -77,6 +134,7 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
 
     async close() {
       closed = true
+      saveQuestions.clear()
       await Promise.allSettled([...answering])
     },
 
@@ -86,14 +144,39 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
     },
 
     answer(responses, sender) {
-      if (!live() || !responses) return Promise.resolve([])
+      if (!live() || !responses) return Promise.resolve({ tokens: [], unsaved: [] })
       const run = decideAnswers(responses, sender)
       answering.add(run)
       const forget = () => { answering.delete(run) }
       run.then(forget, forget)
       return run
     },
+
+    saveForms(unsaved, sender) {
+      if (unsaved.length === 0 || !live()) return undefined
+      for (const question of unsaved) saveQuestions.set(question.decision.token, { ...question, caller: sender?.caller })
+      return inputRequired({ inputRequests: Object.fromEntries(unsaved.map(question => [`${SAVE_KEY}${question.decision.token}`, saveForm(question.unsaved)])) })
+    },
   }
+}
+
+/** A save form's answer: retry or skip as accepted, a decline as a skip, and a cancel, or none, as leaving it. */
+function saveAnswerIn(responses: Record<string, unknown>, key: string): SaveAnswer | undefined {
+  const view = inputResponse(responses, key)
+  if (view.kind === 'elicit' && view.action === 'decline') return 'skip'
+  return acceptedContent(responses, key, SaveAnswerSchema)?.save
+}
+
+function saveForm(unsaved: Unsaved) {
+  const { answers, choices } = SAVE_FORMS[unsaved.kind]
+  return inputRequired.elicit({
+    message: `${unsaved.warning}.\n${choices}`,
+    requestedSchema: {
+      type: 'object',
+      properties: { save: { type: 'string', enum: answers, description: answers.join(' or ') } },
+      required: ['save'],
+    },
+  })
 }
 
 function decisionOf(token: string, answer: FormAnswer): DecisionBody {

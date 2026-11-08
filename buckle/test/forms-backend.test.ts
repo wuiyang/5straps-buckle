@@ -62,7 +62,7 @@ describe('the forms backend', () => {
     const backend = forms()
     const host = fakeHost({ routed: [askFor('a'), askFor('b'), askFor('c')], receipt: decision => (decision.decision.token === 'c' ? REFUSED : { status: 'applied', state: 'approved', assurance: 'local' }) })
     await backend.open(host)
-    const tokens = await backend.answer({ a: accepted({ approve: true, scope: 'session' }), b: accepted({ action: 'deny' }), c: accepted({ approve: true, scope: 'once' }), d: { action: 'decline' } })
+    const { tokens } = await backend.answer({ a: accepted({ approve: true, scope: 'session' }), b: accepted({ action: 'deny' }), c: accepted({ approve: true, scope: 'once' }), d: { action: 'decline' } })
     expect(tokens).toEqual(['a', 'b'])
     expect(host.decided.map(({ at: _at, ...input }) => input)).toEqual([
       { kind: 'plain', decision: { token: 'a', outcome: 'approve', scope: 'session' } },
@@ -75,7 +75,7 @@ describe('the forms backend', () => {
     const backend = forms()
     const host = fakeHost({ routed: [askFor('a'), askFor('b')], receipt: decision => (decision.decision.token === 'a' ? { status: 'applied', state: 'approved', assurance: 'local', save: 'owed' } : { status: 'repeated', state: 'approved', save: 'owed' }) })
     await backend.open(host)
-    expect(await backend.answer({ a: accepted({ approve: true, scope: 'session' }), b: accepted({ approve: true, scope: 'always' }) })).toEqual(['a', 'b'])
+    expect((await backend.answer({ a: accepted({ approve: true, scope: 'session' }), b: accepted({ approve: true, scope: 'always' }) })).tokens).toEqual(['a', 'b'])
     expect(host.logged).toEqual([
       { level: 'warn', message: 'An elicited approval was recorded, but the lasting grant it makes is not written yet, so its calls ask again until it is' },
       { level: 'warn', message: 'An elicited approval was recorded, but the lasting grant it makes is not written yet, so its calls ask again until it is' },
@@ -86,7 +86,7 @@ describe('the forms backend', () => {
     const backend = forms()
     const host = fakeHost({ routed: [], receipt: () => ({ status: 'repeated', state: 'approved' }) })
     await backend.open(host)
-    expect(await backend.answer({ a: accepted({ approve: true }) })).toEqual(['a'])
+    expect((await backend.answer({ a: accepted({ approve: true }) })).tokens).toEqual(['a'])
   })
 
   it('sends every accepted answer to the host, and leaves to core whether an ask kept without its call may be approved', async () => {
@@ -115,7 +115,7 @@ describe('the forms backend', () => {
     expect(closed).toBe(false)
     gate.resolve()
     await closing
-    expect(await answering).toEqual(['a'])
+    expect((await answering).tokens).toEqual(['a'])
     expect(sent).toEqual(['a'])
   })
 
@@ -124,8 +124,96 @@ describe('the forms backend', () => {
     const host = fakeHost({ routed: [askFor('a')] })
     await backend.open(host)
     await backend.close()
-    expect(await backend.answer({ a: accepted({ approve: true }) })).toEqual([])
+    expect(await backend.answer({ a: accepted({ approve: true }) })).toEqual({ tokens: [], unsaved: [] })
     expect(host.decided).toEqual([])
+  })
+})
+
+const OWED: DecisionReceipt = { status: 'applied', state: 'approved', assurance: 'local', save: 'owed', saveError: 'permission denied' }
+const SAVED: DecisionReceipt = { status: 'repeated', state: 'approved', save: 'saved' }
+const UNSAVED_DENIAL: DecisionReceipt = { status: 'refused', error: { code: 'grant_unsaved', message: 'Not denied for the session: saving failed: permission denied; the call still waits', retryable: true, saveError: 'permission denied' } }
+const SENDER = { caller: 'agent:a' }
+
+/** A backend whose host answers each decision of `token` with `receipts` in turn, the last one again once they run out. */
+async function savingBackend(receipts: DecisionReceipt[]) {
+  const backend = forms()
+  const host = fakeHost({ routed: [askFor('a')], receipt: (_decision, sent) => receipts[Math.min(sent, receipts.length) - 1]! })
+  await backend.open(host)
+  return { backend, host }
+}
+
+describe('the save form', () => {
+  it('answers with each decision whose lasting part did not save, and draws one save form for each under save:<token>', async () => {
+    const { backend } = await savingBackend([OWED])
+    const answered = await backend.answer({ a: accepted({ approve: true, scope: 'session' }) }, SENDER)
+    expect(answered.tokens).toEqual(['a'])
+    expect(answered.unsaved).toEqual([{ decision: { token: 'a', outcome: 'approve', scope: 'session' }, unsaved: { kind: 'approval', warning: 'Approved for this call; saving it for the session failed: permission denied' } }])
+    const drawn = backend.saveForms(answered.unsaved, SENDER)
+    expect(Object.keys((drawn as { inputRequests: Record<string, unknown> }).inputRequests)).toEqual(['save:a'])
+    const form = formOf(drawn, 'save:a')
+    expect(form.message).toContain('Approved for this call; saving it for the session failed: permission denied.')
+    expect(form.message).toContain('cancelling leaves it to be saved later')
+    expect(form.requestedSchema.properties['save']?.enum).toEqual(['retry', 'skip'])
+  })
+
+  it('draws no save form where every decision saved', async () => {
+    const { backend } = await savingBackend([SAVED])
+    const answered = await backend.answer({ a: accepted({ approve: true, scope: 'session' }) })
+    expect(answered.unsaved).toEqual([])
+    expect(backend.saveForms(answered.unsaved)).toBeUndefined()
+  })
+
+  it('draws a save form for a lasting denial refused as unsaved, whose token the call does not spend, and whose skip denies the call once', async () => {
+    const { backend, host } = await savingBackend([UNSAVED_DENIAL])
+    const answered = await backend.answer({ a: accepted({ action: 'deny_session' }) }, SENDER)
+    expect(answered.tokens).toEqual([])
+    expect(answered.unsaved.map(item => item.unsaved.kind)).toEqual(['denial'])
+    expect(formOf(backend.saveForms(answered.unsaved, SENDER), 'save:a').message).toContain('skip denies this call once instead')
+    expect((await backend.answer({ 'save:a': accepted({ save: 'skip' }) }, SENDER)).tokens).toEqual(['a'])
+    expect(host.decided.map(input => input.decision)).toEqual([{ token: 'a', outcome: 'deny', scope: 'session' }, { token: 'a', outcome: 'deny', scope: 'once' }])
+  })
+
+  it('sends the same decision again on a retry, with the sender, and draws no further save form when it fails again', async () => {
+    const { backend, host } = await savingBackend([OWED])
+    const answered = await backend.answer({ a: accepted({ approve: true, scope: 'session' }) }, SENDER)
+    backend.saveForms(answered.unsaved, SENDER)
+    const retried = await backend.answer({ 'save:a': accepted({ save: 'retry' }) }, SENDER)
+    expect(retried).toEqual({ tokens: ['a'], unsaved: [] })
+    expect(host.decided.map(({ decision, sender }) => ({ decision, sender }))).toEqual([
+      { decision: { token: 'a', outcome: 'approve', scope: 'session' }, sender: SENDER },
+      { decision: { token: 'a', outcome: 'approve', scope: 'session' }, sender: SENDER },
+    ])
+    expect(host.logged.at(-1)).toMatchObject({ level: 'warn', message: expect.stringContaining('Left unsaved') })
+  })
+
+  it.each([['a skip', accepted({ save: 'skip' })], ['a decline', { action: 'decline' }]])('skips the save on %s, with the sender', async (_name, answer) => {
+    const { backend, host } = await savingBackend([OWED])
+    backend.saveForms((await backend.answer({ a: accepted({ approve: true, scope: 'session' }) }, SENDER)).unsaved, SENDER)
+    expect((await backend.answer({ 'save:a': answer }, SENDER)).tokens).toEqual(['a'])
+    expect(host.skipped).toEqual(['a'])
+    expect(host.skippedBy).toEqual([SENDER])
+    expect(host.decided).toHaveLength(1)
+  })
+
+  it('leaves the save on a cancel: nothing is sent, and the call spends its once', async () => {
+    const { backend, host } = await savingBackend([OWED])
+    backend.saveForms((await backend.answer({ a: accepted({ approve: true, scope: 'session' }) }, SENDER)).unsaved, SENDER)
+    expect((await backend.answer({ 'save:a': { action: 'cancel' } }, SENDER)).tokens).toEqual(['a'])
+    expect(host.decided).toHaveLength(1)
+    expect(host.skipped).toEqual([])
+  })
+
+  it('tells save answers from approval answers: a save answer it drew no form for, or another caller\'s, sends nothing, nor does an approval answer carrying a save answer', async () => {
+    const { backend, host } = await savingBackend([OWED])
+    expect(await backend.answer({ 'save:a': accepted({ save: 'retry' }) }, SENDER)).toEqual({ tokens: [], unsaved: [] })
+    expect(await backend.answer({ a: accepted({ save: 'retry' }) }, SENDER)).toEqual({ tokens: [], unsaved: [] })
+    expect(host.decided).toEqual([])
+
+    backend.saveForms((await backend.answer({ a: accepted({ approve: true, scope: 'session' }) }, SENDER)).unsaved, SENDER)
+    expect(await backend.answer({ 'save:a': accepted({ save: 'skip' }) }, { caller: 'agent:b' })).toEqual({ tokens: [], unsaved: [] })
+    expect(host.skipped).toEqual([])
+    expect((await backend.answer({ 'save:a': accepted({ save: 'skip' }) }, SENDER)).tokens).toEqual(['a'])
+    expect(host.skippedBy).toEqual([SENDER])
   })
 })
 
@@ -215,7 +303,7 @@ describe('the forms host core opens', () => {
   it('decides as the forms source, whose answers count as a person\'s: a session answer is remembered', async () => {
     const { registry, grants, backend, heard, host } = await opened()
     const [asked] = (await registry.ask({ tool: 'fs_write', sessionId: 's-1', requestId: 'r-1', asks: [WRITE], call: CALL })).requests
-    expect(await backend.answer({ [asked!.token]: accepted({ approve: true, scope: 'session' }) })).toEqual([asked!.token])
+    expect((await backend.answer({ [asked!.token]: accepted({ approve: true, scope: 'session' }) })).tokens).toEqual([asked!.token])
     expect(grants.list()).toMatchObject([{ rule: 'write_scope', subject: '/outside', scope: 'session', sessionId: 's-1' }])
     expect(heard).toEqual([{ id: 'forms', kind: 'forms' }])
     expect(host().source).toEqual({ id: 'forms', kind: 'forms' })
@@ -234,7 +322,7 @@ describe('the forms host core opens', () => {
     const { registry, grants, backend, service, heard, refused, host } = await opened()
     const [formed, approved] = (await registry.ask({ tool: 'fs_write', sessionId: 's-1', requestId: 'r-1', asks: [WRITE, { ...WRITE, subject: '/other' }], call: CALL })).requests
     vi.spyOn(grants, 'grant').mockRejectedValueOnce(new Error('The grants file was busy'))
-    expect(await backend.answer({ [formed!.token]: accepted({ approve: true, scope: 'session' }) })).toEqual([formed!.token])
+    expect((await backend.answer({ [formed!.token]: accepted({ approve: true, scope: 'session' }) })).tokens).toEqual([formed!.token])
 
     expect(await host().skipSave(formed!.token)).toEqual({ status: 'skipped' })
     expect(await service.decide({ source: 'cli', decision: { token: approved!.token, outcome: 'approve', scope: 'session' } })).toMatchObject({ status: 'applied', save: 'saved' })
@@ -256,10 +344,10 @@ describe('the forms host core opens', () => {
   it('leaves the whole-action check to core: an approval of an ask kept without its call is refused, and its denial applies', async () => {
     const { registry, backend, refused } = await opened()
     const [asked] = (await registry.ask({ tool: 'fs_write', sessionId: 's-1', requestId: 'r-1', asks: [WRITE] })).requests
-    expect(await backend.answer({ [asked!.token]: accepted({ approve: true, scope: 'once' }) })).toEqual([])
+    expect((await backend.answer({ [asked!.token]: accepted({ approve: true, scope: 'once' }) })).tokens).toEqual([])
     expect(refused).toEqual([{ token: asked!.token, code: 'incomplete_action' }])
     expect(registry.pending().map(request => request.token)).toEqual([asked!.token])
-    expect(await backend.answer({ [asked!.token]: accepted({ approve: false }) })).toEqual([asked!.token])
+    expect((await backend.answer({ [asked!.token]: accepted({ approve: false }) })).tokens).toEqual([asked!.token])
     expect(registry.pending()).toEqual([])
   })
 

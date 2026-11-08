@@ -21,8 +21,9 @@ export interface KitSubject {
 export interface FakeHost extends ApprovalHost {
   /** Each decision as sent, with the sender a backend named for it, where it named one. */
   decided: Array<DecisionInput & { at: number; sender?: AnswerSender }>
-  /** The tokens whose saves the backend skipped, in order. */
+  /** The tokens whose saves the backend skipped, in order, and the sender it named for each, where it named one. */
   skipped: string[]
+  skippedBy: Array<AnswerSender | undefined>
   logged: Array<{ level: string; message: string }>
   /** Tokens whose asks left the queue: `ask` gives nothing for them. */
   closedTokens: Set<string>
@@ -63,14 +64,16 @@ export function fakeHost(input: { routed: FullAsk[]; receipt?: (decision: Decisi
     reach: input.reach ?? AT_THE_NODE,
     decided: [],
     skipped: [],
+    skippedBy: [],
     logged: [],
     closedTokens: new Set(),
     async decide(decision, sender) {
       host.decided.push({ ...decision, at: performance.now(), ...(sender === undefined ? {} : { sender }) })
       return input.receipt?.(decision, host.decided.filter(sent => sent.decision.token === decision.decision.token).length) ?? APPLIED
     },
-    async skipSave(token) {
+    async skipSave(token, sender) {
       host.skipped.push(token)
+      host.skippedBy.push(sender)
       return SKIPPED
     },
     pending: () => [...routed.values()].filter(ask => !host.closedTokens.has(ask.token)),

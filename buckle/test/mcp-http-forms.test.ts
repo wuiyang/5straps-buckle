@@ -1,8 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Client, StreamableHTTPClientTransport, type ElicitRequestFormParams } from '@modelcontextprotocol/client'
-import { createOperationScope, runInScope } from '@5straps/runtime'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NO_INTERACTION, type Interaction } from '../common/runtime/interaction.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -11,6 +10,7 @@ import { SOURCES } from '../common/types/ports/approval-source.js'
 import { createMcpHttpHandlers } from '../mcp/http.js'
 import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 import { CLAUDE_CODE_HTTP_MCP } from './support/claude-code-http-mcp.js'
+import { asCaller, claudeCodeCall, formOf, sendAs, type Form } from './support/mcp-http-call.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
@@ -24,7 +24,6 @@ const PROTOCOL = '2026-07-28'
 const A = 'agent:token-a'
 const B = 'agent:token-b'
 const handlers = createMcpHttpHandlers()
-const owner = Symbol('mcp-http-forms')
 const roots: string[] = []
 const runtimes: CoreRuntime[] = []
 afterEach(async () => {
@@ -54,40 +53,8 @@ async function httpNode(input: { forms: boolean; environment?: Record<string, st
 }
 
 type HttpNode = Awaited<ReturnType<typeof httpNode>>
-type Form = ElicitRequestFormParams
-interface ToolResult { isError?: boolean; resultType?: string; inputRequests?: Record<string, { params?: Form }>; content?: Array<{ type: string; text: string }>; structuredContent?: { outcome?: string } }
 
-/** Runs `request` as the transport authenticated `actor`, as the agent guard opens each /mcp request's operation. */
-function asCaller<T>(actor: string, run: () => Promise<T>): Promise<T> {
-  return runInScope(createOperationScope({ owner, context: { actor } }), run)
-}
-
-/** A tools/call as Claude Code sends one at 2026-07-28: the headers and `_meta` envelope its recorded tools/list carried. */
-function claudeCodeCall(input: { tool: string; args: Record<string, unknown>; responses?: Record<string, unknown> }): Request {
-  const { headers, body } = CLAUDE_CODE_HTTP_MCP.modern.toolsList
-  return new Request('http://127.0.0.1/mcp', {
-    method: 'POST',
-    headers: { ...headers, 'mcp-method': 'tools/call', 'mcp-name': input.tool },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: input.tool, arguments: input.args, _meta: body.params._meta, ...(input.responses ? { inputResponses: input.responses } : {}) } }),
-  })
-}
-
-async function send(node: HttpNode, request: Request, actor = A): Promise<ToolResult> {
-  const response = await asCaller(actor, () => handlers.fetch(node.managed, request))
-  const text = await response.text()
-  const json = response.headers.get('content-type')?.includes('text/event-stream')
-    ? text.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)) as { result?: ToolResult }).find(message => message.result)
-    : JSON.parse(text) as { result?: ToolResult }
-  if (!json?.result) throw new Error(`No tool result in ${text}`)
-  return json.result
-}
-
-function formOf(result: ToolResult, token: string): Form {
-  const shown = result.inputRequests?.[token]?.params
-  if (!shown) throw new Error(`No form for ${token} in ${JSON.stringify(result)}`)
-  return shown
-}
-
+const send = (node: HttpNode, request: Request, actor = A) => sendAs({ handlers, workspace: node.managed, request, actor })
 const schemaOf = (form: Form) => form.requestedSchema.properties as Record<string, { enum?: string[] }>
 const accept = (token: string, content: Record<string, unknown>) => ({ [token]: { action: 'accept', content } })
 const writeOutside = (node: HttpNode, name = 'note.md') => ({ path: join(node.root, 'outside', name), content: 'from the agent' })

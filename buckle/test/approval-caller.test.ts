@@ -210,10 +210,10 @@ describe('the caller carried through the forms host core opens', () => {
     const token = await askBy('agent:a')
     expect(host().source).toEqual({ id: 'http-forms', kind: 'http-forms' })
 
-    expect(await backend.answer({ [token]: accepted({ approve: true, scope: 'once' }) }, { caller: 'agent:b' })).toEqual([])
+    expect((await backend.answer({ [token]: accepted({ approve: true, scope: 'once' }) }, { caller: 'agent:b' })).tokens).toEqual([])
     expect(registry.pending().map(asked => asked.token)).toEqual([token])
 
-    expect(await backend.answer({ [token]: accepted({ approve: true, scope: 'once' }) }, { caller: 'agent:a' })).toEqual([token])
+    expect((await backend.answer({ [token]: accepted({ approve: true, scope: 'once' }) }, { caller: 'agent:a' })).tokens).toEqual([token])
     expect(registry.pending()).toEqual([])
     expect(await host().skipSave(token, { caller: 'agent:b' })).toEqual({ status: 'refused', error: { code: 'approver_not_allowed', message: ANOTHER_CALLER.reason, retryable: false } })
     expect(refused).toEqual([{ token, code: 'approver_not_allowed' }, { token, code: 'approver_not_allowed' }])
@@ -225,7 +225,7 @@ describe('the caller carried through the forms host core opens', () => {
     const { grants, backend, askBy, host } = opened('stdio')
     const token = await askBy('agent:a')
     expect(host().source).toEqual(SOURCES.forms)
-    expect(await backend.answer({ [token]: accepted({ approve: true, scope: 'session' }) }, { caller: 'mcp-stdio' })).toEqual([token])
+    expect((await backend.answer({ [token]: accepted({ approve: true, scope: 'session' }) }, { caller: 'mcp-stdio' })).tokens).toEqual([token])
     expect(grants.list()).toEqual([expect.objectContaining({ subject: '/outside/a', scope: 'session', actor: 'agent:a' })])
   })
 })

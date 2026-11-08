@@ -96,9 +96,15 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
           if ('refused' in hints) return refusedHint(hints.refused)
           // Off, the call gets the relay text and the answers it carries are not read.
           const opened = forms !== undefined && runtime.approvalForms() ? forms : undefined
-          const approvalTokens = opened ? await opened.answer(context.mcpReq?.inputResponses, transportSender()) : []
+          const sender = transportSender()
+          const answered = opened ? await opened.answer(context.mcpReq?.inputResponses, sender) : undefined
           // The host asks its user itself, so the call reports back at once instead of waiting.
           const elicits = opened !== undefined && supportsElicitation(readers, context) ? opened : undefined
+          // A decision whose lasting part did not save is asked about before the call spends its once: sent again with
+          // that answer, the call joins this one's ask and runs once, on its once or on the saved grant.
+          const saving = elicits?.saveForms(answered?.unsaved ?? [], sender)
+          if (saving) return saving
+          const approvalTokens = answered?.tokens ?? []
           const wait = elicits ? { mode: 'none' as const } : shorterWait(options.approvalWait?.(), hints.approvalWait)
 
           const { response, replay } = await invokeJoined({

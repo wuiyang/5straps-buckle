@@ -310,7 +310,7 @@ describe('the stdio face and the forms setting', () => {
     await setForms(false)
 
     expect(await write({ args: ARGS, responses: accepted(token!, { approve: true, scope: 'once' }) })).toMatchObject({ structuredContent: { outcome: 'approval_required' } })
-    expect(await forms.answer(accepted(token!, { approve: true, scope: 'once' }))).toEqual([])
+    expect(await forms.answer(accepted(token!, { approve: true, scope: 'once' }))).toEqual({ tokens: [], unsaved: [] })
     expect(waitingTokens()).toEqual([token])
     expect(existsSync(join(workspace, 'one', 'a.md'))).toBe(false)
     const decisions = (await auditEntries(runtime.actions, 50)).filter(entry => entry.tool === 'approval_decision')
@@ -326,7 +326,7 @@ describe('the stdio face and the forms setting', () => {
 
     expect(runtime.approvalForms()).toBe(false)
     expect(await write({ args: ARGS, responses: accepted(token!, { approve: true, scope: 'once' }) })).toMatchObject({ structuredContent: { outcome: 'approval_required' } })
-    expect(await forms.answer(accepted(token!, { approve: true, scope: 'once' }))).toEqual([])
+    expect(await forms.answer(accepted(token!, { approve: true, scope: 'once' }))).toEqual({ tokens: [], unsaved: [] })
     expect(waitingTokens()).toEqual([token])
     expect(existsSync(join(workspace, 'one', 'a.md'))).toBe(false)
   })
