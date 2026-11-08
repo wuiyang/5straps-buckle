@@ -54,9 +54,12 @@ export interface PromptRelease {
   hold(): void
 }
 
+/** How long a block waits for the log lines logged before it, so a sink waiting out its retries never holds a question. */
+export const BLOCK_FLUSH_DEADLINE_MS = 500
+
 /**
  * `dates`: whether the separator is written (a serve's console; a one-shot command prints time-stamped lines alone).
- * `flush`: what writes every log line logged so far, called before each block.
+ * `flush`: what writes every log line logged so far, called before each block for up to BLOCK_FLUSH_DEADLINE_MS.
  */
 export function createConsoleWriter(input: { output: Writable; dates: boolean; flush?: () => Promise<void> }): ConsoleWriter {
   const { output } = input
@@ -108,7 +111,7 @@ export function createConsoleWriter(input: { output: Writable; dates: boolean; f
     write,
     block(lines, at) {
       // A flush that fails still lets the block through: the lines before it are the logger's to report.
-      const written = turn.then(() => input.flush?.()).catch(() => undefined).then(() => { write(lines, at) })
+      const written = turn.then(() => flushWithin(input.flush)).catch(() => undefined).then(() => { write(lines, at) })
       turn = written.catch(() => undefined)
       return written
     },
@@ -140,5 +143,15 @@ export function createConsoleWriter(input: { output: Writable; dates: boolean; f
         },
       })
     },
+  }
+}
+
+async function flushWithin(flush: (() => Promise<void>) | undefined): Promise<void> {
+  if (!flush) return
+  let timer: NodeJS.Timeout | undefined
+  try {
+    await Promise.race([flush(), new Promise<void>((resolve) => { timer = setTimeout(resolve, BLOCK_FLUSH_DEADLINE_MS) })])
+  } finally {
+    clearTimeout(timer)
   }
 }

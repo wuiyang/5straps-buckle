@@ -3,7 +3,7 @@ import { createLogger, createRotatingFileSink, createStderrJsonSink, LOG_LEVELS,
 import { maskHeld, maskHeldJson, masksHeld } from '../services/secrets/mask.js'
 import { parseList } from './config.js'
 import { createConsoleWriter, type ConsoleWriter } from './console.js'
-import { PROCESS_LOG_QUEUE } from './log-budget.js'
+import { LOG_CLOSE_DEADLINE_MS, PROCESS_LOG_QUEUE } from './log-budget.js'
 import { isVerbose, renderEvent } from './log-render.js'
 
 const COMPONENT = 'buckle'
@@ -65,9 +65,9 @@ export function withoutCause(error: unknown): Error | string {
   return kept
 }
 
-/** Log events are written asynchronously; a caller about to read stderr or exit flushes first. */
-export function flushLogs(): Promise<void> {
-  return root?.flush() ?? Promise.resolve()
+/** Log events are written asynchronously; a caller about to read stderr or exit flushes first, for up to the deadline. */
+export function flushLogs(options: { deadlineMs?: number } = {}): Promise<void> {
+  return root?.flush({ deadlineMs: options.deadlineMs ?? LOG_CLOSE_DEADLINE_MS }) ?? Promise.resolve()
 }
 
 export function loggerConfigFrom(environment: NodeJS.ProcessEnv): LoggerConfig {

@@ -5,7 +5,7 @@ import { createLogQueue } from '@5straps/runtime'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { createJsonFileStore } from '../common/adapters/json-file-store.js'
-import { LOG_BATCH_LIMIT, LOG_WRITE_DEADLINE_MS, PROCESS_LOG_QUEUE, processLogBudget } from '../common/runtime/log-budget.js'
+import { LOG_BATCH_LIMIT, LOG_CLOSE_DEADLINE_MS, LOG_WRITE_DEADLINE_MS, PROCESS_LOG_QUEUE, processLogBudget } from '../common/runtime/log-budget.js'
 import { configureRootLogger, flushLogs, logFormatFrom, logger, loggerConfigFrom, stderrFormat, withoutCause } from '../common/runtime/log.js'
 
 // The root logger writes asynchronously, so every stderr capture flushes before reading.
@@ -65,6 +65,21 @@ describe('the Buckle root logger', () => {
     configureRootLogger(loggerConfigFrom({ BUCKLE_LOG_ALLOW_KEYS: 'adminToken, authorization, reportToken, content' }))
     const [line] = await captureStderr(() => logger.info('allowed keys', { adminToken: 'plain-admin-credential-value', authorization: 'plain-header-value', reportToken: 'plain-report-value', content: 'lifted file text' }))
     expect(line).toMatchObject({ fields: { adminToken: '[redacted]', authorization: '[redacted]', reportToken: '[redacted]', content: 'lifted file text' } })
+  })
+
+  it('stops flushing at the close deadline while a sink fails its retries, so a command still exits', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const failing = configureRootLogger({}, { sink: { name: 'failing', write: () => { throw new Error('disk full') } } })
+    try {
+      logger.info('a line the sink will not take')
+      const started = performance.now()
+      await flushLogs()
+      expect(performance.now() - started).toBeLessThan(LOG_CLOSE_DEADLINE_MS + 1_000)
+    } finally {
+      // Its line leaves the process's budget, which the next test fills.
+      await failing.close({ deadlineMs: 1 })
+      stderr.mockRestore()
+    }
   })
 
   it('drops events below the configured level', async () => {

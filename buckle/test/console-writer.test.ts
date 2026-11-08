@@ -5,7 +5,7 @@ import { createInterface } from 'node:readline'
 import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig } from '../common/runtime/config.js'
-import { createConsoleWriter, type ConsoleWriter } from '../common/runtime/console.js'
+import { BLOCK_FLUSH_DEADLINE_MS, createConsoleWriter, type ConsoleWriter } from '../common/runtime/console.js'
 import { configureRootLogger, flushLogs, logger } from '../common/runtime/log.js'
 import type { ServeHttpInput } from '../server/serve.js'
 import { serveHttp } from '../server/serve.js'
@@ -141,6 +141,28 @@ describe('the console writer', () => {
       } finally {
         readline.close()
         configureRootLogger({})
+      }
+    })
+
+    it('writes a block within its bound while the log line before it fails its sink and waits for a retry', async () => {
+      const terminal = screen(false)
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+      const failing = configureRootLogger({}, { sink: { name: 'failing', write: () => { throw new Error('disk full') } } })
+      try {
+        logger.info('a line the sink will not take')
+        const writer = createConsoleWriter({ output: terminal.output, dates: false, flush: flushLogs })
+        let timer: NodeJS.Timeout | undefined
+        const shown = await Promise.race([
+          writer.block(['the question'], new Date()).then(() => 'shown'),
+          new Promise<string>((resolve) => { timer = setTimeout(() => resolve('held'), BLOCK_FLUSH_DEADLINE_MS + 500) }),
+        ])
+        clearTimeout(timer)
+        expect(shown).toBe('shown')
+        expect(terminal.shown()).toBe('the question\n')
+      } finally {
+        await failing.close({ deadlineMs: 1 })
+        configureRootLogger({})
+        stderr.mockRestore()
       }
     })
 
