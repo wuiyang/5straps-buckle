@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { ignoresCase, isInsideComparable } from '../../domain/paths.js'
-import { realPathOf } from '../../runtime/config.js'
+import { realPathOf } from '../../runtime/real-path.js'
 import { registryPath, RegistrySchema } from '../workspaces/registry.js'
 import { ALREADY_SERVING, type RunningNode } from './serve-record.js'
 

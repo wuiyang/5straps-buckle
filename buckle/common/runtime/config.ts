@@ -1,13 +1,12 @@
 import { parseSandboxMounts } from '../domain/sandbox-mounts.js'
 import type { TableMount } from '../domain/mount-table.js'
 import type { SandboxBind } from '../types/ports/sandbox.js'
-import { realpathSync } from 'node:fs'
-import { basename, isAbsolute, join } from 'pathe'
+import { isAbsolute, join } from 'pathe'
 import { emptyWorkspacePolicy, SandboxModeSchema, type WorkspacePolicy } from '@5straps/protocol'
 import { approvalKey, type ApprovalKey } from '@5straps/protocol/envelope'
 import { browserArgumentsRefusal } from '../domain/browser-arguments.js'
 import { INTERPRETER_NAMES, isInterpreter } from '../domain/command-forms.js'
-import { childPath, homeDirectory, ignoresCase, isDriveRoot, isInside, isInsideComparable, nativePath, parentDirectory, typedPath, WHOLE_DRIVE, workingDirectory } from '../domain/paths.js'
+import { homeDirectory, ignoresCase, isDriveRoot, isInside, isInsideComparable, typedPath, WHOLE_DRIVE, workingDirectory } from '../domain/paths.js'
 import { compileHostPattern, UrlPatternError } from '../domain/url-pattern.js'
 import { compilePolicy, PolicyError } from '../domain/policy.js'
 import { launchdGuardedPaths } from '../domain/launchd-agent.js'
@@ -19,6 +18,7 @@ import { MAX_TRANSFER_BYTES } from '../services/packs/browser/file-transfer.js'
 import { MAX_MASS_DELETE_LIMIT, parseDeleteInWorkspace, parseMassDeleteLimit, type DeleteInWorkspace } from '../domain/delete-policy.js'
 import { parseSessionIdle, SESSION_IDLE_BOUNDS } from '../domain/approval/session-idle.js'
 import { recordedEnvironmentFiles } from './environment-files.js'
+import { realPathOf } from './real-path.js'
 
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -708,18 +708,6 @@ function settingsFiles(config: StateDirectories): string[] {
 export function workspaceHolds(typedRoot: string, path: string, platform: NodeJS.Platform = process.platform): boolean {
   const root = realPathOf(typedRoot, platform)
   return isInside(typedRoot, path, platform) || isInside(root, path, platform) || isInsideComparable(root, realPathOf(path, platform), ignoresCase(platform), platform)
-}
-
-/** The real path of a directory, or of its nearest existing ancestor with the rest appended. */
-export function realPathOf(path: string, platform: NodeJS.Platform = process.platform): string {
-  let real: string
-  try {
-    real = realpathSync.native(path)
-  } catch {
-    const parent = parentDirectory(path)
-    return parent === path ? path : childPath(realPathOf(parent, platform), basename(path))
-  }
-  return nativePath(real, platform)
 }
 
 /** Whether two paths name one directory where each really is, compared as the platform's disks compare names. */

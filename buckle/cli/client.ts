@@ -7,7 +7,7 @@ import { OwnerOnlyError, requireOwnerOnly, setMode, type OwnerOnlyCheck } from '
 import { describeAction, printable, sameCallNote, workspaceLabel } from '../common/domain/approval-instruction.js'
 import { callDigestOf, ShownApprovalCallSchema, shownCallDigestOf, generateSigningKey, keyIdOf, PublicKeyTextSchema, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest, SIGNED_WORKSPACE_MAX, SmallOrderKeyError, type ApprovalChallenge, type ShownApprovalCall, type SignedRequestPurpose, type SigningKey } from '@5straps/protocol/signed-request'
 import { homeDirectory, isDriveRoot, typedPath, WHOLE_DRIVE } from '../common/domain/paths.js'
-import { realPathOf } from '../common/runtime/config.js'
+import { realPathOf } from '../common/runtime/real-path.js'
 import { saveEndingLine, unsavedApproval, unsavedDenial } from '../common/adapters/approval/grant-save-question.js'
 import { SAVE_FAILED_EXIT } from './exit-codes.js'
 

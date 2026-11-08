@@ -3,7 +3,8 @@ import { dirname, isAbsolute, join, resolve } from 'pathe'
 import { parseEnv } from 'node:util'
 import { isOpenToOthers } from '../adapters/file-modes.js'
 import { isInside, typedPath } from '../domain/paths.js'
-import { defaultEnvironmentFile, environmentFilePath, realPathOf, stateDirectoryOf } from './config.js'
+import { defaultEnvironmentFile, environmentFilePath, stateDirectoryOf } from './config.js'
+import { realPathOf } from './real-path.js'
 import type { NodeLocation } from '../types/ports/service-manager.js'
 
 // A line that sets a BUCKLE_ variable; matched by name only, so no value is ever read.
