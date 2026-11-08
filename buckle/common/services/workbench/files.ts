@@ -127,6 +127,8 @@ export function createWorkbenchFiles(options: WorkbenchFileOptions) {
       for (const path of changedPaths(before, after)) {
         const name = relative(options.sourceRoot, path) || '.'
         if (!isInside(options.sourceRoot, path) || !permitted(name, 'write') || !permitted(name, 'read')) throw new WorkbenchError('A staged change is outside current workspace permissions', 403)
+        // A protected path the folder lacks is not in the copy to leave out, so a terminal can make it there.
+        if (options.protectedRoots.some(root => isInside(root, path) || isInside(path, root))) throw new WorkbenchError('A staged change reaches Buckle\'s own state', 403)
       }
     },
     describe(id: string, before: Snapshot, after: Snapshot): WorkbenchChange[] {

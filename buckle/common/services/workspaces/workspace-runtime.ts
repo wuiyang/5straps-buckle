@@ -509,7 +509,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       // The copy lies inside Buckle's state, so the scan takes the protected paths beside it; those holding it are still
       // masked wherever else the layout shows them.
       const holdingCopy = state.filter(path => isInside(path, request.root))
-      // Every host bind here but the copy is read-only, so a settings file not made yet cannot be made there and needs no mask.
+      // Every host bind here but the copy is read-only, so a settings file not made yet needs no mask there; the copy may
+      // make one, which review and apply refuse to publish.
       const hidden = await collectShellHiddenPaths({ roots: [request.root, ...scratchRoots, ...config.mountReadOnlyPaths], protectedPaths: state.filter(path => !holdingCopy.includes(path)), settingsFiles: protectedSettingsFiles(config), signal })
       if (projection.hiddenPaths.some(path => isInside(path, request.cwd))) throw new WorkbenchError('Filesystem restrictions hide this terminal working directory', 403)
       const wrapped = sandbox.sandbox.wrap({ command: 'bash', args: ['--noprofile', '--norc', '-i'], cwd: request.cwd,

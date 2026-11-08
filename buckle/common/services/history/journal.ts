@@ -822,7 +822,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       return locked(async () => {
         const paths = changedPaths(expected, target)
         if (!paths.length) return null
-        assertExcludedUntouched(paths, details.excluded)
+        // The history's own protected paths too, as a restore checks them: whoever publishes the copy, none is made or changed.
+        assertExcludedUntouched(paths, [...input.excluded, ...details.excluded ?? []])
         const scope = promotionScope({ paths, expected, target, roots: details.roots })
         const limits = scopeLimits()
         const current = await captureScope({ scope, digest: sha256, ...limits, excluded: [...limits.excluded, ...details.excluded ?? []] })

@@ -25,15 +25,17 @@ function fakePty() {
   }
   return { process, input, get size() { return size }, output(value: string) { for (const listener of data) listener(value) } }
 }
-async function fixture() {
+/** `protect`: paths in the folder that the workbench (`workbench`) or the history alone (`history`) keeps from it, beside the state directory. */
+async function fixture(input: { protect?: (sourceRoot: string) => { workbench?: string[]; history?: string[] } } = {}) {
   const root = mkdtempSync('/tmp/buckle-workbench-')
   const sourceRoot = join(root, 'source'); mkdirSync(sourceRoot)
   const state = join(root, 'state'); mkdirSync(state)
   writeFileSync(join(sourceRoot, 'note.txt'), 'original')
   writeFileSync(join(sourceRoot, '.env'), 'SYNTHETIC_PRIVATE=value')
   mkdirSync(join(sourceRoot, 'private')); writeFileSync(join(sourceRoot, 'private', 'hidden.txt'), 'private file')
+  const protect = input.protect?.(sourceRoot) ?? {}
   const audit: ActionLogEntry[] = []
-  const history = await openChangeHistory({ directory: join(state, 'history'), excluded: [state], maxBytes: 10_000_000, retentionDays: 30 })
+  const history = await openChangeHistory({ directory: join(state, 'history'), excluded: [state, ...protect.history ?? []], maxBytes: 10_000_000, retentionDays: 30 })
   let clock = Date.now()
   let policy = 'initial'
   let denyWrites = false
@@ -41,7 +43,7 @@ async function fixture() {
   const processes: ReturnType<typeof fakePty>[] = []
   const spawned: PtySpawnRequest[] = []
   const options = {
-    sourceRoot, directory: join(state, 'workbenches'), workspaceId: 'development', maxBytes: 1_000_000, protectedRoots: [state], ripgrep: () => null,
+    sourceRoot, directory: join(state, 'workbenches'), workspaceId: 'development', maxBytes: 1_000_000, protectedRoots: [state, ...protect.workbench ?? []], ripgrep: () => null,
     actions: { async record(entry: ActionLogEntry) { audit.push(entry) }, append(entry: ActionLogEntry) { audit.push(entry) }, async ownerAttempt(entry: ActionLogEntry) { audit.push(entry) }, async recordMany(entries: readonly ActionLogEntry[]) { audit.push(...entries) }, async recoverInterrupted() { return 0 }, read() { return audit }, page() { return { entries: audit, nextCursor: null } } },
     history, now: () => clock,
     authorizePath: (path: string, operation: 'read' | 'write') => !path.startsWith('private') && !(operation === 'write' && denyWrites),
@@ -137,6 +139,27 @@ describe('staged workbench files and publication', () => {
     symlinkSync(f.sourceRoot, join(f.copyRoot, 'escape'))
     await expect(f.manager.invoke(f.grant.id, { actorId: 'alice', tool: 'fs_read', args: { path: 'escape/note.txt' } })).rejects.toThrow(/outside|Symbolic/)
     await expect(f.manager.review(f.grant.id, 'alice')).rejects.toThrow('symbolic link')
+  })
+
+  // A settings file the node names but has not made yet is left out of the copy, as there is none to copy: a terminal
+  // can make it there, and the copy must not carry it into the folder.
+  it('refuses at review a copy that makes a protected file the folder lacks, or the folder that would hold it, and the folder gains neither', async () => {
+    for (const made of ['config/buckle.env', 'config']) {
+      const f = await fixture({ protect: sourceRoot => ({ workbench: [join(sourceRoot, 'config', 'buckle.env')] }) })
+      mkdirSync(join(f.copyRoot, 'config'))
+      if (made === 'config/buckle.env') writeFileSync(join(f.copyRoot, 'config', 'buckle.env'), 'BUCKLE_APPROVAL_FORMS=true\n')
+      await expect(f.manager.review(f.grant.id, 'alice')).rejects.toMatchObject({ status: 403, message: 'A staged change reaches Buckle\'s own state' })
+      expect(existsSync(join(f.sourceRoot, 'config'))).toBe(false)
+    }
+  })
+
+  it('refuses at Apply a change at a path the history keeps from every promotion, whatever the workbench was told', async () => {
+    const f = await fixture({ protect: sourceRoot => ({ history: [join(sourceRoot, 'config', 'buckle.env')] }) })
+    mkdirSync(join(f.copyRoot, 'config'))
+    writeFileSync(join(f.copyRoot, 'config', 'buckle.env'), 'BUCKLE_APPROVAL_FORMS=true\n')
+    const { review } = await f.manager.review(f.grant.id, 'alice')
+    await expect(f.manager.apply(f.grant.id, { actorId: 'alice', reviewId: review.id })).rejects.toThrow('Changes overlap a protected file')
+    expect(existsSync(join(f.sourceRoot, 'config'))).toBe(false)
   })
 
   it('rechecks permissions at Apply rather than trusting the earlier review', async () => {

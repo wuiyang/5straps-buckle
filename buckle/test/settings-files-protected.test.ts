@@ -4,9 +4,10 @@ import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { emptyWorkspacePolicy, type InvokeResponse, type JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { loadConfig, protectedStateRoots } from '../common/runtime/config.js'
+import { loadConfig, protectedStateRoots, type BuckleConfig } from '../common/runtime/config.js'
 import { environmentFilesPath, recordEnvironmentFile, recordedEnvironmentFiles } from '../common/runtime/environment-files.js'
 import { collectShellHiddenPaths } from '../common/services/shell/shell-filesystem.js'
+import { workbenchesDirectory } from '../common/services/workbench/storage.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { settleAuditLogs } from './support/action-log-writer.js'
@@ -43,7 +44,7 @@ function writeSettings(file: string): void {
   writeFileSync(file, SETTINGS, { mode: 0o600 })
 }
 
-interface Node { root: string; workspace: string; envFile: string; runtime: CoreRuntime; call: (tool: string, args: JsonObject) => Promise<InvokeResponse> }
+interface Node { root: string; workspace: string; envFile: string; config: BuckleConfig; runtime: CoreRuntime; call: (tool: string, args: JsonObject) => Promise<InvokeResponse> }
 
 /** A node whose env file `at` places, written unless `missing`, with `environment` over the defaults the rows share. */
 async function node(input: { at: (root: string, workspace: string) => string; environment?: (root: string) => Record<string, string>; missing?: boolean }): Promise<Node> {
@@ -60,7 +61,7 @@ async function node(input: { at: (root: string, workspace: string) => string; en
   const runtime = await createRuntime({ config })
   runtimes.push(runtime)
   const call = (tool: string, args: JsonObject) => runtime.invoke({ sessionId: 'agent', request: { requestId: randomUUID(), tool, args, approvalTokens: [], context: { approvalWait: { mode: 'none' } } } })
-  return { root, workspace, envFile, runtime, call }
+  return { root, workspace, envFile, config, runtime, call }
 }
 
 function refusedAsState(response: InvokeResponse): void {
@@ -257,6 +258,17 @@ describe('an env file inside the workspace', () => {
     await runtime.history.rollback({ target: { steps: 1 }, by: { sessionId: 'agent', stageId: 'undo', tool: 'history_restore', requestId: 'undo' } })
     expect(existsSync(join(workspace, 'other.txt'))).toBe(false)
     expect(readFileSync(envFile, 'utf8')).toBe('BUCKLE_APPROVAL_FORMS=true\n')
+  })
+
+  it('is refused at a workbench review where the copy makes it, not made yet, so no apply publishes it', async () => {
+    const { workspace, envFile, config, runtime } = await node({ at: inside, missing: true })
+    const grant = { id: randomUUID(), token: 'workbench-fixture-token-with-enough-bytes', projectId: 'project-a', chatId: 'chat-a', allowShell: false }
+    await runtime.workbenches.provision(grant)
+    // What a terminal in the copy would leave there.
+    const copied = join(workbenchesDirectory({ stateDirectory: config.stateDirectory, root: workspace }), grant.id, 'workspace', 'config', 'buckle.env')
+    writeFileSync(copied, 'BUCKLE_APPROVAL_FORMS=true\n')
+    await expect(runtime.workbenches.review(grant.id, 'alice')).rejects.toMatchObject({ status: 403, message: 'A staged change reaches Buckle\'s own state' })
+    expect(existsSync(envFile)).toBe(false)
   })
 })
 
