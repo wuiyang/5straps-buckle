@@ -2,7 +2,8 @@
 
 What tells a process that a workspace is still in use, and how its sessions end once it is not,
 or once the MCP server they came through closes, as the owner ruled. The [approval
-backend](approval-backend.md) page covers the port. Paths are in `buckle/`.
+backend](approval-backend.md) page covers the port, and [face sessions](approval-backend-07.md)
+the sessions each face holds, the settings, and the tests. Paths are in `buckle/`.
 
 ## The executing mark
 
@@ -13,12 +14,17 @@ backend](approval-backend.md) page covers the port. Paths are in `buckle/`.
   opens, which also names the browser sessions it writes. Never by its pid, so a new process under
   a dead one's pid never refreshes the dead one's mark.
 - **When it is held:** from the moment a tool begins to run (`beginRun` in
-  `common/services/invocation/invoker.ts`) to a `finally` around the tool, whatever becomes of the
-  result entry. One file per runtime, refreshed every 2 s (`ACTIVE_WORK_REFRESH_MS`);
-  `ExecutingMark.running()` says whether this runtime holds it.
+  `common/services/invocation/invoker.ts`) to a `finally` around the history wrapper, so through
+  the checkpoint after the tool, and before the result entry is written or dropped. One file per
+  runtime, refreshed every 2 s (`ACTIVE_WORK_REFRESH_MS`); `ExecutingMark.running()` says whether
+  this runtime holds it.
 - **When it is not:** a call waiting for a person holds none, and neither does a script while one
   of its calls waits (`ExecutingRun.paused`, in `clearPermissions`).
-- **A write that fails:** warned, never thrown. A missing mark can only end sessions early.
+- **A write that fails:** warned once until a refresh lands, never thrown. The refresh timer starts
+  before the first write, so a mark whose first write failed is written at a later refresh. A
+  missing mark can only end sessions early.
+- **A blocked process:** the refresh runs on the main thread, so a tool that blocks it for more
+  than 10 s reads as stale to another process meanwhile.
 - **A crash:** its mark reads stale 10 s after its last refresh (`ACTIVE_WORK_FRESH_MS`).
 - **The reader:** `executingInstances` lists the fresh marks and removes the stale ones. A folder
   not made yet reads as none; any other read error throws.
@@ -28,17 +34,18 @@ backend](approval-backend.md) page covers the port. Paths are in `buckle/`.
 
 `common/services/history/activity.ts` keeps `activity.sqlite` in the workspace's history folder.
 Its `activity` table holds each session's newest call start and end (`startCall` and `finishCall`
-in the invoker); its `workspace` row is touched at each ask recorded and each decision applied,
-through the registry's `onActivity` (`ChangeHistory.touchActivity`). `latest()` reads the newest
-`at` of both; it throws where the store did not open, since the in-memory fallback knows one
-process alone. Where it holds nothing, the runtime takes the newest session grant's `createdAt`
-(`newestSessionGrant`).
+in the invoker), for turn grouping; its `workspace` row is touched at each call end, whatever turn
+the session moved on to, and at each ask recorded and decision applied, through the registry's
+`onActivity` (`ChangeHistory.touchActivity`). `latest()` reads the newest `at` of both. It throws
+where the store did not open, since the in-memory fallback knows one process alone, and
+`ActivityBusyError` where another process held it past its 1 s busy wait. Where it holds nothing,
+the runtime takes the newest session grant's `createdAt` (`newestSessionGrant`).
 
 ## The verdict
 
 `idleVerdict` in `common/domain/approval/session-idle.ts` is pure: the time, the window, the
-process's own `seenAt`, and a reader in; `off` (window 0), `active` as of when, `idle`, or
-`unknown` naming the store out. Within the window of `seenAt` it reads nothing. A fresh executing
+process's own `seenAt`, and a reader in; `off` (window 0), `active` as of when, `idle`, `unknown`
+naming the store, or `busy` out. Within the window of `seenAt` it reads nothing. A fresh executing
 mark is active now; a last activity within the window is active as of then; anything older, or
 nothing ever, is idle.
 
@@ -48,18 +55,23 @@ nothing ever, is idle.
 state:
 
 - **When:** `invoke` checks after the settings pickup, before the invoker writes the call's attempt
-  entry, so a refused call is never activity; and a sweep runs every 60 s (`SESSION_SWEEP_MS`),
-  stopped at the timers close step. Concurrent checks share one run.
+  entry, so a call refused before the invoker is never activity; one the policy refuses counts, as
+  the invoker's `startCall` runs first. The approval service checks before each ask and each
+  decision (`idleCheck`), so a late answer neither lands in nor revives a session that idled. A
+  sweep runs every 60 s (`SESSION_SWEEP_MS`), stopped at the timers close step. Concurrent checks
+  share one run.
 - **The chain:** `seenAt` moves with a read that found activity, with this runtime's own running
   tool, and with `saw()` at a call's start and end, an ask, and a decision, but only while within
   the window, so activity after a gap waits for a read of the gap.
 - **The end:** an `idle` verdict calls `ApprovalService.endSessions` with `{ allSessions: true }`,
   cause `idle`, and a `due` that reads everything again under the approvals lock: a call or tool
   that began since keeps every session.
-- **Unknown:** no session ends. `sessionsFrom()` then answers the time a window ago, which
-  `createApprovalGate` passes to the grant reads: a session approval made before it clears
-  nothing, a denial binds whatever its age (`madeBeforeSessionsFrom`). The node log warns once per
+- **Unknown:** no session ends. `sessionApprovalsSuspended()` is then true, which
+  `createApprovalGate` passes to the grant reads: no session approval clears a call, one given
+  meanwhile included, and a denial binds (`suspendedSessionApproval`).
+  `SESSION_APPROVALS_CLEAR_WHILE_UNKNOWN` turns the suspension off. The node log warns once per
   store. An end that throws counts as unknown too.
+- **Busy:** the end is skipped this time, and nothing is suspended.
 
 ## What ends
 
@@ -68,55 +80,17 @@ state:
 approvals lock, then the grants lock:
 
 - withdraws the waiting asks, queuing their `cancelled` notices, and records each departure as
-  `cancelled` with reason `session_ended`, which the terminal hears;
+  `cancelled` with reason `session_ended`, in the process and in the ledger's `ended` list, kept
+  ten minutes, so the terminal of any process hears it;
 - drops the onces no call spent;
 - marks the owed and saved lasting grants `dropped`, so the settling pass never writes them;
 - removes the session grants, approvals and denials alike (`GrantStore.endSessions`).
 
 Always grants stay. A read without the lock first skips the lock where nothing would end. Where
 `approvals.json` cannot be read, the end is kept among the revocations (`{ allSessions: true }`
-or `{ sessionId }`) and the grants go. The service then tells the webhook, wakes each caller held
+or `{ sessionId }`) and the grants go; the next decision, ask, once spent, or open applies it
+(`applyRevocations`), withdrawing the asks and onces it could not reach. The service then tells the webhook, wakes each caller held
 on a withdrawn ask, and records each session through `DecisionAudit.sessionEnded`, one
 `approval_session_ended` entry through the log service. The registry's own `grants`
 (`LedgerGrants`) has no session end of its own. The causes are `SessionEndCause`: `idle`, and the
-face sessions' below.
-
-## Face sessions
-
-`FaceSession` (`common/services/workspaces/face-session.ts`) is the session a process's own face
-holds in each workspace it opens. `initializeCommon` picks it by role (`FACE_SESSIONS` in
-`common/runtime/initialize.ts`), exposes it as `BuckleCommon.faceSession`, and hands it through
-the workspace manager to `createRuntime`:
-
-- **`server`:** `SERVE_SESSION`, `mcp` (`HTTP_MCP_SESSION`), which `mcp/http.ts` names every call
-  by, as `/mcp` is served stateless. Ended at each open, `serve_started`, once the approval
-  service is built and before any call is served, so what a serve killed before its close left
-  clears nothing; an end that throws fails the open, which the next resolve tries again. Ended at
-  close, `serve_stopped`.
-- **`mcp`:** `stdioSession()`, `stdio:<uuid>`, minted per process, which `serveMcpStdio` passes to
-  `createStdioServer`. Ended at close, `stdio_closed`.
-- **`cli`:** none; `cli` ends at idle alone.
-
-The close end is the runtime's `endFaceSession()`, which `closeWithOwner`
-(`common/runtime/services.ts`) runs for every open runtime at once at the `timers` stage, before
-the `waiters` stage settles the other waits, so held callers hear their asks withdrawn. A runtime
-dropped while the process runs ends none; serve's next open does. `McpServerOptions.sessionId` is
-required, as neither transport names a session.
-
-## Settings
-
-`approval.sessionIdleMs` in `workspace.json`, else `BUCKLE_APPROVAL_SESSION_IDLE_MS` (alias
-`approval-session-idle`), else 900000 (`DEFAULT_SESSION_IDLE_MS`). `parseSessionIdle` takes 0 or
-60000 to 86400000 (`SESSION_IDLE_BOUNDS`). The runtime reads it from `config` as taken up.
-
-## Tests
-
-`test/executing-mark.test.ts` covers the mark. `test/face-sessions.test.ts` covers the face
-sessions: a stdio process's own id on each call, two stdio processes each ending its own alone,
-the CLI ending none, and serve ending `mcp` at its start after a crash and at its stop.
-`test/session-idle.test.ts` covers the verdict, the setting at each layer, the store, and the end
-through the service: every face's grants, onces, owed marks, withdrawn asks, the record, a tool
-that starts between the first read and the lock, a second process's long tool, and unknown
-activity. `test/session-idle-runtime.test.ts` steps a
-faked clock through a runtime: a CLI call after idle, a held ask, a dropped result, a decision read
-by another process, what is not activity, the grant fallback, window 0, and an unreadable store.
+[face sessions'](approval-backend-07.md).

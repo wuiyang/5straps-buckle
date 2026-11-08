@@ -163,5 +163,6 @@ At a terminal, the same command shows the whole action and asks in place:
 
 Enter, or anything not on offer, denies. Choose `2` and the write, and later writes in that
 directory or below, go ahead this session. Every CLI call shares one
-session, so for the CLI that lasts until `buckle grants revoke <id>`. [Approvals](../how-to/approvals.md)
+session, which ends once the workspace has gone 15 minutes with no activity, or at `buckle grants
+revoke <id>` ([session end](../how-to/approvals-07.md)). [Approvals](../how-to/approvals.md)
 covers every question Buckle asks and every way to answer one.
