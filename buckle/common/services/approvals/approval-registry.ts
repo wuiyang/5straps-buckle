@@ -11,7 +11,7 @@ import type { CodeBinding } from '../../domain/permission/judged.js'
 import { servesHolder, type GrantHolder } from '../../domain/permission/grant-holder.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import { askedCallSchema, type AskedCall } from '../../domain/approval/asked-call.js'
-import { guardDecision, guardSkip, screenDecision, type DecisionClaim, type LedgerView, type LiveSettings } from '../../domain/approval/decision-guard.js'
+import { guardDecision, guardSkip, screenDecision, screenSkip, type DecisionClaim, type LedgerView, type LiveSettings } from '../../domain/approval/decision-guard.js'
 import { TODAYS_ROUTES } from '../../domain/approval/routes.js'
 import { GRANT_SAVES, type ApprovalErrorCode, type EventReason, type GrantSave } from '../../types/ports/approval-backend.js'
 import { BUILT_IN_SOURCES, type ApprovalSource } from '../../types/ports/approval-source.js'
@@ -1007,6 +1007,9 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     },
 
     async skipSave({ token, source, caller }) {
+      // Refused before the lock, as a decision is, so this comes back even when the approvals file cannot be read.
+      const screened = screenSkip({ source, live: live() })
+      if (!screened.ok) return { ok: false, code: screened.code, reason: screened.reason }
       let skipped: SkipResolution | undefined
       try {
         return await update(async (state, commit) => {

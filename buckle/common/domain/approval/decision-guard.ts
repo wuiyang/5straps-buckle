@@ -113,11 +113,16 @@ export function guardDecision(input: { claim: DecisionClaim; ledger: LedgerView;
 export interface RecordedForSkip { approved: boolean; scope: ApprovalDecision['scope']; source?: ApprovalSource; actor?: string }
 
 /** A skip gives up a session or always approval's grant, and only the source that recorded the decision sends one. */
+// Needs no decision, so the registry also runs it before it locks the approvals file.
+export function screenSkip(input: { source: ApprovalSource; live: LiveSettings }): GuardRefusal | { ok: true } {
+  return settingRefusal({ rights: rightsOf(input.source.kind), live: input.live }) ?? { ok: true }
+}
+
 export function guardSkip(input: { source: ApprovalSource; caller?: string; recorded: RecordedForSkip | undefined; live: LiveSettings }): GuardRefusal | { ok: true } {
   const { recorded } = input
   const rights = rightsOf(input.source.kind)
-  const unset = settingRefusal({ rights, live: input.live })
-  if (unset) return unset
+  const screened = screenSkip(input)
+  if (!screened.ok) return screened
   if (recorded === undefined) return refuse('unknown_ask', 'No decision is recorded for this token, so it has no save to skip')
   const stranger = callerRefusal({ rights, source: input.source, caller: input.caller, actor: recorded.actor })
   if (stranger) return stranger

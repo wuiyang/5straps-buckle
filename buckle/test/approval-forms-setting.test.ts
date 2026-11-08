@@ -176,8 +176,9 @@ function ledger(input: { failingGrants?: number } = {}) {
   const root = scratch()
   const live: LiveSettings = { forms: true }
   const store = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'workspace-id' })
-  const registry = createApprovalRegistry(failingGrants(store, input.failingGrants ?? 0), join(root, 'approvals.json'), 0, { live: () => live })
-  return { live, store, registry }
+  const approvals = join(root, 'approvals.json')
+  const registry = createApprovalRegistry(failingGrants(store, input.failingGrants ?? 0), approvals, 0, { live: () => live })
+  return { live, store, registry, approvals }
 }
 
 async function askIn(registry: ApprovalRegistry, requestId: string): Promise<string> {
@@ -211,6 +212,16 @@ describe('a form answer in the ledger once the setting is off', () => {
 
     await registry.recover()
     expect(store.list()).toEqual([expect.objectContaining({ subject: '/outside/r1', scope: 'session', sessionId: 's' })])
+  })
+
+  it('refuses a form answer and a skip before the lock, so each comes back while approvals.json will not read', async () => {
+    vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+    const { live, registry, approvals } = ledger()
+    const token = await askIn(registry, 'r1')
+    live.forms = false
+    writeFileSync(approvals, '{ not json', { mode: 0o600 })
+    expect(await registry.resolve(session(token), SOURCES.forms)).toMatchObject({ ok: false, code: 'approver_not_allowed' })
+    expect(await registry.skipSave({ token, source: SOURCES.forms })).toMatchObject({ ok: false, code: 'approver_not_allowed' })
   })
 
   it('leaves standing the grants forms wrote while on, and refuses forms a repeat of them', async () => {
