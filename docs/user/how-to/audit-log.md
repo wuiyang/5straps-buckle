@@ -88,9 +88,10 @@ where. Approvers see the whole call when they decide; the log does not keep it.
 - On Linux and macOS the file is created owner-only (mode 600). It is synced to disk on every write,
   off the node's main thread ([part two](audit-log-02.md#how-it-is-written)).
 - Buckle never rotates or truncates it.
-- When the log will not take a write, Buckle refuses the calls it would have to record:
-  `AUDIT_UNAVAILABLE`, HTTP 503 over HTTP. `GET /health/ready` answers 503 until a write works
-  again.
+- When the log will not take a write, Buckle refuses an agent's calls it would have to record:
+  `AUDIT_UNAVAILABLE`, HTTP 503 over HTTP. Your own changes still apply
+  ([part two](audit-log-02.md#what-waits-and-what-is-queued)). `GET /health/ready` answers 503
+  until a write works again.
 
 ## Not tamper-proof
 

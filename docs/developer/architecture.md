@@ -58,7 +58,9 @@ It refuses a call to an offline workspace, takes up a change to the workspace's 
    the call as its transport chose, and checks again once answered.
 6. The tool runs under its timeout. A call that writes or runs a command runs under the
    workspace's change history, which keeps a checkpoint.
-7. The result is written to the log, and reported when a report URL is set.
+7. The result is written to the log, through the log service
+   (`common/adapters/action-log/log-service.ts`) once the call ran, and reported when a report URL
+   is set.
 
 ## The permission engine
 
