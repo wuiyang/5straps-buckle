@@ -190,11 +190,12 @@ describe('durable approval outcome delivery', () => {
     expect(q.registry.pendingDeliveries()).toEqual([])
   })
 
-  it('closes the delivery owner when runtime initialization fails with a network attempt in flight', async () => {
-    vi.useFakeTimers(); vi.setSystemTime(at)
+  // A runtime's config with one cancelled ask's notice queued for its webhook, and a fetch that holds each attempt
+  // until released and then answers 503.
+  async function queuedNoticeRuntime(environment: NodeJS.ProcessEnv = {}) {
     const workspace = mkdtempSync(join(tmpdir(), 'buckle-outbox-workspace-'))
-    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-outbox-')), BUCKLE_AUTH_TOKEN: 'test-agent', BUCKLE_ADMIN_TOKEN: 'test-admin', BUCKLE_PACKS: 'fs', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_APPROVAL_WEBHOOK: 'http://rings.test/approvals' })
-    // The queue the runtime takes over lives in the workspace's own records folder (D85, Q15), under its id.
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-outbox-')), BUCKLE_AUTH_TOKEN: 'test-agent', BUCKLE_ADMIN_TOKEN: 'test-admin', BUCKLE_PACKS: 'fs', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_APPROVAL_WEBHOOK: 'http://rings.test/approvals', ...environment })
+    // The queue the runtime takes over lives in the workspace's own records folder, under its id.
     mkdirSync(config.stateDirectory, { recursive: true })
     const q = queue(config.workspaceId, config.stateDirectory)
     const [ask] = await q.ask()
@@ -202,15 +203,33 @@ describe('durable approval outcome delivery', () => {
     const blocked = paused()
     const fetch = vi.fn(async () => { await blocked.wait; return new Response('', { status: 503 }) })
     vi.stubGlobal('fetch', fetch)
-    mkdirSync(dirname(settingsPath(config.nodeStateDirectory!, config.workspaceId)), { recursive: true })
-    writeFileSync(settingsPath(config.nodeStateDirectory!, config.workspaceId), '{')
-    const initializing = createRuntime({ config })
-    const rejected = expect(initializing).rejects.toThrow('unreadable or invalid')
-    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
+    return { config, q, fetch, blocked }
+  }
+
+  it('closes the delivery owner when runtime initialization fails with a network attempt in flight', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(at)
+    // A skill path that is a file fails the open at loading skills, which comes after the delivery owner starts sending.
+    const notADirectory = join(mkdtempSync(join(tmpdir(), 'buckle-outbox-skills-')), 'SKILL.md')
+    writeFileSync(notADirectory, '')
+    const { config, q, fetch, blocked } = await queuedNoticeRuntime({ BUCKLE_SKILLS_DIRS: notADirectory })
+    const rejected = expect(createRuntime({ config })).rejects.toThrow('Skill path is not a directory')
+    await vi.waitFor(() => expect(fetch, 'a delivery attempt starts before the open fails').toHaveBeenCalledTimes(1))
     blocked.release()
     await rejected
     await vi.advanceTimersByTimeAsync(20_000)
     expect(fetch).toHaveBeenCalledTimes(1)
+    expect(q.registry.pendingDeliveries()).toHaveLength(1)
+  })
+
+  it('starts no delivery when runtime initialization fails reading the workspace settings', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(at)
+    const { config, q, fetch } = await queuedNoticeRuntime()
+    const file = settingsPath(config.nodeStateDirectory!, config.workspaceId)
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, '{')
+    await expect(createRuntime({ config })).rejects.toThrow('unreadable or invalid')
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(fetch).not.toHaveBeenCalled()
     expect(q.registry.pendingDeliveries()).toHaveLength(1)
   })
 
