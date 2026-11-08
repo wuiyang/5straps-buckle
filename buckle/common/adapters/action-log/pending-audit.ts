@@ -1,6 +1,7 @@
 import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
 import { acquireFileLock, type FileLock } from '@5straps/runtime/sqlite'
 import { z } from 'zod'
+import { interruptedDetail } from '../../domain/record-tools.js'
 import type { ActionLogEntry } from '../../types/ports/action-log.js'
 import { createJsonFileStore } from '../json-file-store.js'
 import { entriesFrom, stringField } from './log-lines.js'
@@ -70,9 +71,7 @@ export function createPendingAudit(input: {
             await store.update(state => { delete state.pending[auditId] })
             continue
           }
-          await record({ ...item.entry, event: 'result', outcome: 'interrupted',
-            at: new Date().toISOString(), detail: 'Owner process stopped before recording an outcome; effects are unknown',
-          })
+          await record({ ...item.entry, event: 'result', outcome: 'interrupted', at: new Date().toISOString(), detail: interruptedDetail(item.entry.tool) })
           recovered += 1
         }
         return recovered

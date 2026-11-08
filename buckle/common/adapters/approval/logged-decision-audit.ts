@@ -1,11 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import type { JsonObject } from '@5straps/protocol'
+import { DECISION_TOOL } from '../../domain/record-tools.js'
 import { MAX_LOGGED_ID } from '../../domain/redact.js'
 import type { ActionLog, ActionLogEntry } from '../../types/ports/action-log.js'
 import type { AuditedDecision, DecisionAudit } from '../../types/ports/decision-audit.js'
 
-/** The tool each decision's entries are written under. */
-export const DECISION_TOOL = 'approval_decision'
 /** Decisions belong to no agent's session; their entries share this one. */
 const DECISION_SESSION = 'approvals'
 

@@ -7,6 +7,7 @@ import { createAuditHealth } from '../common/services/audit/audit-health.js'
 import { summarizeEffect } from '../common/domain/effect.js'
 import { collectPrefixed } from '../common/domain/environment.js'
 import { redactArguments } from '../common/domain/redact.js'
+import { DECISION_TOOL } from '../common/domain/record-tools.js'
 import type { ActionLogEntry } from '../common/types/ports/action-log.js'
 
 function logPath(): string {
@@ -338,6 +339,22 @@ describe('audit recovery after process interruption', () => {
     expect(await log.recoverInterrupted()).toBe(0)
     expect(log.read(1)[0]).toMatchObject({ auditId: 'stopped-call', event: 'result', outcome: 'interrupted' })
     expect(log.read(1)[0]?.detail).toContain('effects are unknown')
+  })
+
+  it('sends the reader of a decision or an owner\'s change left without its result to the state that holds what applied', async () => {
+    const recovered: Array<ActionLogEntry | undefined> = []
+    for (const tool of [DECISION_TOOL, 'cli_approve', 'setup_post_approvals', 'workspace_register']) {
+      const path = logPath()
+      const log = createFileActionLog(path)
+      await log.record(entry({ auditId: `stopped-${tool}`, event: 'attempt', outcome: 'started', tool }))
+      orphan(path)
+      expect(await createFileActionLog(path).recoverInterrupted()).toBe(1)
+      recovered.push(log.read(1)[0])
+    }
+
+    expect(recovered.map(item => [item?.tool, item?.outcome])).toEqual([[DECISION_TOOL, 'interrupted'], ['cli_approve', 'interrupted'], ['setup_post_approvals', 'interrupted'], ['workspace_register', 'interrupted']])
+    expect(recovered[0]?.detail).toContain('the approvals ledger holds what applied')
+    for (const item of recovered) expect(item?.detail).not.toContain('effects are unknown')
   })
 
   it('does not mark attempts from a live process interrupted', async () => {
