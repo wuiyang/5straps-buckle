@@ -1,10 +1,11 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { emptyWorkspacePolicy, type InvokeResponse, type JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig, protectedStateRoots } from '../common/runtime/config.js'
+import { environmentFilesPath, recordEnvironmentFile, recordedEnvironmentFiles } from '../common/runtime/environment-files.js'
 import { collectShellHiddenPaths } from '../common/services/shell/shell-filesystem.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -99,6 +100,45 @@ describe('the node\'s environment file in the protected set', () => {
   it('is buckle.env in the state directory where BUCKLE_ENV_FILE names none', () => {
     const root = scratch()
     expect(loadConfig({ BUCKLE_STATE_DIR: join(root, 'state') }).environmentFile).toBe(join(root, 'state', 'buckle.env'))
+  })
+})
+
+describe('an env file the state directory records, to a buckle mcp whose environment names none', () => {
+  it('is refused read or changed, past always grants over the folder holding it', async () => {
+    const root = scratch()
+    const workspace = join(root, 'workspace')
+    mkdirSync(workspace)
+    const state = join(root, 'state')
+    const envFile = join(root, 'settings', 'buckle.env')
+    writeSettings(envFile)
+    // What init, a service install, or a serve start that named the file left for every other process.
+    await recordEnvironmentFile({ stateDirectory: state, file: envFile })
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: state, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
+    expect(config.environmentFile).toBe(join(state, 'buckle.env'))
+    const runtime = await createRuntime({ config })
+    runtimes.push(runtime)
+    const call = (tool: string, args: JsonObject) => runtime.invoke({ sessionId: 'agent', request: { requestId: randomUUID(), tool, args, approvalTokens: [], context: { approvalWait: { mode: 'none' } } } })
+    for (const rule of ['read_scope', 'write_scope'] as const) await runtime.grants.grant({ sessionId: 'agent', rule, subject: join(root, 'settings'), scope: 'always' })
+    refusedAsState(await call('fs_read', { path: envFile }))
+    refusedAsState(await call('fs_write', { path: envFile, content: 'BUCKLE_APPROVAL_FORMS=true\n' }))
+    expect(readFileSync(envFile, 'utf8')).toBe(SETTINGS)
+  })
+
+  it('keeps each file once, and none inside the state directory, which is protected whole', async () => {
+    const root = scratch()
+    const state = join(root, 'state')
+    for (const file of [join(root, 'a.env'), join(root, 'b.env'), join(root, 'a.env'), join(state, 'buckle.env'), join(state, 'other.env')]) await recordEnvironmentFile({ stateDirectory: state, file })
+    expect(recordedEnvironmentFiles(state)).toEqual([join(root, 'a.env'), join(root, 'b.env')])
+    expect(loadConfig({ BUCKLE_STATE_DIR: state }).recordedEnvironmentFiles).toEqual([join(root, 'a.env'), join(root, 'b.env')])
+    if (process.platform !== 'win32') expect(statSync(environmentFilesPath(state)).mode & 0o777).toBe(0o600)
+  })
+
+  it('refuses to load the node\'s config while the record will not read, naming it', () => {
+    const root = scratch()
+    const state = join(root, 'state')
+    mkdirSync(state)
+    writeFileSync(environmentFilesPath(state), '{ not json')
+    expect(() => loadConfig({ BUCKLE_STATE_DIR: state })).toThrow(`${environmentFilesPath(state)} is not a record of environment files Buckle reads`)
   })
 })
 

@@ -7,7 +7,7 @@ import type { BuckleConfig } from '../common/runtime/config.js'
 import type { ConsoleWriter } from '../common/runtime/console.js'
 import { startActionLogWriter } from './support/action-log-writer.js'
 
-const config = { serverId: 'mode-dispatch', stateDirectory: '/nonexistent/buckle-mode-dispatch-state', cwd: process.cwd() } as BuckleConfig
+const config = { serverId: 'mode-dispatch', stateDirectory: '/nonexistent/buckle-mode-dispatch-state', environmentFile: '/nonexistent/buckle-mode-dispatch.env', cwd: process.cwd() } as BuckleConfig
 const entry = vi.hoisted(() => ({
   loadEnvironmentFile: vi.fn(() => ({ file: null, openToOthers: false })),
   loadConfig: vi.fn(),
@@ -25,6 +25,7 @@ const entry = vi.hoisted(() => ({
   /** The serve lock every serve takes, and the record it publishes once it listens. */
   holdServe: vi.fn(async () => ({ publish: entry.publish })),
   publish: vi.fn(async () => {}),
+  recordEnvironmentFile: vi.fn(async () => {}),
   /** What the root logger main configures was told to warn about, by message. */
   warnings: [] as string[],
 }))
@@ -35,6 +36,7 @@ vi.mock('../server/serve.js', () => ({ serveHttp: entry.serveHttp }))
 vi.mock('../server/setup-server.js', () => ({ setupServer: entry.setupServer, builtEntryPath: () => '/built/.output/server/index.mjs' }))
 vi.mock('../mcp/stdio.js', async importOriginal => ({ serveMcpStdio: entry.serveMcpStdio, mcpTarget: (await importOriginal<typeof import('../mcp/stdio.js')>()).mcpTarget }))
 vi.mock('../common/runtime/initialize.js', () => ({ initializeCommon: entry.initializeCommon }))
+vi.mock('../common/runtime/environment-files.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/runtime/environment-files.js')>(), recordEnvironmentFile: entry.recordEnvironmentFile }))
 vi.mock('../common/services/node-service/serve-record.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/services/node-service/serve-record.js')>(), runningNode: entry.runningNode, holdServe: entry.holdServe }))
 vi.mock('../common/adapters/file-modes.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/adapters/file-modes.js')>(), configureOwnerOnlyCheck: entry.configureOwnerOnlyCheck }))
 vi.mock('../common/runtime/log.js', async importOriginal => {
@@ -224,6 +226,18 @@ describe('main', () => {
     expect(entry.runCli).not.toHaveBeenCalled()
     // The process's one requester is bound before anything is served.
     expect(entry.initializeCommon.mock.results[0]!.value.bindRequester).toHaveBeenCalledTimes(1)
+  })
+
+  it('records the environment file it reads in its state directory once it holds the serve lock, before anything is built', async () => {
+    expect(await main(['serve'])).toBeUndefined()
+    expect(entry.recordEnvironmentFile).toHaveBeenCalledWith({ stateDirectory: config.stateDirectory, file: config.environmentFile })
+    expect(entry.holdServe.mock.invocationCallOrder[0]).toBeLessThan(entry.recordEnvironmentFile.mock.invocationCallOrder[0]!)
+    expect(entry.recordEnvironmentFile.mock.invocationCallOrder[0]).toBeLessThan(entry.setupServer.mock.invocationCallOrder[0]!)
+  })
+
+  it('records nothing for buckle mcp, which takes no file outside its state directory', async () => {
+    await main(['mcp'])
+    expect(entry.recordEnvironmentFile).not.toHaveBeenCalled()
   })
 
   // Fix brief 6, item 1: a serve at a terminal holds the state directory's serve lock as a service does, and records

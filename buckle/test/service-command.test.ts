@@ -7,6 +7,7 @@ import { serviceCommand, SERVICE_USAGE, type ServiceCommandInput } from '../cli/
 import { holdServe, runningNode, serviceDirectory, serviceLogPath, watchStopRequest, type ServeManagerKind } from '../common/services/node-service/serve-record.js'
 import { startInBackground } from '../server/service-mode.js'
 import type { InstalledService, ServiceDefinition, ServiceManager } from '../common/types/ports/service-manager.js'
+import { recordedEnvironmentFiles } from '../common/runtime/environment-files.js'
 import { auditWritten } from './support/action-log-writer.js'
 
 // Phase 3 of the workspace-model slice: the `buckle service` family over a service manager, here one that imitates a
@@ -247,6 +248,17 @@ describe('buckle service install and --skip-owner-only-check', () => {
 })
 
 describe('buckle service install', () => {
+  it('records an environment file BUCKLE_ENV_FILE names outside the state directory there, before the definition names it', async () => {
+    const target = node({ setUp: false })
+    const file = join(target.root, 'settings', 'node.env')
+    mkdirSync(join(target.root, 'settings'))
+    writeFileSync(file, 'BUCKLE_ADMIN_TOKEN=service-command-admin-fixture\n', { mode: 0o600 })
+    const { manager, calls } = fakeManager(target.state)
+    expect((await service({ ...target, environment: { ...target.environment, BUCKLE_ENV_FILE: file } }, ['install'], manager)).exitCode).toBe(0)
+    expect(calls).toEqual([['install', expect.objectContaining({ stateDirectory: target.state, environmentFile: file }), { now: false }]])
+    expect(recordedEnvironmentFiles(target.state)).toEqual([file])
+  })
+
   it('writes the definition naming this Node, the built main.js, and where the node lives, as paths', async () => {
     const target = node()
     const { manager, calls } = fakeManager(target.state)

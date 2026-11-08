@@ -17,6 +17,7 @@ import { JUDGE_MODEL_NAME, JUDGE_MODES, JUDGE_PROVIDERS, type JudgeMode, type Ju
 import { QUICK_JUDGE_SCOPES, type QuickJudgeProvider, type QuickJudgeScope } from '../types/ports/quick-judge.js'
 import { MAX_TRANSFER_BYTES } from '../services/packs/browser/file-transfer.js'
 import { MAX_MASS_DELETE_LIMIT, parseDeleteInWorkspace, parseMassDeleteLimit, type DeleteInWorkspace } from '../domain/delete-policy.js'
+import { recordedEnvironmentFiles } from './environment-files.js'
 
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -129,6 +130,11 @@ export interface NodeConfig {
    * the file BUCKLE_ENV_FILE names, which may lie outside it. Protected as the state directory is (protectedStateRoots).
    */
   environmentFile: string
+  /**
+   * The files outside the state directory that init, a service install, or a serve start recorded as the node's settings
+   * (recordedEnvironmentFiles), protected with it in every process, whatever this one's environment names.
+   */
+  recordedEnvironmentFiles: string[]
   /** How long a state file update waits for another process's lock; the store's default when absent. Never read from the environment. */
   stateLockDeadlineMs?: number
   maxRequestBytes: number
@@ -300,6 +306,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     skillDirectories: parseList(environment.BUCKLE_SKILLS_DIRS),
     stateDirectory,
     environmentFile: environmentFilePath(environment, platform),
+    recordedEnvironmentFiles: recordedEnvironmentFiles(stateDirectory),
     maxRequestBytes: parsePositiveInteger(environment.BUCKLE_MAX_REQUEST_BYTES, DEFAULT_MAX_REQUEST_BYTES),
     maxTransferBytes: parsePositiveInteger(environment.BUCKLE_MAX_TRANSFER_BYTES, MAX_TRANSFER_BYTES),
     defaultTimeoutMs: parsePositiveInteger(environment.BUCKLE_DEFAULT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
@@ -658,8 +665,8 @@ export function sandboxBinds(mounts: readonly TableMount[]): SandboxBind[] {
   return mounts.filter(mount => !mount.scratch).map(mount => ({ source: mount.source, target: mount.target, readOnly: mount.access === 'ro', ...(mount.node ? { node: true as const } : {}) }))
 }
 
-/** A workspace's own state directory, the node's when they differ, and the node's environment file. */
-type StateDirectories = Pick<BuckleConfig, 'stateDirectory'> & Partial<Pick<BuckleConfig, 'nodeStateDirectory' | 'environmentFile'>>
+/** A workspace's own state directory, the node's when they differ, and the node's environment files. */
+type StateDirectories = Pick<BuckleConfig, 'stateDirectory'> & Partial<Pick<BuckleConfig, 'nodeStateDirectory' | 'environmentFile' | 'recordedEnvironmentFiles'>>
 
 /**
  * Node configuration and all workspace maps are owner-only, never tool-accessible, and so are the node's environment
@@ -671,9 +678,12 @@ export function protectedStateRoots(config: StateDirectories, platform: NodeJS.P
   // What starts this node at login, so no agent rewrites what runs then: on Linux the unit, its link, and the drop-ins and
   // copy systemd reads beside it (Phase 3, item 6, and fix brief 6, item 4); on macOS the launchd agent's property list.
   const definition = platform === 'linux' ? systemdGuardedPaths(environment, homeDirectory(platform)) : platform === 'darwin' ? launchdGuardedPaths(homeDirectory(platform)) : []
-  const settings = config.environmentFile === undefined ? [] : [config.environmentFile]
-  const named = [join(homeDirectory(), '.5straps'), config.nodeStateDirectory ?? config.stateDirectory, ...settings, ...definition]
+  const named = [join(homeDirectory(), '.5straps'), config.nodeStateDirectory ?? config.stateDirectory, ...settingsFiles(config), ...definition]
   return [...new Set([...named, ...named.map(path => realPathOf(path))])]
+}
+
+function settingsFiles(config: StateDirectories): string[] {
+  return [...(config.environmentFile === undefined ? [] : [config.environmentFile]), ...config.recordedEnvironmentFiles ?? []]
 }
 
 /**

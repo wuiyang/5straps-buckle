@@ -5,6 +5,7 @@ import { parseArgs } from 'node:util'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { SKIP_OWNER_ONLY_FLAG } from '../common/domain/global-flags.js'
 import { actionsPath, defaultEnvironmentFile } from '../common/runtime/config.js'
+import { recordEnvironmentFile } from '../common/runtime/environment-files.js'
 import { nodeLocation } from '../common/runtime/environment.js'
 import { logFormatFrom } from '../common/runtime/log.js'
 import { createStoredLineRenderer } from '../common/runtime/log-render.js'
@@ -173,6 +174,8 @@ async function install(context: ServiceContext, now: boolean): Promise<CliResult
   // A manager with no restart of its own (Task Scheduler) starts the definition's node through a start that does nothing
   // while another serves, so the earlier install's node is asked to stop between writing the definition and starting it.
   const replace = now && !manager.restart && ownsNode(manager, running)
+  // Before the definition names it, so every Buckle process on this state directory keeps it from tools.
+  if (location.environmentFile !== null) await recordEnvironmentFile({ stateDirectory: location.stateDirectory, file: location.environmentFile })
   await manager.install(definitionFor(context), { now: now && !replace })
   if (!now) {
     context.out(`Installed the Buckle service (${manager.label}); it starts at every login. Start it now with buckle service start.\n`)

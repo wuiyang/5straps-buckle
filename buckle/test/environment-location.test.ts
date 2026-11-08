@@ -8,6 +8,7 @@ import { runInit } from '../cli/init.js'
 import { settingsCommand } from '../cli/settings.js'
 import { defaultEnvironmentFile, environmentFilePath } from '../common/runtime/config.js'
 import { loadEnvironmentFile } from '../common/runtime/environment.js'
+import { recordedEnvironmentFiles } from '../common/runtime/environment-files.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
 // Owner ruling (2026-09-28): the node's settings live under ~/.5straps, in buckle.env in its state
@@ -169,6 +170,14 @@ describe('buckle init', () => {
     expect((await runInit(['--root', root, '--yes', '--out', join(base, 'custom.env')], prompt)).exitCode).toBe(0)
     expect(printed).toContain(`BUCKLE_ENV_FILE=${join(base, 'custom.env')} buckle serve`)
     if (process.platform !== 'win32') expect(statSync(join(base, 'custom.env')).mode & 0o777).toBe(0o600)
+  })
+
+  it('records a file --out chose outside the state directory there, for every process on it to protect, and none in it', async () => {
+    vi.stubEnv('BUCKLE_STATE_DIR', join(base, 'state'))
+    expect((await runInit(['--root', root, '--yes'], prompt)).exitCode).toBe(0)
+    expect(recordedEnvironmentFiles(join(base, 'state'))).toEqual([])
+    expect((await runInit(['--root', root, '--yes', '--out', join(base, 'custom.env')], prompt)).exitCode).toBe(0)
+    expect(recordedEnvironmentFiles(join(base, 'state'))).toEqual([join(base, 'custom.env')])
   })
 
   it('refuses a workspace folder that holds the state directory', async () => {

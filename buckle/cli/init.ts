@@ -5,6 +5,7 @@ import { dirname, resolve } from 'pathe'
 import { parseArgs } from 'node:util'
 import { MountPathSchema } from '@5straps/protocol'
 import { defaultEnvironmentFile, environmentFilePath, loadConfig, realPathOf, stateDirectoryOf, WORKSPACE_DEFAULT_KEYS, workspaceHolds, type NodeConfig } from '../common/runtime/config.js'
+import { recordEnvironmentFile } from '../common/runtime/environment-files.js'
 import { buckleVariables } from '../common/runtime/environment.js'
 import { AS_NAMED, findProgram, ON_PATH, type ProgramSearch, type UntrustedRoots } from '../common/domain/executable.js'
 import { isDriveRoot, typedPath, WHOLE_DRIVE } from '../common/domain/paths.js'
@@ -156,6 +157,8 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
   const contents = readFileSync(out, 'utf8')
   const node = nodeConfig(out, contents, platform)
   mkdirSync(node.stateDirectory, { recursive: true, mode: 0o700 })
+  // Every Buckle process on this state directory keeps the file from tools, a buckle mcp whose environment names none too.
+  await recordEnvironmentFile({ stateDirectory: node.stateDirectory, file: out })
   let workspaces: WorkspaceManager
   try { workspaces = await openWorkspaceManager({ config: node, platform, ...(interactive ? { askName: question => prompt.question(question) } : {}) }) } catch (error) {
     if (error instanceof WorkspaceError || error instanceof MigrationError) return fail(error.message)

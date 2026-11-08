@@ -13,6 +13,7 @@ import { closeLogService } from './common/adapters/action-log/log-service.js'
 import { configureOwnerOnlyCheck, SKIP_OWNER_ONLY_FLAG } from './common/adapters/file-modes.js'
 import { loadConfig, stateDirectoryOf, unreadWorkspaceDefaults, type NodeConfig } from './common/runtime/config.js'
 import { loadEnvironmentFile, nodeLocation, refuseForeignEnvironmentFile } from './common/runtime/environment.js'
+import { recordEnvironmentFile } from './common/runtime/environment-files.js'
 import { initializeCommon, type BuckleCommon } from './common/runtime/initialize.js'
 import { createConsoleWriter, type ConsoleWriter } from './common/runtime/console.js'
 import { LOG_CLOSE_DEADLINE_MS } from './common/runtime/log-budget.js'
@@ -229,6 +230,8 @@ async function startService(input: { kind: ServiceKind; options: string[]; servi
   if (input.kind === 'serve') {
     // Before anything else, so a second node on this state directory is refused before it builds anything.
     const held = await holdService(input)
+    // Every Buckle process on this state directory keeps the file this node reads from tools, a buckle mcp whose environment names none too.
+    await recordEnvironmentFile({ stateDirectory: input.config.stateDirectory, file: input.config.environmentFile })
     // The built app, with the host and the one cli:call listener bound before anything is accepted.
     const server = await setupServer({ ...input, entryPath: builtEntryPath() })
     // HTTP asks through the app's cli:call hook, which main's listener answers (ruling 4 of 2026-09-28).
