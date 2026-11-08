@@ -5,7 +5,7 @@ import { SdkError, SdkErrorCode } from '@modelcontextprotocol/server'
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, expect, it, vi } from 'vitest'
 import { APPROVAL_NO_DEADLINE } from '@5straps/protocol'
 import { parseApprovalTimeout } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -21,11 +21,13 @@ import { describeExpiry } from '../common/domain/approval-deadline.js'
 import { remainingMs } from '../common/domain/approval/expiry.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
-import { settleAuditLogs } from './support/action-log-writer.js'
+import { settleAuditLogs, startActionLogWriter } from './support/action-log-writer.js'
 
 const recorded = { arguments: { path: '/synthetic', content: 'x' }, cwd: '/workspace', description: null, effects: ['write /synthetic'], complete: true as const }
 const roots: string[] = []
 function directory() { const root = mkdtempSync(join(tmpdir(), 'approval-wait-')); roots.push(root); return root }
+// The writer's thread starts on its first write, which a first ask's wait would otherwise include.
+beforeAll(startActionLogWriter)
 afterEach(async () => { vi.useRealTimers(); await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 // A node entry point with nobody at its terminal: the call is held for the configured grace period.
 async function fixture(timeoutMs: number | null) {

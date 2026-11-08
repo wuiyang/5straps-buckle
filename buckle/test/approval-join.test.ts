@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { RequestCli } from '@5straps/runtime'
 import type { InvokeRequest, InvokeResponse } from '@5straps/protocol'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { approvalsPath } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -13,7 +13,7 @@ import { createRuntime, type CoreRuntime } from '../common/services/workspaces/w
 import { fixedInteraction, headlessGrace, approvalServiceWithTerminal } from './support/interaction.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
-import { auditEntries } from './support/action-log-writer.js'
+import { auditEntries, startActionLogWriter } from './support/action-log-writer.js'
 
 /** A node whose gated calls wait a minute, with two directories a write asks for. */
 async function node(interaction = headlessGrace) {
@@ -37,6 +37,9 @@ async function answer(runtime: CoreRuntime, token: string, scope: 'once' | 'sess
 }
 
 /** Resolves once the registry has joined a re-sent call to the ask already waiting. */
+// The writer's thread starts on its first write, which a first ask's wait would otherwise include.
+beforeAll(startActionLogWriter)
+
 function joinSeen(runtime: CoreRuntime) {
   const ask = vi.spyOn(runtime.approvals, 'ask')
   return () => vi.waitFor(() => expect(ask.mock.settledResults).toContainEqual({ type: 'fulfilled', value: expect.objectContaining({ joined: true }) }))
