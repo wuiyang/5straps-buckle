@@ -2,6 +2,7 @@ import type { GrantScope } from '@5straps/protocol'
 import type { PermissionRule } from './permission/decision.js'
 import { hostSubject } from './permission/rules/network-egress-rule.js'
 import { compileUrlPatterns, matchingHostEntry, type UrlMatcher } from './url-pattern.js'
+import { rangeCovering, type AddressRange } from './ip.js'
 
 export type UrlVerdictKind = 'approved' | 'denied' | 'asks' | 'not listed'
 
@@ -37,6 +38,8 @@ export function judgeUrl(input: {
   url: URL
   rule: PermissionRule
   approved: UrlMatcher | null
+  /** The owner's CIDR ranges (network.privateRanges), named where one clears an address. */
+  privateRanges: readonly AddressRange[]
   workspaceList: string[]
   approvals: NetworkApproval[]
 }): UrlVerdict {
@@ -59,10 +62,12 @@ export function judgeUrl(input: {
   }
   if (input.approved) {
     const entry = input.workspaceList.find(pattern => compileUrlPatterns([pattern]).matches(input.url))
-    const wildcard = input.approved.namesExactly(input.url) ? '' : '; a wildcard entry clears no private address, so web_fetch refuses this host where it resolves into a private range'
+    const wildcard = input.approved.namesExactly(input.url) ? '' : '; a wildcard entry clears no private address, so web_fetch refuses this host where it resolves into a private range network.privateRanges does not cover'
     return { verdict: 'approved', because: `approved list entry ${entry}${wildcard}` }
   }
-  return { verdict: 'not listed', because: 'no approved list is set, so a public host is reached without asking; web_fetch still refuses one that resolves to a private address' }
+  const range = rangeCovering(input.url.hostname, input.privateRanges)
+  if (range) return { verdict: 'approved', because: `network.privateRanges entry ${range.text}` }
+  return { verdict: 'not listed', because: 'no approved list is set, so a public host is reached without asking; web_fetch still refuses one that resolves to a private address network.privateRanges does not cover' }
 }
 
 

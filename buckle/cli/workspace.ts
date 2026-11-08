@@ -229,6 +229,7 @@ function show(context: Context): CliResult {
     ['packs.enabled', inForce.packs.enabled?.join(', ') ?? '(every built-in pack, and plugins)', inForce.sources['packs.enabled']!],
     ...(['shell', 'code', 'history', 'hostGit', 'hostLsp'] as const).map((pack): [string, string, SettingSource] => [`packs.${pack}`, onOff(inForce.packs[pack]), inForce.sources[`packs.${pack}`]!]),
     ...(['network', 'isolation'] as const).map((key): [string, string, SettingSource] => [`shell.${key}`, onOff(inForce.shell[key]), inForce.sources[`shell.${key}`]!]),
+    ['network.privateRanges', inForce.network.privateRanges.length === 0 ? '(none)' : inForce.network.privateRanges.join(', '), inForce.sources['network.privateRanges']!],
     ['browser.idleTimeoutMs', String(inForce.browser.idleTimeoutMs), inForce.sources['browser.idleTimeoutMs']!],
     // The owner's terminal: the profile folder and the endpoint show, as buckle workspace show prints the file whole.
     ['browser.cdp', inForce.browser.cdp ?? '(none)', inForce.sources['browser.cdp']!],

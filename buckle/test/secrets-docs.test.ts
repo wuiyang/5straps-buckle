@@ -182,7 +182,7 @@ describe('the sentence each tool description ends with', () => {
   const descriptions: Record<ReferenceHintTool, string[]> = {
     shell_exec: [descriptionOf(shellPack, 'shell_exec')],
     browser_command: Object.values(MODE_DESCRIPTIONS),
-    web_fetch: [descriptionOf(createWebPack({ approved: null }), 'web_fetch')],
+    web_fetch: [descriptionOf(createWebPack({ privateRanges: [], approved: null }), 'web_fetch')],
   }
 
   it.each(PLACES)('is on every description of $tool', ({ tool }) => {

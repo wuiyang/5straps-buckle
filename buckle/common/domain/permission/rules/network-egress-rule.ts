@@ -1,4 +1,4 @@
-import { reservedRangeOf } from '../../ip.js'
+import { rangeCovering, reservedRangeOf, type AddressRange } from '../../ip.js'
 import { matchingHostEntry, starredHostRefusal, type UrlMatcher } from '../../url-pattern.js'
 import type { PermissionRule } from '../decision.js'
 import { allowedVia, ask, deny, PLAIN_MARKS } from '../decision.js'
@@ -12,13 +12,15 @@ export interface NetworkEgressOptions {
    * private address is reached without asking: the owner already said so.
    */
   approved: UrlMatcher | null
+  /** The owner's CIDR ranges (network.privateRanges): a private address a range holds is reached without asking. */
+  privateRanges: readonly AddressRange[]
 }
 
 /**
  * Judges the URL as written. A hostname can still resolve into a reserved range, so the
  * fetch adapter re-checks every resolved address and every redirect hop with `reservedRangeOf`.
  */
-export function createNetworkEgressRule(options: NetworkEgressOptions = { approved: null }): PermissionRule {
+export function createNetworkEgressRule(options: NetworkEgressOptions = { approved: null, privateRanges: [] }): PermissionRule {
   return {
     id: 'network_egress',
     evaluate({ effect, grants }) {
@@ -39,7 +41,8 @@ export function createNetworkEgressRule(options: NetworkEgressOptions = { approv
       }
 
       const reason = localReason(url.hostname)
-      if (!reason) return { kind: 'allow' }
+      // A range holds addresses alone, so a name such as localhost still asks.
+      if (!reason || rangeCovering(url.hostname, options.privateRanges)) return { kind: 'allow' }
       const covering = coveringGrant({ exact: grants.subjectsFor('network_egress'), patterns: grants.patternsFor?.('network_egress') ?? [] }, url)
       if (covering) return allowedVia('network_egress', covering)
       return ask({ rule: 'network_egress', subject, reason, marks: PLAIN_MARKS })

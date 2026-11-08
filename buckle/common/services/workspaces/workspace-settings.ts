@@ -19,6 +19,7 @@ import { DEFAULT_HISTORY_FILE_BYTES } from '../history/git-store.js'
 import { DEFAULT_HISTORY_KEEP_TURNS, DEFAULT_HISTORY_TURN_IDLE_MS } from '../history/turn-retention.js'
 import { BUILT_IN_DELETE_POLICY, DELETE_IN_WORKSPACE_MODES, MAX_MASS_DELETE_LIMIT, type DeleteInWorkspace } from '../../domain/delete-policy.js'
 import { DEFAULT_SESSION_IDLE_MS, isSessionIdle } from '../../domain/approval/session-idle.js'
+import { cidrRefusal } from '../../domain/ip.js'
 
 /** The browser's idle timeout when a workspace names none, and its bounds (Q10 of the workspace-model brief): 60 s to 24 h. */
 export const DEFAULT_BROWSER_IDLE_MS = DEFAULT_IDLE_TIMEOUT_MS
@@ -122,6 +123,23 @@ const ApprovalSchema = z.object({
 const FilesSchema = z.object({
   deleteInWorkspace: z.enum(DELETE_IN_WORKSPACE_MODES).optional(),
   massDeleteLimit: z.number().int().min(0).max(MAX_MASS_DELETE_LIMIT).optional(),
+}).strict()
+
+/** The most ranges network.privateRanges may list. */
+export const MAX_PRIVATE_RANGES = 64
+
+/** One entry of network.privateRanges: a CIDR range alone, never a hostname or a wildcard (APPROVAL-19). */
+export const PrivateRangeSchema = z.string().superRefine((range, context) => {
+  const refusal = cidrRefusal(range)
+  if (refusal) context.addIssue({ code: 'custom', message: `network.privateRanges: ${range}: ${refusal}` })
+})
+
+/**
+ * Its network egress (APPROVAL-19): `privateRanges` lists the CIDR ranges whose private, loopback, or reserved addresses
+ * a tool reaches without asking. Absent from a file that sets none, so a workspace.json written before it reads as it did.
+ */
+const NetworkSchema = z.object({
+  privateRanges: z.array(PrivateRangeSchema).max(MAX_PRIVATE_RANGES).optional(),
 }).strict()
 
 /** The most files secrets.files may list. */
@@ -280,6 +298,7 @@ export const WorkspaceSettingsSchema = z.object({
   approval: ApprovalSchema.default({}),
   secrets: SecretsSchema.optional(),
   files: FilesSchema.optional(),
+  network: NetworkSchema.optional(),
   history: z.object({ keepTurns: z.number().int().min(1).max(100).optional(), turnIdleMs: z.number().int().min(1).max(86_400_000).optional(), maxFileBytes: z.number().int().min(1).max(1_073_741_824).optional() }).strict().optional(),
   /** Milliseconds a gated call is held for an answer when its caller sends no wait of its own; 0 holds it until someone answers. */
   approvalWaitMs: z.number().int().min(0).max(2_147_483_647).optional(),
@@ -314,6 +333,7 @@ export const BUILT_IN_SETTINGS = Object.freeze({
   approval: Object.freeze({ forms: false, sessionIdleMs: DEFAULT_SESSION_IDLE_MS, judge: 'off' as JudgeMode, judgeProvider: 'openai-compatible' as JudgeProvider, judgeModel: 'gpt-6-luna', judgeStandardScripts: STANDARD_SCRIPTS, quickJudge: 'off' as QuickJudgeScope, quickJudgeProvider: 'typesafe' as QuickJudgeProvider, quickJudgeModel: 'jev-latest' }),
   secrets: Object.freeze({ enabled: true, files: Object.freeze([] as string[]) }),
   files: Object.freeze({ deleteInWorkspace: BUILT_IN_DELETE_POLICY.inWorkspace, massDeleteLimit: BUILT_IN_DELETE_POLICY.massLimit }),
+  network: Object.freeze({ privateRanges: Object.freeze([] as string[]) }),
 })
 
 /** A workspace's settings in force, each with where it came from (resolveSettings). */
@@ -333,6 +353,8 @@ export interface ResolvedSettings {
   secrets: { enabled: boolean; files: readonly string[] }
   /** Its file tools' delete policy (the delete policy brief): the workspace's own, else the node's, else Buckle's. */
   files: { deleteInWorkspace: DeleteInWorkspace; massDeleteLimit: number }
+  /** Its network egress (APPROVAL-19): the workspace's own, else the node's, else none. */
+  network: { privateRanges: readonly string[] }
   env: Readonly<Record<string, string>>
   /** Each setting's source, by its key in workspace.json (`packs.shell`, `mount`, `policy.commands.allow`). */
   sources: Readonly<Record<string, SettingSource>>
@@ -452,6 +474,7 @@ export function resolveSettings(stored: WorkspaceSettings, node: NodeDefaults): 
       deleteInWorkspace: pick('files.deleteInWorkspace', stored.files?.deleteInWorkspace, node.files.deleteInWorkspace, BUILT_IN_SETTINGS.files.deleteInWorkspace),
       massDeleteLimit: pick('files.massDeleteLimit', stored.files?.massDeleteLimit, node.files.massDeleteLimit, BUILT_IN_SETTINGS.files.massDeleteLimit),
     },
+    network: { privateRanges: pick('network.privateRanges', stored.network?.privateRanges, node.network.privateRanges, BUILT_IN_SETTINGS.network.privateRanges) },
     env: { ...node.env, ...stored.env },
     sources,
   }
@@ -598,9 +621,9 @@ export function openSettingsFile(input: { filePath: string; fallback?: () => Wor
 }
 
 /** What a workspace's runtime takes from its settings in force (workspaceConfig): its own, else the node's (resolveSettings). */
-export function scopeOf(settings: WorkspaceSettings, node: NodeDefaults): Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'approval' | 'secrets' | 'files' | 'env' | 'history'> {
+export function scopeOf(settings: WorkspaceSettings, node: NodeDefaults): Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'approval' | 'secrets' | 'files' | 'network' | 'env' | 'history'> {
   const resolved = resolveSettings(settings, node)
-  return { history: resolved.history, mount: resolved.mount, mounts: resolved.mounts, policy: resolved.policy, packs: resolved.packs, approvalWaitMs: resolved.approvalWaitMs, shell: resolved.shell, browser: { ...resolved.browser, names: browserSettingNames(resolved.sources) }, approval: resolved.approval, secrets: resolved.secrets, files: resolved.files, env: resolved.env }
+  return { history: resolved.history, mount: resolved.mount, mounts: resolved.mounts, policy: resolved.policy, packs: resolved.packs, approvalWaitMs: resolved.approvalWaitMs, shell: resolved.shell, browser: { ...resolved.browser, names: browserSettingNames(resolved.sources) }, approval: resolved.approval, secrets: resolved.secrets, files: resolved.files, network: resolved.network, env: resolved.env }
 }
 
 /** Where the workspace's own settings show its folder: a path, null for its real path, or undefined where the node's says. */

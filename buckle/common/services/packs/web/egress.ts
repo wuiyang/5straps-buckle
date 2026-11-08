@@ -1,5 +1,5 @@
 import { lookup } from 'node:dns/promises'
-import { reservedRangeOf } from '../../../domain/ip.js'
+import { rangeCovering, reservedRangeOf, type AddressRange } from '../../../domain/ip.js'
 import { ToolExecutionError, type NetworkVerdict } from '../../../domain/tool.js'
 import { starredHostRefusal, type UrlMatcher } from '../../../domain/url-pattern.js'
 
@@ -32,6 +32,8 @@ export async function guardedFetch(input: {
   judge?: (url: URL) => Promise<NetworkVerdict>
   /** Headers whose values Buckle filled from secret references (docs/user/how-to/secrets.md): dropped on a hop to another origin too. */
   secretHeaders?: readonly string[]
+  /** The owner's CIDR ranges (network.privateRanges): a reserved address one holds is reached on any hop the rules let through. */
+  privateRanges: readonly AddressRange[]
 }): Promise<Response> {
   let current = input.url
   let method = input.method
@@ -39,7 +41,7 @@ export async function guardedFetch(input: {
   const headers = new Headers(input.headers)
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-    await assertReachable(current, input.approved, input.judge)
+    await assertReachable({ url: current, approved: input.approved, judge: input.judge, privateRanges: input.privateRanges })
     const response = await fetch(current, { method, headers, body, redirect: 'manual', signal: input.signal })
 
     const location = response.headers.get('location')
@@ -65,7 +67,8 @@ export async function guardedFetch(input: {
   throw new ToolExecutionError(`Exceeded ${MAX_REDIRECTS} redirects`, { code: 'TOO_MANY_REDIRECTS' })
 }
 
-async function assertReachable(url: URL, approved: UrlMatcher | null, judge?: (url: URL) => Promise<NetworkVerdict>): Promise<void> {
+async function assertReachable(input: { url: URL; approved: UrlMatcher | null; judge?: ((url: URL) => Promise<NetworkVerdict>) | undefined; privateRanges: readonly AddressRange[] }): Promise<void> {
+  const { url, approved, judge } = input
   const starred = starredHostRefusal(url)
   if (starred) throw new ToolExecutionError(starred, { code: 'EGRESS_BLOCKED' })
   if (approved) {
@@ -80,11 +83,12 @@ async function assertReachable(url: URL, approved: UrlMatcher | null, judge?: (u
   }
 
   const host = url.hostname.replace(/^\[|\]$/g, '')
-  const literal = reservedRangeOf(host)
+  const reserved = (address: string) => (rangeCovering(address, input.privateRanges) ? null : reservedRangeOf(address))
+  const literal = reserved(host)
   if (literal) throw blocked(host, literal)
 
   for (const address of await resolveAll(host)) {
-    const range = reservedRangeOf(address)
+    const range = reserved(address)
     if (range) throw blocked(`${host} (${address})`, range)
   }
 }

@@ -53,7 +53,7 @@ describe('guardedFetch', () => {
       url: new URL(`http://127.0.0.1:${port}/`),
       method: 'GET',
       headers: {},
-      signal: AbortSignal.timeout(5_000),
+      signal: AbortSignal.timeout(5_000), privateRanges: [],
       approved: listLocal(),
     })
     expect(await response.text()).toBe('arrived')
@@ -64,7 +64,7 @@ describe('guardedFetch', () => {
       url: new URL(`http://127.0.0.1:${port}/`),
       method: 'GET',
       headers: {},
-      signal: AbortSignal.timeout(5_000),
+      signal: AbortSignal.timeout(5_000), privateRanges: [],
       approved: null,
     })).rejects.toThrow(/loopback/)
   })
@@ -74,7 +74,7 @@ describe('guardedFetch', () => {
       url: new URL(`http://127.0.0.1:${port}/?to=${encodeURIComponent('http://169.254.169.254/latest/meta-data/')}`),
       method: 'GET',
       headers: {},
-      signal: AbortSignal.timeout(5_000),
+      signal: AbortSignal.timeout(5_000), privateRanges: [],
       approved: null, judge: grantLocal,
     })).rejects.toThrow(/link-local/)
   })
@@ -84,7 +84,7 @@ describe('guardedFetch', () => {
       url: new URL(`http://127.0.0.1:${port}/?to=${encodeURIComponent('http://10.1.2.3/internal')}`),
       method: 'GET',
       headers: {},
-      signal: AbortSignal.timeout(5_000),
+      signal: AbortSignal.timeout(5_000), privateRanges: [],
       approved: null, judge: grantLocal,
     })).rejects.toThrow(/private/)
   })
@@ -94,7 +94,7 @@ describe('guardedFetch', () => {
       url: new URL(`http://127.0.0.1:${port}/?to=${encodeURIComponent('file:///etc/passwd')}`),
       method: 'GET',
       headers: {},
-      signal: AbortSignal.timeout(5_000),
+      signal: AbortSignal.timeout(5_000), privateRanges: [],
       approved: listLocal(),
     })).rejects.toThrow(/non-HTTP scheme/)
   })
@@ -105,7 +105,7 @@ describe('guardedFetch', () => {
       url: new URL(`${self}?to=${encodeURIComponent(`${self}?to=${encodeURIComponent(self)}`)}`),
       method: 'GET',
       headers: {},
-      signal: AbortSignal.timeout(5_000),
+      signal: AbortSignal.timeout(5_000), privateRanges: [],
       approved: listLocal(),
     })).resolves.toBeDefined()
   })
@@ -113,7 +113,7 @@ describe('guardedFetch', () => {
   it('reaches a private host the permission rules say an approval covers', async () => {
     const response = await guardedFetch({
       url: new URL(`http://127.0.0.1:${port}/`),
-      method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
+      method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000), privateRanges: [],
       approved: null,
       judge: async () => ({ kind: 'granted' }),
     })
@@ -123,7 +123,7 @@ describe('guardedFetch', () => {
   it('refuses with the rules\' reason when they would deny or ask', async () => {
     await expect(guardedFetch({
       url: new URL(`http://127.0.0.1:${port}/`),
-      method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
+      method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000), privateRanges: [],
       approved: null,
       judge: async () => ({ kind: 'refused', reason: '127.0.0.1 is in the loopback range' }),
     })).rejects.toThrow(/loopback/)
@@ -132,7 +132,7 @@ describe('guardedFetch', () => {
   it('still checks where a name resolves when no approval is involved', async () => {
     await expect(guardedFetch({
       url: new URL(`http://127.0.0.1:${port}/`),
-      method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
+      method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000), privateRanges: [],
       approved: null,
       judge: async () => ({ kind: 'allowed' }),
     })).rejects.toThrow(/loopback/)
@@ -142,19 +142,19 @@ describe('guardedFetch', () => {
   it('lets a list entry naming the host exactly reach its private address, with no rule consulted', async () => {
     const response = await guardedFetch({
       url: new URL(`http://127.0.0.1:${port}/`),
-      method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
+      method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000), privateRanges: [],
       approved: listLocal(),
       judge: async () => ({ kind: 'refused', reason: 'not consulted' }),
     })
     expect(await response.text()).toBe('arrived')
-    const prefixed = await guardedFetch({ url: new URL(`http://localhost:${port}/`), method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000), approved: compileUrlPatterns([`http://localhost:${port}`]) })
+    const prefixed = await guardedFetch({ url: new URL(`http://localhost:${port}/`), method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000), privateRanges: [], approved: compileUrlPatterns([`http://localhost:${port}`]) })
     expect(await prefixed.text()).toBe('arrived')
   })
 
   it('never lets a wildcard entry clear a private address: the host it covers is refused where it resolves into one', async () => {
     await expect(guardedFetch({
       url: new URL(`http://localhost:${port}/`),
-      method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
+      method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000), privateRanges: [],
       approved: compileUrlPatterns([`*.localhost:${port}`]),
       judge: async () => ({ kind: 'granted' }),
     })).rejects.toThrow(/loopback/)
@@ -163,12 +163,12 @@ describe('guardedFetch', () => {
   it('holds each redirect hop to the list, and refuses a host it does not cover', async () => {
     await expect(guardedFetch({
       url: new URL(`http://127.0.0.1:${port}/?to=http://localhost:${port}/`),
-      method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
+      method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000), privateRanges: [],
       approved: compileUrlPatterns([...allowLocal(), '*.localhost']),
     })).rejects.toThrow(/loopback/)
     await expect(guardedFetch({
       url: new URL(`http://localhost:${port}/`),
-      method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
+      method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000), privateRanges: [],
       approved: compileUrlPatterns(['*.internal.test']),
     })).rejects.toThrow(/is not on the workspace's approved list/)
   })
@@ -224,7 +224,7 @@ describe('guardedFetch across redirect hops', () => {
   /** Sends `method` to a hop answering `status`, redirecting to `to`, and returns the request the second hop received. */
   async function followed(status: number, method: string, options: { to?: string; body?: string; headers?: Record<string, string> } = {}): Promise<RecordedHop> {
     const target = new URL(`http://127.0.0.1:${firstPort}/start?status=${status}&to=${encodeURIComponent(options.to ?? '/final')}`)
-    const response = await guardedFetch({ url: target, method, headers: options.headers ?? {}, body: options.body, signal: AbortSignal.timeout(5_000), approved: approvedBoth() })
+    const response = await guardedFetch({ url: target, method, headers: options.headers ?? {}, body: options.body, signal: AbortSignal.timeout(5_000), privateRanges: [], approved: approvedBoth() })
     expect(response.status).toBe(200)
     await response.text()
     expect(hops).toHaveLength(2)
@@ -306,7 +306,7 @@ describe('guardedFetch across redirect hops', () => {
     const away = `http://127.0.0.1:${secondPort}/start?status=302&to=${encodeURIComponent(`http://127.0.0.1:${firstPort}/final`)}`
     const response = await guardedFetch({
       url: new URL(`http://127.0.0.1:${firstPort}/start?status=302&to=${encodeURIComponent(away)}`),
-      method: 'GET', headers: { Authorization: 'Bearer decoy' }, signal: AbortSignal.timeout(5_000), approved: approvedBoth(),
+      method: 'GET', headers: { Authorization: 'Bearer decoy' }, signal: AbortSignal.timeout(5_000), privateRanges: [], approved: approvedBoth(),
     })
     await response.text()
     expect(hops.map(hop => hop.port)).toEqual([firstPort, secondPort, firstPort])
@@ -318,7 +318,7 @@ describe('guardedFetch across redirect hops', () => {
   it('still holds a changed-method hop to the list', async () => {
     await expect(guardedFetch({
       url: new URL(`http://127.0.0.1:${firstPort}/start?status=303&to=${encodeURIComponent(`http://127.0.0.1:${secondPort}/final`)}`),
-      method: 'POST', headers: {}, body: 'payload', signal: AbortSignal.timeout(5_000), approved: compileUrlPatterns([`127.0.0.1:${firstPort}`]),
+      method: 'POST', headers: {}, body: 'payload', signal: AbortSignal.timeout(5_000), privateRanges: [], approved: compileUrlPatterns([`127.0.0.1:${firstPort}`]),
     })).rejects.toThrow(/is not on the workspace's approved list/)
     expect(hops).toHaveLength(1)
   })
@@ -340,7 +340,7 @@ describe('guardedFetch and a redirect answer\'s body', () => {
     vi.stubGlobal('fetch', stub)
 
     const response = await guardedFetch({
-      url: new URL('http://decoy.example.test/'), method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
+      url: new URL('http://decoy.example.test/'), method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000), privateRanges: [],
       approved: compileUrlPatterns(['decoy.example.test']),
     })
 
@@ -354,7 +354,7 @@ describe('a * in a host', () => {
   it('is refused on every hop, whatever list or pattern would otherwise reach it', async () => {
     await expect(guardedFetch({
       url: new URL('http://*.localhost/'),
-      method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
+      method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000), privateRanges: [],
       approved: compileUrlPatterns(['*.localhost']), judge: async () => ({ kind: 'granted' }),
     })).rejects.toThrow(/A host cannot contain \*/)
   })

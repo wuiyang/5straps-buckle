@@ -27,14 +27,14 @@ function builtinTools(): ToolCapability[] {
   const paths = createPathView({ root: '/work/project', mount: null })
   const runProcess = async () => ({ exitCode: 0, signal: null, stdout: '', stderr: '', truncated: false, timedOut: false })
   const packs = [
-    ...createBuiltinPacks({
+    ...createBuiltinPacks({ privateRanges: [],
       allowHostGit: true, allowHostLsp: true, enableShell: true, cwd: '/work/project', paths, hiddenPaths: [], settingsFiles: [], mountReadOnlyPaths: [], approvedUrls: null, approvedLists: [],
       runProcess, sandbox: createNoneSandbox(), writableRoots: ['/work/project'], 
       forge: { token: 'fixture-token', apiUrl: 'https://api.github.com', author: { name: 'test', email: 'test@example.com' } },
       stateDirectory: '/state', agentBrowserCommand: 'agent-browser', browserStateDirectory: '/state/browser', browserHeaded: false, environmentValidator: 'validate', sandboxUnavailableReason: null,
     }),
     createFsPack({ paths, runProcess, ripgrep: { path: 'rg', argv0: 'rg', args: [] }, protectedRoots: [] }),
-    createWebPack({ braveSearchApiKey: 'fixture', approved: null }),
+    createWebPack({ privateRanges: [], braveSearchApiKey: 'fixture', approved: null }),
   ]
   // A tool the files route alone runs (fs_receive, fs_send) is never a script's, as the registry offers it to no caller.
   const byName = new Map(packs.flatMap(pack => pack.tools.filter(tool => tool.transfer === undefined).map(tool => [tool.capability.name, tool.capability] as const)))

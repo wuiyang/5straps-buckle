@@ -19,6 +19,7 @@ import { MAX_MASS_DELETE_LIMIT, parseDeleteInWorkspace, parseMassDeleteLimit, ty
 import { parseSessionIdle, SESSION_IDLE_BOUNDS } from '../domain/approval/session-idle.js'
 import { recordedEnvironmentFiles } from './environment-files.js'
 import { realPathOf } from './real-path.js'
+import { cidrRefusal } from '../domain/ip.js'
 
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -180,6 +181,8 @@ export interface BuckleConfig extends NodeConfig {
    */
   deleteInWorkspace: DeleteInWorkspace
   massDeleteLimit: number
+  /** The CIDR ranges its network egress reaches on private, loopback, or reserved addresses without asking (network.privateRanges). */
+  networkPrivateRanges: readonly string[]
   /** The workspace's policy, from its workspace.json, with its mount's target as `mount`. */
   policy: WorkspacePolicy
   /** Its mount table in force (Phase 2 item 1): its own mounts, else the node's. */
@@ -326,6 +329,7 @@ export const WORKSPACE_DEFAULT_KEYS: readonly string[] = Object.freeze([
   'BUCKLE_BROWSER_CDP', 'BUCKLE_BROWSER_PROFILE', 'BUCKLE_BROWSER_ARGS', 'BUCKLE_BROWSER_HEADED',
   'BUCKLE_APPROVAL_JUDGE', 'BUCKLE_APPROVAL_JUDGE_PROVIDER', 'BUCKLE_APPROVAL_JUDGE_MODEL', 'BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS',
   'BUCKLE_APPROVAL_QUICK_JUDGE', 'BUCKLE_APPROVAL_QUICK_JUDGE_MODEL', 'BUCKLE_APPROVAL_FORMS', 'BUCKLE_APPROVAL_SESSION_IDLE_MS', 'BUCKLE_DELETE_IN_WORKSPACE', 'BUCKLE_MASS_DELETE_LIMIT',
+  'BUCKLE_NETWORK_PRIVATE_RANGES',
 ])
 
 /**
@@ -441,6 +445,8 @@ export interface WorkspaceScope {
   secrets?: { enabled: boolean; files: readonly string[] }
   /** Its delete policy (the delete policy brief). */
   files: { deleteInWorkspace: DeleteInWorkspace; massDeleteLimit: number }
+  /** The CIDR ranges its network egress reaches on private addresses without asking (APPROVAL-19). */
+  network: { privateRanges: readonly string[] }
   /** Variables its shell commands see. */
   env: Readonly<Record<string, string>>
 }
@@ -477,6 +483,8 @@ export interface NodeDefaults {
   approval: { forms?: boolean; sessionIdleMs?: number; judge?: JudgeMode; judgeProvider?: JudgeProvider; judgeModel?: string; judgeStandardScripts?: string[]; quickJudge?: QuickJudgeScope; quickJudgeModel?: string }
   /** BUCKLE_DELETE_IN_WORKSPACE and BUCKLE_MASS_DELETE_LIMIT, where buckle.env names them (the delete policy brief). */
   files: { deleteInWorkspace?: DeleteInWorkspace; massDeleteLimit?: number }
+  /** BUCKLE_NETWORK_PRIVATE_RANGES, CIDR ranges separated by commas, where buckle.env names it (APPROVAL-19). */
+  network: { privateRanges?: string[] }
   env: Readonly<Record<string, string>>
 }
 
@@ -519,8 +527,20 @@ export function nodeDefaultsFrom(environment: NodeJS.ProcessEnv, platform: NodeJ
     browser: { ...browser.browserCdp ? { cdp: browser.browserCdp } : {}, ...browser.browserProfile ? { profile: browser.browserProfile } : {}, ...browser.browserArgs ? { args: browser.browserArgs } : {}, ...defined('headed', flag('BUCKLE_BROWSER_HEADED', 'true')) },
     approval: approvalDefaults(environment),
     files: deleteDefaults(environment),
+    network: networkDefaults(environment),
     env: {},
   }
+}
+
+/** The node's private ranges, each checked as a workspace's own is, so a range Buckle refuses stops the node, naming the variable. */
+function networkDefaults(environment: NodeJS.ProcessEnv): NodeDefaults['network'] {
+  if (!environment.BUCKLE_NETWORK_PRIVATE_RANGES) return {}
+  const ranges = parseList(environment.BUCKLE_NETWORK_PRIVATE_RANGES)
+  for (const range of ranges) {
+    const refusal = cidrRefusal(range)
+    if (refusal) throw new Error(`Invalid BUCKLE_NETWORK_PRIVATE_RANGES entry ${range}: ${refusal}`)
+  }
+  return { privateRanges: [...new Set(ranges)] }
 }
 
 /** The node's delete policy defaults (the delete policy brief), each checked as a workspace's own is, so a value Buckle refuses stops the node, naming the variable. */
@@ -625,9 +645,9 @@ export function workspaceConfig(node: NodeConfig, scope: WorkspaceScope): Buckle
 }
 
 /** The fields of a workspace's configuration its workspace.json decides, which a running workspace takes up between calls (Q2). */
-export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'shellNetwork' | 'isolateShell' | 'approvalJudge' | 'approvalJudgeProvider' | 'approvalJudgeModel' | 'approvalJudgeStandardScripts' | 'approvalQuickJudge' | 'approvalQuickJudgeProvider' | 'approvalQuickJudgeModel' | 'browserCdp' | 'browserProfile' | 'browserArgs' | 'browserHeaded' | 'browserIdleTimeoutMs' | 'browserSettingNames' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHistory' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'approvalSessionIdleMs' | 'secretsEnabled' | 'secretFiles' | 'deleteInWorkspace' | 'massDeleteLimit' | 'commandEnvironment' | 'history'>
+export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'shellNetwork' | 'isolateShell' | 'approvalJudge' | 'approvalJudgeProvider' | 'approvalJudgeModel' | 'approvalJudgeStandardScripts' | 'approvalQuickJudge' | 'approvalQuickJudgeProvider' | 'approvalQuickJudgeModel' | 'browserCdp' | 'browserProfile' | 'browserArgs' | 'browserHeaded' | 'browserIdleTimeoutMs' | 'browserSettingNames' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHistory' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'approvalSessionIdleMs' | 'secretsEnabled' | 'secretFiles' | 'deleteInWorkspace' | 'massDeleteLimit' | 'networkPrivateRanges' | 'commandEnvironment' | 'history'>
 
-export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'approval' | 'secrets' | 'files' | 'env' | 'history'>): WorkspaceFields {
+export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'approval' | 'secrets' | 'files' | 'network' | 'env' | 'history'>): WorkspaceFields {
   return {
     history: scope.history ?? { keepTurns: 10, turnIdleMs: 60_000, maxFileBytes: 33_554_432 },
     policy: { ...scope.policy, mount: scope.mount },
@@ -660,6 +680,7 @@ export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' |
     secretFiles: [...scope.secrets?.files ?? []],
     deleteInWorkspace: scope.files.deleteInWorkspace,
     massDeleteLimit: scope.files.massDeleteLimit,
+    networkPrivateRanges: [...scope.network.privateRanges],
     commandEnvironment: { ...scope.env },
   }
 }

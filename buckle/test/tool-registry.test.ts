@@ -13,7 +13,7 @@ import { DECISION_TOOL } from '../common/domain/record-tools.js'
 import { toolNameToCommand, commandToToolName, buildToolArgs, parseArgsOptions } from '../cli/arguments.js'
 
 function builtinRegistry(allowHostGit = false) {
-  const packs = createBuiltinPacks({
+  const packs = createBuiltinPacks({ privateRanges: [],
     allowHostGit,
     cwd: '/work/project',
     paths: createPathView({ root: '/work/project', mount: null }),

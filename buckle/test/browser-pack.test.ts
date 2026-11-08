@@ -724,7 +724,7 @@ describe('the environment the browser is spawned with', () => {
 
 describe('a page named without a scheme', () => {
   const judge = (args: string[], approved: string[] | null = ['allowed.test']) => {
-    const engine = createPermissionEngine([createNetworkEgressRule({ approved: approved ? compileUrlPatterns(approved) : null })])
+    const engine = createPermissionEngine([createNetworkEgressRule({ privateRanges: [], approved: approved ? compileUrlPatterns(approved) : null })])
     const effects = browserEffects('open', args).map(effect => effect.kind === 'network' ? { kind: 'network' as const, url: new URL(effect.url) } : effect) as ResolvedEffect[]
     return engine.evaluate({ tool: 'browser_command', effects, grants: { subjectsFor: () => [] } })
   }

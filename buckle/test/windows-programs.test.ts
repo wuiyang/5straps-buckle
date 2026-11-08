@@ -287,7 +287,7 @@ function builtins(input: { table: (root: string) => Record<string, string> }) {
   const root = scratch()
   const state = scratch()
   const spawned: ProcessRequest[] = []
-  const packs = createBuiltinPacks({
+  const packs = createBuiltinPacks({ privateRanges: [],
     allowHostGit: true,
     allowHostLsp: true,
     cwd: root,
@@ -396,7 +396,7 @@ describe('the browser pack on Windows, imitated, without an agent-browser it can
     process.chdir(root)
     try {
       const environment = { PATH: 'C:\\Windows;C:\\Windows\\System32', APPDATA: 'C:\\Users\\me\\AppData\\Roaming' }
-      const packs = createBuiltinPacks({
+      const packs = createBuiltinPacks({ privateRanges: [],
         cwd: root, paths: createPathView({ root, mount: null }), hiddenPaths: [], settingsFiles: [], mountReadOnlyPaths: [], approvedUrls: null, approvedLists: [],
         runProcess: async () => ({ exitCode: 0, signal: null, stdout: '', stderr: '', truncated: false, timedOut: false }),
         sandbox: createNoneSandbox(), writableRoots: [root], stateDirectory: scratch(), agentBrowserCommand: 'agent-browser',

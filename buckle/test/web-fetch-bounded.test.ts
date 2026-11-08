@@ -49,7 +49,7 @@ function streamOf(parts: Uint8Array[], tail: 'close' | 'stall' | 'empties' | 'er
 }
 
 async function webFetch(url: string, host: string): Promise<Fetched> {
-  const tool = createWebPack({ approved: compileUrlPatterns([host]) }).tools.find(candidate => candidate.capability.name === 'web_fetch')!
+  const tool = createWebPack({ privateRanges: [], approved: compileUrlPatterns([host]) }).tools.find(candidate => candidate.capability.name === 'web_fetch')!
   const result = await tool.prepare({ url }).execute({
     requestId: 'bounded', sessionId: 'bounded', timeoutMs: 5_000, signal: new AbortController().signal,
   })

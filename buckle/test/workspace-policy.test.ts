@@ -152,7 +152,7 @@ describe('a registered workspace\'s policy over the node\'s lists', () => {
 it('rejects automatic search redirects instead of forwarding its configured API key', async () => {
   const fetchMock = vi.fn(async () => new Response(JSON.stringify({ web: { results: [] } })))
   vi.stubGlobal('fetch', fetchMock)
-  const search = createWebPack({ braveSearchApiKey: 'fixture-only-search-key', approved: null }).tools.find(tool => tool.capability.name === 'web_search')!
+  const search = createWebPack({ privateRanges: [], braveSearchApiKey: 'fixture-only-search-key', approved: null }).tools.find(tool => tool.capability.name === 'web_search')!
   await search.prepare({ query: 'test' }).execute({ requestId: 'search', sessionId: 'search', timeoutMs: 1000, signal: AbortSignal.timeout(1000) })
   expect(fetchMock).toHaveBeenCalledWith(expect.any(URL), expect.objectContaining({ redirect: 'error' }))
 })

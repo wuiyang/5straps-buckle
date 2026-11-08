@@ -101,6 +101,7 @@ import type { SecretSettings } from '../secrets/places.js'
 import { logCallFeedback } from '../invocation/call-feedback.js'
 import { unavailableToolReason } from '../invocation/owner-remediation.js'
 import { listedSecretFile } from '../secrets/secret-file.js'
+import { parseCidr, type AddressRange } from '../../domain/ip.js'
 
 const TOOL_DISABLED = 'Disabled by workspace tool policy'
 
@@ -168,7 +169,7 @@ export interface PolicyHandle {
   /** Where each part of the policy in force comes from: the workspace's own, the node's default, or Buckle's (D85, Q3). */
   sources(): PolicySources
   /** A fresh egress rule and approved list, built by the same construction the engine and packs use, for `buckle check-url`. */
-  network(): { rule: PermissionRule; approved: UrlMatcher | null }
+  network(): { rule: PermissionRule; approved: UrlMatcher | null; privateRanges: readonly AddressRange[] }
   revision(): string
   /**
    * Validates, stores, and rebuilds the rules and packs. Where the folder shows is not the policy's to change: `mount`
@@ -581,7 +582,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
       stored: () => storedPolicy(settingsFile.read()),
       effective: () => compiled.policy,
       sources: () => policySources(applied, config.workspaceDefaults),
-      network: () => ({ rule: networkEgressRule(compiled), approved: compiled.network }),
+      network: () => ({ rule: networkEgressRule(compiled, config), approved: compiled.network, privateRanges: privateRangesOf(config) }),
       revision: () => policyRevision(storedPolicy(settingsFile.read())),
       async apply(policy, expectedRevision) {
         compilePolicy(policy)
@@ -1020,6 +1021,7 @@ async function buildPacks(input: {
     mountReadOnlyPaths: input.config.mountReadOnlyPaths,
     sandboxMounts: sandboxBinds(input.config.mounts),
     approvedUrls: input.compiled.network,
+    privateRanges: privateRangesOf(input.config),
     approvedLists: input.compiled.network ? [{ name: 'workspace' as const, entries: input.compiled.network.patterns }] : [],
     braveSearchApiKey: input.config.braveSearchApiKey,
     forge: { token: input.config.forgeGithubToken, apiUrl: input.config.forgeApiUrl, author: input.config.forgeGitAuthor },
@@ -1082,12 +1084,12 @@ function reshapeInputs(settings: ResolvedSettings): string {
 }
 
 /**
- * What the packs hold a copy of without reshaping: the policy lists, the variables, and the browser settings. A change to
- * any rebuilds the packs for the next call with no wait, as the approval wait swaps in, and a call already running keeps
- * its own; the browser pack is carried over unless what it is handed changed (browserInputs).
+ * What the packs hold a copy of without reshaping: the policy lists, the variables, the browser settings, and the private
+ * ranges. A change to any rebuilds the packs for the next call with no wait, as the approval wait swaps in, and a call
+ * already running keeps its own; the browser pack is carried over unless what it is handed changed (browserInputs).
  */
 function swapInputs(settings: ResolvedSettings): string {
-  return JSON.stringify([settings.policy, settings.env, settings.browser])
+  return JSON.stringify([settings.policy, settings.env, settings.browser, settings.network])
 }
 
 const BROWSER_PACK = 'browser'
@@ -1131,6 +1133,7 @@ function settingsOf(config: BuckleConfig): WorkspaceSettings {
     approval: { judge: config.approvalJudge, judgeProvider: config.approvalJudgeProvider, judgeModel: config.approvalJudgeModel, judgeStandardScripts: [...config.approvalJudgeStandardScripts], quickJudge: config.approvalQuickJudge, quickJudgeProvider: config.approvalQuickJudgeProvider, quickJudgeModel: config.approvalQuickJudgeModel },
     ...(config.secretsEnabled === undefined && config.secretFiles === undefined ? {} : { secrets: { ...(config.secretsEnabled === undefined ? {} : { enabled: config.secretsEnabled }), ...(config.secretFiles === undefined ? {} : { files: [...config.secretFiles] }) } }),
     files: { deleteInWorkspace: config.deleteInWorkspace, massDeleteLimit: config.massDeleteLimit },
+    network: { privateRanges: [...config.networkPrivateRanges] },
     env: config.commandEnvironment,
   })
 }
@@ -1144,8 +1147,13 @@ function secretFileListed(listed: readonly string[], paths: PathView, real: stri
 }
 
 /** One construction for the engine and `buckle check-url`, so the check cannot drift from the rule. */
-function networkEgressRule(compiled: CompiledPolicy): PermissionRule {
-  return createNetworkEgressRule({ approved: compiled.network })
+function networkEgressRule(compiled: CompiledPolicy, config: BuckleConfig): PermissionRule {
+  return createNetworkEgressRule({ approved: compiled.network, privateRanges: privateRangesOf(config) })
+}
+
+/** The ranges in force, each checked when its setting was written or read, so parsing cannot fail here. */
+function privateRangesOf(config: BuckleConfig): AddressRange[] {
+  return config.networkPrivateRanges.map(parseCidr)
 }
 
 /**
@@ -1162,7 +1170,7 @@ function buildPermissionEngine(input: { config: BuckleConfig; compiled: Compiled
     createCommandPolicyRule(compiled),
     createDestructiveCommandRule({ added: compiled.commands.destructive, allowedInterpreters: compiled.commands.allowedInterpreters, allow: compiled.commands.allow }),
     createDestructivePathRule({ paths, strict: config.strictWrites, deletes }),
-    networkEgressRule(compiled),
+    networkEgressRule(compiled, config),
     createProcessProbeRule(),
     createFilesystemPolicyRule({ root: config.cwd, policy: compiled.policy }),
     createReadScopeRule({ paths }),

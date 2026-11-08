@@ -95,11 +95,93 @@ function expandIpv6(address: string): number[] | null {
   return hextets.length === 8 ? hextets : null
 }
 
-function matchesBytes(candidate: number[], range: number[], prefix: number): boolean {
+function matchesBytes(candidate: readonly number[], range: readonly number[], prefix: number): boolean {
   for (let index = 0; index * 8 < prefix; index += 1) {
     const remaining = prefix - index * 8
     const mask = remaining >= 8 ? 0xff : (0xff << (8 - remaining)) & 0xff
     if (((candidate[index] ?? 0) & mask) !== ((range[index] ?? 0) & mask)) return false
   }
   return true
+}
+
+/**
+ * A range of addresses in CIDR notation, as the owner lists one for network egress to reach without asking
+ * (network.privateRanges, APPROVAL-19). Only CIDR: never a hostname or a wildcard, so a range exposes exactly the
+ * addresses it names.
+ */
+export interface AddressRange {
+  /** As the owner wrote it. */
+  readonly text: string
+  readonly family: 4 | 6
+  readonly bytes: readonly number[]
+  readonly prefix: number
+}
+
+export class CidrError extends Error {}
+
+const DECIMAL = /^(?:0|[1-9]\d{0,2})$/
+const CIDR_FORM = 'not CIDR notation: write an address, a slash, and a prefix length, such as 10.0.0.0/8 or fd00::/8; a hostname or a wildcard is never taken'
+
+/** Why `text` is not a range Buckle takes, worded to follow the entry it names, or null. */
+export function cidrRefusal(text: string): string | null {
+  try { parseCidr(text); return null } catch (error) {
+    if (error instanceof CidrError) return error.message
+    throw error
+  }
+}
+
+/** The range `text` names; a CidrError where it is not CIDR, or sets a bit past its prefix. */
+export function parseCidr(text: string): AddressRange {
+  const [address = '', prefixText, ...rest] = text.split('/')
+  if (prefixText === undefined || rest.length > 0) throw new CidrError(CIDR_FORM)
+  const parsed = cidrAddress(address)
+  if (!parsed) throw new CidrError(CIDR_FORM)
+  const width = parsed.bytes.length * 8
+  const prefix = DECIMAL.test(prefixText) ? Number(prefixText) : NaN
+  if (!(prefix <= width)) throw new CidrError(`the prefix length is a whole number, 0 to ${width}`)
+  if (parsed.family === 6 && prefix >= 96 && mappedIpv4(parsed.hextets)) throw new CidrError('an IPv4-mapped range is read as the IPv4 addresses it carries; write the IPv4 range')
+  if (!matchesBytes(parsed.bytes, networkBytes(parsed.bytes, prefix), width)) throw new CidrError(`it sets bits past its prefix; write ${networkText(parsed, prefix)}, or the one address with /${width}`)
+  return { text, family: parsed.family, bytes: parsed.bytes, prefix }
+}
+
+/** The listed range that holds `address`, or null; an IPv4-mapped address is judged as the IPv4 address it carries. */
+export function rangeCovering(address: string, ranges: readonly AddressRange[]): AddressRange | null {
+  const bare = address.replace(/^\[|\]$/g, '')
+  const target = addressBytes(bare)
+  if (!target) return null
+  return ranges.find(range => range.family === target.family && matchesBytes(target.bytes, range.bytes, range.prefix)) ?? null
+}
+
+function cidrAddress(address: string): { family: 4 | 6; bytes: number[]; hextets: number[] } | null {
+  if (isIPv4(address)) {
+    const octets = address.split('.')
+    return octets.every(octet => DECIMAL.test(octet)) ? { family: 4, bytes: octets.map(Number), hextets: [] } : null
+  }
+  if (!isIPv6(address) || address.includes('%')) return null
+  const hextets = expandIpv6(address)
+  return hextets ? { family: 6, bytes: hextets.flatMap(hextet => [hextet >> 8, hextet & 0xff]), hextets } : null
+}
+
+function addressBytes(address: string): { family: 4 | 6; bytes: number[] } | null {
+  if (isIPv4(address)) return { family: 4, bytes: address.split('.').map(Number) }
+  if (!isIPv6(address)) return null
+  const hextets = expandIpv6(address)
+  if (!hextets) return null
+  const mapped = mappedIpv4(hextets)
+  if (mapped) return { family: 4, bytes: mapped.split('.').map(Number) }
+  return { family: 6, bytes: hextets.flatMap(hextet => [hextet >> 8, hextet & 0xff]) }
+}
+
+function networkBytes(bytes: readonly number[], prefix: number): number[] {
+  return bytes.map((byte, index) => {
+    const kept = Math.min(8, Math.max(0, prefix - index * 8))
+    return byte & ((0xff << (8 - kept)) & 0xff)
+  })
+}
+
+function networkText(parsed: { family: 4 | 6; bytes: number[] }, prefix: number): string {
+  const network = networkBytes(parsed.bytes, prefix)
+  if (parsed.family === 4) return `${network.join('.')}/${prefix}`
+  const groups = Array.from({ length: 8 }, (_, index) => ((network[index * 2]! << 8) | network[index * 2 + 1]!).toString(16))
+  return `${groups.join(':').replace(/(^|:)0(:0)+(:|$)/, '::')}/${prefix}`
 }

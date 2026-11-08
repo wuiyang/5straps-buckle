@@ -3,6 +3,7 @@ import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { INTERPRETER_NAMES, isInterpreter } from '../common/domain/command-forms.js'
 import { compilePolicy, PolicyError, refusedNetworkEntries } from '../common/domain/policy.js'
 import { compileHostPattern, UrlPatternError } from '../common/domain/url-pattern.js'
+import { cidrRefusal } from '../common/domain/ip.js'
 import { parseSandboxMounts } from '../common/domain/sandbox-mounts.js'
 import { browserBlockRefusal, parseApprovalTimeout, parseBrowserArgs, parseBrowserCdp, parseBrowserProfile } from '../common/runtime/config.js'
 import { BUILTIN_PACKS, unmetPackPrerequisite } from '../common/services/packs/index.js'
@@ -20,7 +21,7 @@ export interface NodeSetting {
   key: string
   /** The short name `buckle settings set` also accepts. */
   alias: string
-  kind: 'boolean' | 'host-list' | 'directory-list' | 'name' | 'approval-wait' | 'packs' | 'mount' | 'url-list' | 'interpreter-list' | 'command-list' | 'script-list' | 'mounts' | 'browser-cdp' | 'browser-profile' | 'browser-args' | 'judge-mode' | 'judge-provider' | 'judge-model' | 'quick-scope' | 'delete-mode' | 'entry-limit' | 'session-idle'
+  kind: 'boolean' | 'host-list' | 'cidr-list' | 'directory-list' | 'name' | 'approval-wait' | 'packs' | 'mount' | 'url-list' | 'interpreter-list' | 'command-list' | 'script-list' | 'mounts' | 'browser-cdp' | 'browser-profile' | 'browser-args' | 'judge-mode' | 'judge-provider' | 'judge-model' | 'quick-scope' | 'delete-mode' | 'entry-limit' | 'session-idle'
   /** What the node does when the key is unset, as `buckle settings show` prints it. */
   fallback: string
   /** False when the audit log and the confirmation keep the value out (a DevTools URL can carry a token, arguments a proxy password): the key alone is recorded. */
@@ -83,6 +84,8 @@ export const NODE_SETTINGS: readonly NodeSetting[] = [
   { key: 'BUCKLE_COMMAND_DESTRUCTIVE', alias: 'command-destructive', kind: 'command-list', fallback: '(none: the built-in floor alone)', workspace: { key: 'policy.commands.destructive', change: 'buckle policy destructive-command <glob>, which adds to the node\'s' } },
   // Folded into the node's URL list (Phase 2 item 5): an exact host of it clears a private address, as any exact entry does.
   { key: 'BUCKLE_ALLOWED_HOSTS', alias: 'allowed-hosts', kind: 'host-list', fallback: '(none)', workspace: { key: 'policy.network.allow', change: 'buckle policy allow-url <host>' } },
+  // CIDR ranges alone (APPROVAL-19): the private addresses network tools reach without asking, never a name or a wildcard.
+  { key: 'BUCKLE_NETWORK_PRIVATE_RANGES', alias: 'network-private-ranges', kind: 'cidr-list', fallback: '(none)', workspace: { key: 'network.privateRanges', change: 'buckle workspace set network.privateRanges <ranges>' } },
   { key: 'BUCKLE_NETWORK_ALLOW', alias: 'network-allow', kind: 'url-list', fallback: '(none: the default egress rules)', workspace: { key: 'policy.network.allow', change: 'buckle policy allow-url <host>' } },
   { key: 'BUCKLE_ALLOWED_INTERPRETERS', alias: 'allowed-interpreters', kind: 'interpreter-list', fallback: '(none: every interpreter runs unknown code)', workspace: { key: 'policy.commands.allowedInterpreters', change: 'buckle policy allow-interpreter <name>' } },
 ]
@@ -199,6 +202,14 @@ function normaliseValue(input: { setting: NodeSetting; raw: string; cwd: string;
       const refused = refusedNetworkEntries(entries)
       if (refused.length) return refuse(`Invalid ${input.setting.key} entry ${refused[0]!.entry}: ${refused[0]!.reason}`)
       return listValue(input.setting, entries)
+    }
+    case 'cidr-list': {
+      const ranges = list(raw)
+      for (const range of ranges) {
+        const refusal = cidrRefusal(range)
+        if (refusal) return refuse(`Invalid ${input.setting.key} entry ${range}: ${refusal}`)
+      }
+      return listValue(input.setting, ranges)
     }
     case 'interpreter-list': {
       const names = list(raw)

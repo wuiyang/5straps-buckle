@@ -16,7 +16,7 @@ import { createNoneSandbox } from '../common/adapters/sandbox/none-sandbox.js'
 
 /** Every tool the built-in packs define, available here or not, as the group and verb the CLI dispatches it by. */
 function toolCommands(): Set<string> {
-  const packs = createBuiltinPacks({
+  const packs = createBuiltinPacks({ privateRanges: [],
     allowHostGit: true,
     allowHostLsp: true,
     enableShell: true,
@@ -48,7 +48,7 @@ function toolCommands(): Set<string> {
   const complete = [
     ...packs,
     createFsPack({ paths, runProcess, ripgrep: { path: 'rg', argv0: 'rg', args: [] }, protectedRoots: [] }),
-    createWebPack({ braveSearchApiKey: 'fixture', approved: null }),
+    createWebPack({ privateRanges: [], braveSearchApiKey: 'fixture', approved: null }),
   ]
   const commands = new Set<string>()
   for (const pack of complete) {

@@ -232,7 +232,7 @@ describe('buckle check-url', () => {
   it('approves a host a wildcard entry covers, naming the entry, and says it clears no private address', async () => {
     const config = node({ BUCKLE_ALLOWED_HOSTS: '*.internal.test' })
 
-    expect(await check(config, 'http://nas.lab.internal.test/status')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('(approved list entry *.internal.test; a wildcard entry clears no private address, so web_fetch refuses this host where it resolves into a private range)') })
+    expect(await check(config, 'http://nas.lab.internal.test/status')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('(approved list entry *.internal.test; a wildcard entry clears no private address, so web_fetch refuses this host where it resolves into a private range network.privateRanges does not cover)') })
     expect(await check(config, 'http://internal.test/')).toMatchObject({ exitCode: 0 })
     expect((await check(config, 'http://other.test/')).exitCode).toBe(1)
   })

@@ -56,7 +56,7 @@ describe('entries that cannot be meant', () => {
 
 describe('the egress rule under an approved list', () => {
   const evaluate = (patterns: string[], url: string) => {
-    const engine = createPermissionEngine([createNetworkEgressRule({ approved: compileUrlPatterns(patterns) })])
+    const engine = createPermissionEngine([createNetworkEgressRule({ privateRanges: [], approved: compileUrlPatterns(patterns) })])
     const effect: ResolvedEffect = { kind: 'network', url: new URL(url) }
     return engine.evaluate({ tool: 'web_fetch', effects: [effect], grants: { subjectsFor: () => [] } })
   }
@@ -177,7 +177,7 @@ describe('network grants read with the pattern grammar', () => {
   })
 
   const judge = (approved: ReturnType<typeof compileUrlPatterns> | null, patterns: string[], url: string) => {
-    const engine = createPermissionEngine([createNetworkEgressRule({ approved })])
+    const engine = createPermissionEngine([createNetworkEgressRule({ privateRanges: [], approved })])
     return engine.evaluate({ tool: 'web_fetch', effects: [{ kind: 'network', url: new URL(url) }], grants: { subjectsFor: () => [], patternsFor: () => patterns } })
   }
 

@@ -4,6 +4,7 @@ import type { Pack } from '../../../domain/pack.js'
 import { referenceHint } from '../../../domain/secret-reference-hint.js'
 import { defineTool, ToolExecutionError } from '../../../domain/tool.js'
 import type { UrlMatcher } from '../../../domain/url-pattern.js'
+import type { AddressRange } from '../../../domain/ip.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { guardedFetch } from './egress.js'
 
@@ -35,6 +36,8 @@ export interface WebPackOptions {
   braveSearchApiKey?: string
   /** The workspace's URL list (Phase 2 item 5). When set, every hop of every fetch must be on it. */
   approved: UrlMatcher | null
+  /** The owner's CIDR ranges: a private address one holds is reached on a hop the rules let through. */
+  privateRanges: readonly AddressRange[]
 }
 
 export function createWebPack(options: WebPackOptions): Pack {
@@ -54,6 +57,7 @@ export function createWebPack(options: WebPackOptions): Pack {
           body: input.body,
           signal: context.signal,
           approved: options.approved,
+          privateRanges: options.privateRanges,
           judge: context.judgeNetwork,
           ...(context.secretHeaders ? { secretHeaders: context.secretHeaders } : {}),
         })

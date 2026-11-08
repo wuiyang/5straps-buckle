@@ -2,7 +2,8 @@ import { MountPathSchema } from '@5straps/protocol'
 import { parseApprovalTimeout, parseBrowserCdp, parseBrowserProfile } from '../common/runtime/config.js'
 import { BUILTIN_PACKS } from '../common/services/packs/index.js'
 import { compileCommandGlob, CommandGlobError } from '../common/domain/command-glob.js'
-import { BROWSER_IDLE_BOUNDS, BUILT_IN_SETTINGS, MAX_LISTED_SECRET_FILES, withMount, type WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
+import { BROWSER_IDLE_BOUNDS, BUILT_IN_SETTINGS, MAX_LISTED_SECRET_FILES, MAX_PRIVATE_RANGES, withMount, type WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
+import { cidrRefusal } from '../common/domain/ip.js'
 import { referencePathRefusal } from '../common/domain/secret-reference.js'
 import { JUDGE_MODEL_NAME, JUDGE_MODES, JUDGE_PROVIDERS } from '../common/types/ports/judge.js'
 import { QUICK_JUDGE_PROVIDERS, QUICK_JUDGE_SCOPES } from '../common/types/ports/quick-judge.js'
@@ -240,6 +241,24 @@ export const SETTING_KEYS: readonly SettingKey[] = [
       const { secrets: block, ...rest } = settings
       const { files: _dropped, ...secrets } = block ?? {}
       return Object.keys(secrets).length === 0 ? rest : { ...rest, secrets }
+    },
+  },
+  {
+    key: 'network.privateRanges',
+    takes: 'CIDR ranges, comma separated, whose private, loopback, or reserved addresses network tools reach without asking, such as 10.0.0.0/8 or fd00::/8; never a hostname or a wildcard; empty for none (the node\'s, else none)',
+    set: (settings, raw) => {
+      const ranges = [...new Set(raw.split(',').map(item => item.trim()).filter(Boolean))]
+      for (const range of ranges) {
+        const refusal = cidrRefusal(range)
+        if (refusal) throw new SettingValueError(`network.privateRanges: ${range}: ${refusal}`)
+      }
+      if (ranges.length > MAX_PRIVATE_RANGES) throw new SettingValueError(`network.privateRanges lists at most ${MAX_PRIVATE_RANGES} ranges`)
+      return { ...settings, network: { ...settings.network, privateRanges: ranges } }
+    },
+    unset: (settings) => {
+      const { network: block, ...rest } = settings
+      const { privateRanges: _dropped, ...network } = block ?? {}
+      return Object.keys(network).length === 0 ? rest : { ...rest, network }
     },
   },
   files('deleteInWorkspace', `allow or ask: whether a delete inside the workspace's own folder runs where its writes are granted, or always asks a person (the node's, else ${BUILT_IN_SETTINGS.files.deleteInWorkspace})`, (raw) => {

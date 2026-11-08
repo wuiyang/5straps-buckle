@@ -368,7 +368,7 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
 })
 
 describe('a * in a URL host never becomes a pattern grant (BUCKLE-D18)', () => {
-  const rule = createNetworkEgressRule({ approved: null })
+  const rule = createNetworkEgressRule({ privateRanges: [], approved: null })
   const evaluate = (config: BuckleConfig, url: string) => rule.evaluate({ tool: 'web_fetch', effect: { kind: 'network', url: new URL(url) }, grants: grantLookup({ store: grantStore(config), holder: { sessionId: 'chat-1' }, consumed: [] }) })
 
   it('refuses the request for http://*.localhost:3000/ before any approval is asked', () => {

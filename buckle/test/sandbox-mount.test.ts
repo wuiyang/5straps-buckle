@@ -79,7 +79,7 @@ describe('the other sandboxes', () => {
   })
 
   it('withholds shell rather than showing a mounted agent a different view', () => {
-    const packs = createBuiltinPacks({
+    const packs = createBuiltinPacks({ privateRanges: [],
       cwd: '/work/project',
       paths: createPathView({ root: '/work/project', mount: '/workspace' }),
       runProcess: async () => ({ exitCode: 0, signal: null, stdout: '', stderr: '', truncated: false, timedOut: false }),
