@@ -95,6 +95,8 @@ interface Batch<T> {
   writing: boolean
   /** An attempt past its deadline, still out: true once it wrote. */
   late: Promise<boolean> | undefined
+  /** Entries the budget dropped while the late attempt carrying them was out. */
+  droppedLate: number
 }
 
 const budgetStates = new WeakMap<LogBudget, BudgetState>()
@@ -146,6 +148,7 @@ export function createLogQueue<T>(options: LogQueueOptions<T>): LogQueue<T> {
       const found = oldestHeld(onlyExpendable)
       if (!found) return
       found.list.splice(found.index, 1)
+      if (batch?.late && found.list === batch.entries) batch.droppedLate += 1
       budget.held -= 1
       countDrop(1, 'full')
     },
@@ -185,7 +188,7 @@ export function createLogQueue<T>(options: LogQueueOptions<T>): LogQueue<T> {
     if (pending.length === 0) return undefined
     const summarized = drops
     drops = undefined
-    return { entries: pending.splice(0, maxBatch), drops: summarized, summary: summarized && summarizeSafely(summarized), attempts: 0, writing: false, late: undefined }
+    return { entries: pending.splice(0, maxBatch), drops: summarized, summary: summarized && summarizeSafely(summarized), attempts: 0, writing: false, late: undefined, droppedLate: 0 }
   }
 
   async function writeBatch(current: Batch<T>): Promise<boolean> {
@@ -223,18 +226,34 @@ export function createLogQueue<T>(options: LogQueueOptions<T>): LogQueue<T> {
   async function retryOrDrop(current: Batch<T>): Promise<void> {
     const wroteLate = await lateAnswer(current)
     if (stopped) return
-    if (wroteLate) return settleWritten(current)
+    if (wroteLate) {
+      retractLateDrops(current)
+      return settleWritten(current)
+    }
     current.attempts += 1
     const delay = retryDelays[current.attempts - 1]
     if (delay === undefined) return dropBatch(current)
     await waitOrStop(delay)
   }
 
-  // Entries the budget dropped while a late write was out stay counted as dropped, though it may have written them.
-  function lateAnswer(current: Batch<T>): Promise<boolean> {
-    const late = current.late ?? Promise.resolve(false)
-    current.late = undefined
-    return late
+  // Out until it answers, so a drop meanwhile is known to ride in it.
+  async function lateAnswer(current: Batch<T>): Promise<boolean> {
+    if (!current.late) return false
+    try {
+      return await current.late
+    } finally {
+      current.late = undefined
+    }
+  }
+
+  // The late attempt carried the entries dropped while it was out, so they were written after all.
+  function retractLateDrops(current: Batch<T>): void {
+    if (current.droppedLate === 0) return
+    counts.dropped -= current.droppedLate
+    counts.written += current.droppedLate
+    const left = (drops?.count ?? 0) - current.droppedLate
+    drops = drops && left > 0 ? { ...drops, count: left } : undefined
+    if (!drops) dropping = false
   }
 
   // The batch's own count goes back unwritten, to be reported with the next one.

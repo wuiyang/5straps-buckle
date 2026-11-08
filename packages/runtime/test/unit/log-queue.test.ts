@@ -78,10 +78,10 @@ describe('one log queue under a budget', () => {
   })
 
   it('counts a write past its deadline as failed, drops its entries oldest first, and sends no second attempt while it is out', async () => {
-    const batches: number[][] = []
+    const batches: Array<Array<number | string>> = []
     let answer = () => {}
     const budget = createLogBudget({ limit: 3, overflow: 'drop-oldest' })
-    const queue = createLogQueue<number>({
+    const queue = createLogQueue<number | string>({
       destination: 'node',
       budget,
       writeDeadlineMs: 20,
@@ -90,6 +90,7 @@ describe('one log queue under a budget', () => {
         batches.push([...batch])
         return batches.length === 1 ? new Promise<void>((resolve) => { answer = resolve }) : undefined
       },
+      summarize: drops => `dropped ${drops.count}`,
     })
     for (const entry of range(0, 3)) queue.push(entry)
     await drained()
@@ -103,8 +104,35 @@ describe('one log queue under a budget', () => {
     expect(budget.held()).toBe(3)
     answer()
     await queue.flush()
+    // The late write carried the two the budget dropped, so they count as written, and no count of them is written.
     expect(batches).toEqual([[0, 1, 2], [3, 4]])
-    expect(queue.stats()).toEqual({ held: 0, written: 3, dropped: 2, failures: 1 })
+    expect(queue.stats()).toEqual({ held: 0, written: 5, dropped: 0, failures: 1 })
+  })
+
+  it('keeps counting what the budget dropped from a late write that then failed', async () => {
+    const batches: Array<Array<number | string>> = []
+    let fail = (_error: Error) => {}
+    const queue = createLogQueue<number | string>({
+      destination: 'node',
+      budget: createLogBudget({ limit: 2, overflow: 'drop-oldest' }),
+      writeDeadlineMs: 20,
+      retryDelaysMs: [1],
+      write: (batch) => {
+        batches.push([...batch])
+        return batches.length === 1 ? new Promise<void>((_resolve, reject) => { fail = reject }) : undefined
+      },
+      summarize: drops => `dropped ${drops.count}`,
+    })
+    queue.push(0)
+    queue.push(1)
+    await drained()
+    await new Promise(resolve => setTimeout(resolve, 40))
+    queue.push(2)
+    fail(new Error('disk full'))
+    await queue.flush()
+
+    expect(batches).toEqual([[0, 1], [1], ['dropped 1', 2]])
+    expect(queue.stats()).toEqual({ held: 0, written: 2, dropped: 1, failures: 1 })
   })
 
   it('takes a write that answers after its deadline as written, and tries it again only when it failed', async () => {
