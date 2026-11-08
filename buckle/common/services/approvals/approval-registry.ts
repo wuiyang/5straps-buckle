@@ -19,7 +19,8 @@ import { logger, withoutCause } from '../../runtime/log.js'
 import { isPlainName } from '../../domain/paths.js'
 import { dropOnces, liveOnces, onceSchema, spendOnces, unspentOnces, type OnceEntry, type OnceSpend, type UnspentOnce } from './once-store.js'
 import { ActionTooLargeError, ApprovalConflictError, ApprovalLimitError, RequestIdReusedError, SkipUnfinishedError } from './approval-errors.js'
-import { saveFailure, unsavedDenial } from './grant-save.js'
+import { saveFailure } from './grant-save.js'
+import { unsavedDenial } from '../../domain/approval/grant-save-question.js'
 
 export const APPROVAL_OUTBOX_COUNT_MAX = 4096
 export const APPROVAL_OUTBOX_BYTES_MAX = 4 * 1024 * 1024
@@ -337,9 +338,6 @@ export type Departure = { type: 'answered' | 'denied' } | { type: 'expired' } | 
 /** How many departures this process remembers, oldest dropped first: a poll reads each within a second. */
 const DEPARTURES_KEPT = 1_024
 const EXPIRED: Departure = { type: 'expired' }
-
-/** What a route says of a decision recorded with its grant owed: its session or always grant is not in force yet. */
-export const GRANT_OWED_NOTE = 'its grant is not written yet, and is written when the workspace opens again or when the same decision is sent again'
 
 /**
  * A joined call gets the requests still waiting and the tokens of its asks already answered, so its

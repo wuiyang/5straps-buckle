@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { StateBusyError, StateFileError } from '../common/adapters/json-file-store.js'
-import { saveFailure, unsavedDenial } from '../common/services/approvals/grant-save.js'
+import { unsavedDenial } from '../common/domain/approval/grant-save-question.js'
+import { saveFailure } from '../common/services/approvals/grant-save.js'
 
 const PATH = '/home/someone/.5straps/buckle/grants.json'
 const nodeError = (code: string) => Object.assign(new Error(`${code}: failed, open '${PATH}'`), { code })

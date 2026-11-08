@@ -11,7 +11,8 @@ import { describeAsk, printable, type ShownAsk } from '../common/domain/approval
 import { readAskView } from '../common/adapters/approval/ask-view.js'
 import { localTime } from '../common/domain/local-time.js'
 import { createConsoleWriter, screenKind, type ConsoleWriter, type PromptRelease } from '../common/runtime/console.js'
-import { APPROVAL_REQUEST_KIND, type ApprovalChoice } from '../common/adapters/approval/terminal-question.js'
+import { APPROVAL_REQUEST_KIND, GRANT_SAVE_REQUEST_KIND, type ApprovalChoice } from '../common/adapters/approval/terminal-question.js'
+import { saveAnswerOf, saveChoices, type SaveAnswer, type Unsaved } from '../common/domain/approval/grant-save-question.js'
 import { QUIET_MS, discardTypedLine, watchKeys } from './terminal-keys.js'
 
 export interface TerminalOptions {
@@ -123,6 +124,7 @@ export function createTerminalConsumer(options: TerminalOptions = {}): TerminalC
     },
     async prompt(request, { signal }) {
       if (request.kind === 'history_recovery') return recoveryPrompt({ request, input, writer, signal: AbortSignal.any([signal, interrupted.signal]), interrupt })
+      if (request.kind === GRANT_SAVE_REQUEST_KIND) return savePrompt({ request, input, writer, signal: AbortSignal.any([signal, interrupted.signal]), interrupt })
       const question = approvalQuestion(request)
       const cancelled = AbortSignal.any([signal, interrupted.signal])
       cancelled.throwIfAborted()
@@ -343,6 +345,9 @@ function choiceLabel(choice: GrantScope | ApprovalChoice): string {
  */
 export type Confirm = (prompt: string) => Promise<boolean>
 
+/** Warns the person at this process's terminal of a decision that did not save, and takes their retry or skip. */
+export type ChooseSave = (unsaved: Unsaved) => Promise<SaveAnswer | undefined>
+
 /**
  * The confirmation `buckle approve` and `buckle client approve` ask for, where both the input and the output the
  * action is printed to are a terminal, with the prompt on that same output: with the action redirected away, a
@@ -353,12 +358,28 @@ export function terminalConfirm(streams: { input: NodeJS.ReadStream; output: Nod
   return prompt => confirmAtTerminal(prompt, { input: streams.input, output: streams.output })
 }
 
+/** The save question `buckle approve` asks, on the output its decision was printed to; null where either end is no terminal. */
+export function terminalChooseSave(streams: { input: NodeJS.ReadStream; output: NodeJS.WriteStream }): ChooseSave | null {
+  if (!streams.input.isTTY || !streams.output.isTTY) return null
+  return async (unsaved) => {
+    const typed = await answerAtTerminal(`${unsaved.warning}.\n${saveChoices(unsaved.kind)}.\n`, { input: streams.input, output: streams.output })
+    return typed === undefined ? undefined : saveAnswerOf(unsaved.kind, typed)
+  }
+}
+
 /**
  * One yes-or-no at this process's terminal, for `buckle approve` after it showed the whole action (owner
- * decision D17): the word yes confirms; anything else, Enter or Ctrl-C declines. As a question does, it
- * takes keys only once the keyboard has been still with it on screen, and throws away a line typed before.
+ * decision D17): the word yes confirms; anything else, Enter or Ctrl-C declines.
  */
 export async function confirmAtTerminal(prompt: string, options: Pick<TerminalOptions, 'input' | 'output'> = {}): Promise<boolean> {
+  return (await answerAtTerminal(prompt, options))?.trim().toLowerCase() === 'yes'
+}
+
+/**
+ * One line typed at this process's terminal after `prompt`, or undefined on Ctrl-C or a closed input. As a question does,
+ * it takes keys only once the keyboard has been still with it on screen, and throws away a line typed before.
+ */
+async function answerAtTerminal(prompt: string, options: Pick<TerminalOptions, 'input' | 'output'>): Promise<string | undefined> {
   const input = options.input ?? process.stdin
   const output = options.output ?? process.stderr
   const readline = createInterface({ input, output, historySize: 0 })
@@ -371,9 +392,9 @@ export async function confirmAtTerminal(prompt: string, options: Pick<TerminalOp
     await keys.quiet(QUIET_MS, closed.signal)
     closed.signal.throwIfAborted()
     discardTypedLine(readline)
-    return (await readline.question('  > ', { signal: closed.signal })).trim().toLowerCase() === 'yes'
+    return await readline.question('  > ', { signal: closed.signal })
   } catch {
-    return false
+    return undefined
   } finally {
     keys.stop()
     readline.close()
@@ -392,7 +413,7 @@ type RecoveryEnding = { result: CliConsumerResult } | { error: unknown }
 async function recoveryPrompt(input: { request: CliRequest; input: Readable; writer: ConsoleWriter; signal: AbortSignal; interrupt: () => void }): Promise<CliConsumerResult> {
   input.signal.throwIfAborted()
   const details = RecoveryDetailsSchema.parse(input.request.action.details)
-  const keyboard = openRecoveryKeyboard(input)
+  const keyboard = openKeyboard({ ...input, choiceOf: key => (key === 'r' ? 'recover' : 'deny') })
   try {
     await input.writer.block(marked({ workspaceId: details.workspace, workspaceName: details.workspaceName }, [
       `History checkpoint ${details.checkpoint} needs recovery.`,
@@ -403,7 +424,32 @@ async function recoveryPrompt(input: { request: CliRequest; input: Readable; wri
   } finally { keyboard.close() }
 }
 
-function openRecoveryKeyboard(input: { input: Readable; signal: AbortSignal; interrupt: () => void }) {
+const SaveDetailsSchema = z.object({
+  workspace: z.string().min(1),
+  workspaceName: z.string().optional(),
+  warning: z.string().min(1),
+  choices: z.string().min(1),
+})
+
+/**
+ * A save question, asked by key as a recovery is: the warning and its choices, each line marked with the workspace. It
+ * answers with the key pressed, which the backend reads against the keys its question takes.
+ */
+async function savePrompt(input: { request: CliRequest; input: Readable; writer: ConsoleWriter; signal: AbortSignal; interrupt: () => void }): Promise<CliConsumerResult> {
+  input.signal.throwIfAborted()
+  const details = SaveDetailsSchema.parse(input.request.action.details)
+  const keyboard = openKeyboard({ ...input, choiceOf: key => key })
+  try {
+    await input.writer.block(marked({ workspaceId: details.workspace, ...(details.workspaceName === undefined ? {} : { workspaceName: details.workspaceName }) }, [
+      `${printable(details.warning)}.`,
+      `${printable(details.choices)}.`,
+    ]), new Date())
+    return await keyboard.answer()
+  } finally { keyboard.close() }
+}
+
+/** Raw keys for one question by key: the first key after the quiet period answers with `choiceOf` it; Ctrl-C interrupts. */
+function openKeyboard(input: { input: Readable; signal: AbortSignal; interrupt: () => void; choiceOf: (key: string) => string }) {
   const keyboard = input.input as Readable & { isRaw?: boolean; setRawMode?: (raw: boolean) => void }
   const wasRaw = keyboard.isRaw === true
   const wasFlowing = input.input.readableFlowing === true
@@ -446,7 +492,7 @@ function openRecoveryKeyboard(input: { input: Readable; signal: AbortSignal; int
       finish({ error: new Error('Interrupted') })
       input.interrupt()
     } else if (key.includes('\u0004')) ended()
-    else if (accepting) finish({ result: { status: 'answered', answer: { choice: key === 'r' ? 'recover' : 'deny' } } })
+    else if (accepting) finish({ result: { status: 'answered', answer: { choice: input.choiceOf(key) } } })
   }
 
   input.input.on('data', heard)

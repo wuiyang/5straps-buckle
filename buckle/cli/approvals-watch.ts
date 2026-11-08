@@ -6,7 +6,8 @@ import { QUIET_MS, discardTypedLine, pause, watchKeys, type KeyWatch } from './t
 import { remainingMs } from '../common/domain/approval/expiry.js'
 import { approveCommand, denyCommand, describeAskOfShownCall, printable, workspaceLabel } from '../common/domain/approval-instruction.js'
 import type { CoreApprovalApi } from '../common/services/approvals/core-approval-api.js'
-import { GRANT_OWED_NOTE, type PendingAsk } from '../common/services/approvals/approval-registry.js'
+import type { PendingAsk } from '../common/services/approvals/approval-registry.js'
+import { saveAnswerOf, saveChoices, saveEndingLine, settleUnsaved, unsavedOf, type SaveAnswer, type Unsaved } from '../common/domain/approval/grant-save-question.js'
 import type { DecisionBody } from '../common/types/ports/approval-backend.js'
 
 /**
@@ -36,9 +37,9 @@ const WIDER_KEYS: typeof SCOPE_KEYS = [
 export interface WatchSource {
   /**
    * The asks waiting, each with the whole call it came from, the requests alone for the check a question on screen
-   * makes while it waits, and the decision `buckle approve` makes.
+   * makes while it waits, and the decision and the skip of its save `buckle approve` makes.
    */
-  approvals: Pick<CoreApprovalApi, 'waiting' | 'pending' | 'decide'>
+  approvals: Pick<CoreApprovalApi, 'waiting' | 'pending' | 'decide' | 'skipSave'>
   workspaceId: string
   workspaceName?: string
   /** Whether the workspace's thorough stage can approve, which an unrated ask's judge line says (D91 follow-up F6). */
@@ -230,16 +231,46 @@ function decide(request: ApprovalRequest, answer: string, offered: typeof SCOPE_
 /**
  * The same decision `buckle approve` makes, through the core approval API: the owner's own process, so
  * the `cli` source. Core records each one in its workspace's log, so a session that grants several
- * leaves several.
+ * leaves several. One whose grant did not save asks a save question next, as `buckle approve` does.
  */
 async function record(context: AskContext, decision: DecisionBody): Promise<void> {
   const receipt = await context.approvals.decide({ source: 'cli', decision })
-  if (receipt.status === 'refused') {
+  const unsaved = unsavedOf({ decision, receipt })
+  if (receipt.status === 'refused' && unsaved === undefined) {
     context.output.write(`  Not recorded: ${receipt.error.message}.\n`)
     return
   }
-  const granted = receipt.status === 'applied' ? receipt.granted : undefined
-  context.output.write(`  ${decision.outcome === 'approve' ? `Approved (${decision.scope})` : 'Denied'} ${decision.token}${granted === undefined ? '' : ` for ${printable(granted)}`} in workspace ${workspaceLabel(context.workspaceId, context.workspaceName)} (scope: ${decision.scope})${receipt.save === 'owed' ? `; ${GRANT_OWED_NOTE}` : ''}.\n`)
+  if (receipt.status !== 'refused') {
+    const granted = receipt.status === 'applied' ? receipt.granted : undefined
+    context.output.write(`  ${decision.outcome === 'approve' ? `Approved (${decision.scope})` : 'Denied'} ${decision.token}${granted === undefined ? '' : ` for ${printable(granted)}`} in workspace ${workspaceLabel(context.workspaceId, context.workspaceName)} (scope: ${decision.scope}).\n`)
+  }
+  if (unsaved === undefined) return
+  const { token } = decision
+  // The core approval API, as buckle approve holds it.
+  const api = context.approvals
+  const ending = await settleUnsaved({
+    decision, unsaved,
+    route: {
+      ask: asked => askSave(context, asked),
+      retry: () => api.decide({ source: 'cli', decision }),
+      skipSave: () => api.skipSave({ source: 'cli', token }),
+      denyOnce: () => api.decide({ source: 'cli', decision: { token, outcome: 'deny', scope: 'once' } }),
+    },
+  })
+  context.output.write(`  ${saveEndingLine(ending)}\n`)
+}
+
+/** The save question, asked on the watch's own line as its questions are; Ctrl-C leaves it unanswered. */
+async function askSave(context: AskContext, unsaved: Unsaved): Promise<SaveAnswer | undefined> {
+  context.output.write(`  ${unsaved.warning}.\n`)
+  try {
+    await context.keys.quiet(QUIET_MS, context.stopped)
+    context.stopped.throwIfAborted()
+    discardTypedLine(context.readline)
+    return saveAnswerOf(unsaved.kind, await context.readline.question(`  ${saveChoices(unsaved.kind)} > `, { signal: context.stopped }))
+  } catch {
+    return undefined
+  }
 }
 
 /** The workspace a source's commands name: its name where the source carries one, else its id. */

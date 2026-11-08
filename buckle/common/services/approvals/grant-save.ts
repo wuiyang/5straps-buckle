@@ -1,8 +1,5 @@
 import { STATE_BUSY, StateFileError } from '../../adapters/json-file-store.js'
 
-/** A lasting scope as a person reads it beside a failed save. */
-const LASTING_SCOPE_WORDS: Readonly<Record<'session' | 'always', string>> = { session: 'for the session', always: 'for every session' }
-
 /** Why a grant's write failed, by the error's code, in words that name no path. */
 const SAVE_FAILURES: Readonly<Record<string, string>> = {
   EACCES: 'permission denied',
@@ -21,9 +18,4 @@ export function saveFailure(error: unknown): string {
   const code = error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : undefined
   if (code === undefined) return 'an unexpected error'
   return SAVE_FAILURES[code] ?? (SYSTEM_CODE.test(code) ? `system error ${code}` : 'an unexpected error')
-}
-
-/** The refusal of a lasting denial whose grant could not be written: nothing is recorded, and the call still waits. */
-export function unsavedDenial(input: { scope: 'session' | 'always'; reason: string }): string {
-  return `Not denied ${LASTING_SCOPE_WORDS[input.scope]}: saving failed: ${input.reason}; the call still waits`
 }

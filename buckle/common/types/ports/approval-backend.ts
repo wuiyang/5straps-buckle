@@ -119,9 +119,14 @@ export type DecisionReceipt =
   | { status: 'repeated'; state: AskState; save?: GrantSave; saveError?: string }
   | { status: 'refused'; error: ApprovalError }
 
-/** What a skip came to: `repeated` where the save was skipped already, `removed` where its grant had saved and is gone. */
+/**
+ * What a skip came to: `repeated` where the save was skipped already, `removed` where its grant had saved and is gone.
+ * `unfinished`: skipped, but the grant had saved and could not be removed, so it stands until the skip is sent again;
+ * `message` says why, naming no path.
+ */
 export type SkipReceipt =
   | { status: 'skipped' | 'repeated'; removed?: true }
+  | { status: 'unfinished'; message: string }
   | { status: 'refused'; error: ApprovalError }
 
 export type EventType =
@@ -150,7 +155,10 @@ export interface BackendCapabilities {
 }
 
 export interface SubmitContext {
-  /** Aborted when the ask closes or core shuts down; the backend opens nothing more for it. */
+  /**
+   * Aborted when the ask closes or core shuts down; the backend opens nothing more for it, save the question its person's
+   * own decision raised when it did not save, which may stay open until they answer it or the backend closes.
+   */
   signal: AbortSignal
   resend: boolean
 }

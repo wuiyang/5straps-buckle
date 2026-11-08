@@ -64,7 +64,7 @@ function keyboardTerminal() {
   return { input, output, errors, shown: () => shown, refused: () => refused, type: (keys: string) => input.write(keys) }
 }
 
-function watch(approvals: Pick<ApprovalService, 'waiting' | 'pending' | 'decide'>, terminal = keyboardTerminal()) {
+function watch(approvals: Pick<ApprovalService, 'waiting' | 'pending' | 'decide' | 'skipSave'>, terminal = keyboardTerminal()) {
   const done = watchApprovals({ sources: async () => [{ approvals, workspaceId: 'default' }], input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL })
   return { terminal, done }
 }
@@ -281,7 +281,7 @@ describe('buckle approvals --watch', () => {
     }
     const decide = vi.fn()
     const live = () => [expiring].filter(request => Date.parse(request.expiresAt) > Date.now())
-    const { terminal, done } = watch({ waiting: () => live().map(request => ({ request, sessionId: 'chat-1', floor: false, destructive: false })), pending: live, decide })
+    const { terminal, done } = watch({ waiting: () => live().map(request => ({ request, sessionId: 'chat-1', floor: false, destructive: false })), pending: live, decide, skipSave: vi.fn() })
 
     await vi.waitFor(() => expect(terminal.shown()).toContain('expiring expired; dropped.'))
     terminal.type('o\r')

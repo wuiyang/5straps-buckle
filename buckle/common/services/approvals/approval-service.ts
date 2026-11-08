@@ -14,6 +14,7 @@ import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
 import { logger, withoutCause } from '../../runtime/log.js'
 import { openApprovalDecision } from './approval-envelope.js'
+import { SkipUnfinishedError } from './approval-errors.js'
 import { listedApprovals } from './approval-listing.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
 import { backendDecisionOf, backendReceipt, decisionOf, decisionRecord, INVALID_BACKEND_DECISION, readInput, receiptOf, skipReceiptOf, type ChallengeListing, type CoreApprovalApi } from './core-approval-api.js'
@@ -574,7 +575,13 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   }
 
   async function skipAs(source: ApprovalSource, token: string): Promise<SkipReceipt> {
-    return skipReceiptOf(await service.skip({ token, source }))
+    try {
+      return skipReceiptOf(await service.skip({ token, source }))
+    } catch (error) {
+      // The skip is on disk and its saved grant still stands: a route reads that as a receipt, and skips again.
+      if (error instanceof SkipUnfinishedError) return { status: 'unfinished', message: error.message }
+      throw error
+    }
   }
 
   /** A backend's plain decision, under the source core holds for it. */

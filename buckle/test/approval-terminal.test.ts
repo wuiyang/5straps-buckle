@@ -933,33 +933,34 @@ describe('the serve terminal\'s question', () => {
   })
 })
 
+/** A terminal whose keys arrive one at a time, as in raw mode, which a question by key turns on. */
+function recoveryTerminal() {
+  const terminal = silentTerminal()
+  let raw = false
+  Object.defineProperty(terminal.input, 'isRaw', { get: () => raw })
+  Object.assign(terminal.input, { setRawMode: (value: boolean) => { raw = value } })
+  terminal.input.pause()
+  return { ...terminal, raw: () => raw }
+}
+
+async function reachPhase(terminal: ReturnType<typeof recoveryTerminal>, phase: 'quiet' | 'prompt') {
+  await vi.waitFor(() => expect(terminal.raw()).toBe(true))
+  if (phase === 'prompt') await new Promise(resolve => setTimeout(resolve, 550))
+}
+
+function expectReleased(terminal: ReturnType<typeof recoveryTerminal>) {
+  expect(terminal.raw()).toBe(false)
+  expect(terminal.input.listenerCount('data')).toBe(0)
+  expect(terminal.input.listenerCount('end')).toBe(0)
+  expect(terminal.input.listenerCount('close')).toBe(0)
+  expect(terminal.input.isPaused()).toBe(true)
+}
+
 describe('inline history recovery', () => {
   function recovery(workspaceName = 'The site'): CliRequest {
     const checkpoint = `change-${randomUUID()}`
     const workspace = 'workspace-1'
     return { id: `recover-${checkpoint}`, correlationId: checkpoint, kind: 'history_recovery', action: { summary: `Recover checkpoint ${checkpoint}`, details: { checkpoint, workspace, workspaceName, command: `buckle history recover ${checkpoint} --workspace ${workspace}` } }, wait: { mode: 'finite', timeoutMs: 3000 } }
-  }
-
-  function recoveryTerminal() {
-    const terminal = silentTerminal()
-    let raw = false
-    Object.defineProperty(terminal.input, 'isRaw', { get: () => raw })
-    Object.assign(terminal.input, { setRawMode: (value: boolean) => { raw = value } })
-    terminal.input.pause()
-    return { ...terminal, raw: () => raw }
-  }
-
-  async function reachPhase(terminal: ReturnType<typeof recoveryTerminal>, phase: 'quiet' | 'prompt') {
-    await vi.waitFor(() => expect(terminal.raw()).toBe(true))
-    if (phase === 'prompt') await new Promise(resolve => setTimeout(resolve, 550))
-  }
-
-  function expectReleased(terminal: ReturnType<typeof recoveryTerminal>) {
-    expect(terminal.raw()).toBe(false)
-    expect(terminal.input.listenerCount('data')).toBe(0)
-    expect(terminal.input.listenerCount('end')).toBe(0)
-    expect(terminal.input.listenerCount('close')).toBe(0)
-    expect(terminal.input.isPaused()).toBe(true)
   }
 
   it('names the workspace on every escaped line and offers its exact recovery command', async () => {
@@ -1057,6 +1058,60 @@ describe('inline history recovery', () => {
     const stop = new AbortController()
     const request = recovery()
     const invalid = { ...request, action: { ...request.action, details: { ...request.action.details, [field]: '../another' } } }
+    const pending = createTerminalConsumer({ ...terminal, onInterrupt: () => {} }).prompt(invalid, { signal: stop.signal }).then(() => 'answered', () => 'rejected')
+    try {
+      expect(await Promise.race([pending, new Promise(resolve => setTimeout(() => resolve('still waiting'), 150))])).toBe('rejected')
+      expectReleased(terminal)
+    } finally { stop.abort(); await pending }
+  })
+})
+
+describe('a save question at the serve terminal', () => {
+  const WARNING = 'Approved for this call; saving it for the session failed: permission denied'
+  const CHOICES = 'r retries the save; s skips it, so later calls ask again; anything else leaves it to be saved later'
+  function saveQuestion(workspaceName = 'The site'): CliRequest {
+    return { id: 'grant_save:workspace-1:t-1:1', correlationId: 'c-1', kind: 'grant_save', action: { summary: WARNING, details: { workspace: 'workspace-1', workspaceName, warning: WARNING, choices: CHOICES } }, wait: { mode: 'finite', timeoutMs: 3000 } }
+  }
+
+  it.each(['r', 's', 'x'])('shows its warning and its choices on lines marked with the workspace, escaped, and answers with the key %s', async (key) => {
+    const terminal = recoveryTerminal()
+    const cli = setupCli({ terminal })
+    const name = 'The site\n\u001b[31m'
+    try {
+      const pending = cli.requestCli(saveQuestion(name))
+      await reachPhase(terminal, 'prompt')
+      terminal.input.write(key)
+      expect(await pending).toMatchObject({ status: 'answered', answer: { choice: key } })
+      const mark = `[${printable(name)}] `
+      expect(terminal.shown()).toContain(`${mark}${WARNING}.`)
+      expect(terminal.shown()).toContain(`${mark}${CHOICES}.`)
+      expect(terminal.shown()).not.toMatch(/\u001b/)
+      expectReleased(terminal)
+    } finally { await cli.close() }
+  })
+
+  it('takes no key typed before the quiet period ends, and answers nothing on EOF', async () => {
+    const terminal = recoveryTerminal()
+    const cli = setupCli({ terminal })
+    let answered = false
+    try {
+      const pending = cli.requestCli(saveQuestion()).then(result => { answered = true; return result })
+      await reachPhase(terminal, 'quiet')
+      terminal.input.write('r')
+      await new Promise(resolve => setTimeout(resolve, 100))
+      expect(answered).toBe(false)
+      await new Promise(resolve => setTimeout(resolve, 550))
+      terminal.input.end()
+      expect(await pending).toMatchObject({ status: 'denied' })
+      expectReleased(terminal)
+    } finally { await cli.close() }
+  })
+
+  it('refuses a save question that names no warning before taking keyboard input', async () => {
+    const terminal = recoveryTerminal()
+    const stop = new AbortController()
+    const request = saveQuestion()
+    const invalid = { ...request, action: { ...request.action, details: { ...request.action.details, warning: '' } } }
     const pending = createTerminalConsumer({ ...terminal, onInterrupt: () => {} }).prompt(invalid, { signal: stop.signal }).then(() => 'answered', () => 'rejected')
     try {
       expect(await Promise.race([pending, new Promise(resolve => setTimeout(() => resolve('still waiting'), 150))])).toBe('rejected')

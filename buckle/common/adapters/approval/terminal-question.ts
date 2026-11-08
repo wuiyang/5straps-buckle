@@ -2,10 +2,15 @@ import type { CliRequest, CliWait } from '@5straps/runtime'
 import { APPROVAL_NO_DEADLINE, type ApprovalRequest } from '@5straps/protocol'
 import { approveCommand, judgeLine, judgeNoteFor } from '../../domain/approval-instruction.js'
 import { MAX_TIMER_MS, remainingMs } from '../../domain/approval/expiry.js'
-import type { FullAction, RatingNote } from '../../types/ports/approval-backend.js'
+import { saveChoices, type Unsaved } from '../../domain/approval/grant-save-question.js'
+import type { FullAction, FullAsk, RatingNote } from '../../types/ports/approval-backend.js'
 import { askViewDetails, type AskView } from './ask-view.js'
 
 export const APPROVAL_REQUEST_KIND = 'approval'
+/** The question after a decision whose grant did not save: retry, skip, or leave it. */
+export const GRANT_SAVE_REQUEST_KIND = 'grant_save'
+/** How long a save question waits: its person answered the ask above it a moment before, and the next question waits behind it. */
+export const SAVE_QUESTION_WAIT_MS = 60_000
 
 /**
  * What a terminal answer may choose. Its token is always the one its question asked about. `session_below` and
@@ -71,4 +76,27 @@ function judgeDetail(input: { approval: ApprovalRequest; call: QuestionCall | un
 function questionWait(expiresAt: string): CliWait {
   if (expiresAt === APPROVAL_NO_DEADLINE) return { mode: 'indefinite' }
   return { mode: 'finite', timeoutMs: Math.min(Math.max(remainingMs(expiresAt), 1), MAX_TIMER_MS) }
+}
+
+/**
+ * The save question for a decision on `ask` that did not save, the `attempt`-th for it, so a retry that fails again asks
+ * afresh. A lasting denial's question lasts no longer than its ask, which still waits.
+ */
+export function saveQuestionFor(input: { ask: FullAsk; unsaved: Unsaved; attempt: number }): CliRequest {
+  const { ask, unsaved } = input
+  const { workspace, requester } = ask
+  const until = unsaved.kind === 'denial' ? Math.min(remainingMs(ask.deadline.expiresAt), SAVE_QUESTION_WAIT_MS) : SAVE_QUESTION_WAIT_MS
+  return {
+    id: `${GRANT_SAVE_REQUEST_KIND}:${workspace.id}:${ask.token}:${input.attempt}`,
+    kind: GRANT_SAVE_REQUEST_KIND,
+    correlationId: ask.correlation.correlationId,
+    ...(requester.actor === null ? {} : { actor: requester.actor }),
+    sessionId: requester.sessionId,
+    target: workspace.id,
+    action: {
+      summary: unsaved.warning,
+      details: { workspace: workspace.id, ...(workspace.name === undefined ? {} : { workspaceName: workspace.name }), warning: unsaved.warning, choices: saveChoices(unsaved.kind) },
+    },
+    wait: { mode: 'finite', timeoutMs: Math.max(until, 1) },
+  }
 }

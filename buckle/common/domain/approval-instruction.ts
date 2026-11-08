@@ -59,9 +59,13 @@ export function approveCommand(input: NamedWorkspace & { request: ApprovalReques
   return `buckle approve ${input.request.token} --scope ${preferredScope(input.request.offeredScopes)}${workspaceFlag(input)}`
 }
 
-/** The command that denies one request: the only decision an ask recorded before this build takes (owner decision D17). */
-export function denyCommand(input: NamedWorkspace & { request: ApprovalRequest }): string {
-  return `buckle approve ${input.request.token} --deny${workspaceFlag(input)}`
+/**
+ * The command that denies one request: the only decision an ask recorded before this build takes (owner decision D17).
+ * `scope`: a lasting denial's, which a denial once leaves out.
+ */
+export function denyCommand(input: NamedWorkspace & { request: Pick<ApprovalRequest, 'token'>; scope?: GrantScope }): string {
+  const scope = input.scope === undefined || input.scope === 'once' ? '' : ` --scope ${input.scope}`
+  return `buckle approve ${input.request.token} --deny${scope}${workspaceFlag(input)}`
 }
 
 /**

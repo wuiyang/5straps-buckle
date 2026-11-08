@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { CliOutcome, RequestCli } from '@5straps/runtime'
@@ -337,6 +337,42 @@ describe('the service and the terminal backend together', () => {
     expect(terminal.shown[1]).toBe(`approval:w-1:${second!.token}`)
     await service.answer({ decision: { token: second!.token, approved: false, scope: 'once' }, source: SOURCES.cli })
     expect((await waiting).settled).toBe(true)
+    await service.close()
+  })
+
+  // The owner's ruling on a grant that fails to save: the serve terminal warns of it and offers a retry and a skip.
+  function keyedTerminal(keys: string[]) {
+    const shown: string[] = []
+    const requestCli: RequestCli = (request, options) => {
+      shown.push(request.id)
+      const key = keys.shift()
+      if (key !== undefined) return Promise.resolve<CliOutcome>({ status: 'answered', requestId: request.id, answer: { choice: key } })
+      return new Promise<CliOutcome>((resolve) => {
+        options?.signal?.addEventListener('abort', () => resolve({ status: 'cancelled', requestId: request.id, reason: 'closed' }), { once: true })
+      })
+    }
+    return { requestCli, shown }
+  }
+  const unwritable = () => Object.assign(new Error('EACCES: permission denied, open \'/state/grants.json\''), { code: 'EACCES' })
+
+  it('runs the asking call once on an approval its grant did not save, then saves the grant on the person\'s retry', async () => {
+    const terminal = keyedTerminal(['session', 'r'])
+    const { service, grants } = setUp(createTerminalBackend({ requester: async () => terminal.requestCli }), 5_000)
+    vi.spyOn(grants, 'grant').mockRejectedValueOnce(unwritable())
+    expect((await service.request(call())).settled).toBe(true)
+    await vi.waitFor(() => expect(grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', subject: '/outside/a.md', scope: 'session' })]))
+    expect(terminal.shown).toEqual([expect.stringMatching(/^approval:w-1:/), expect.stringMatching(/^grant_save:w-1:.+:1$/)])
+    await service.close()
+  })
+
+  it('gives up the grant on the person\'s skip, so no later pass writes it', async () => {
+    const terminal = keyedTerminal(['session', 's'])
+    const { service, grants, root } = setUp(createTerminalBackend({ requester: async () => terminal.requestCli }), 5_000)
+    vi.spyOn(grants, 'grant').mockRejectedValueOnce(unwritable())
+    expect((await service.request(call())).settled).toBe(true)
+    const saveOf = () => (JSON.parse(readFileSync(join(root, 'approvals.json'), 'utf8')) as { resolved: Array<{ grant?: { save: string } }> }).resolved[0]?.grant?.save
+    await vi.waitFor(() => expect(saveOf()).toBe('skipped'))
+    expect(grants.list()).toEqual([])
     await service.close()
   })
 })

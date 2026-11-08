@@ -37,8 +37,8 @@ const CORE = ['common/services/approvals', 'common/domain/approval', 'common/typ
 const DISPLAY = /(?:domain\/(?:approval-instruction|approval-deadline|action-phrase|describe-call|local-time)|runtime\/(?:console|log-render)|\/cli\/[^']*)\.js$/
 
 const TERMINAL_BACKEND = 'common/adapters/approval/terminal-backend.ts'
-// The contract, the runtime's CliRequest, and the question the terminal shows.
-const TERMINAL_DEPENDS_ON = ['@5straps/runtime', '../../types/ports/approval-backend.js', './terminal-question.js']
+// The contract, the runtime's CliRequest, the question the terminal shows, and the save question every route shares.
+const TERMINAL_DEPENDS_ON = ['@5straps/runtime', '../../types/ports/approval-backend.js', './terminal-question.js', '../../domain/approval/grant-save-question.js']
 // What a backend never reaches, through any module of its own: the ledger's schema and the approval services.
 const BEYOND_A_BACKEND = /^common\/(?:domain\/approval\/asked-call|services\/approvals\/)/
 const OWN_MODULES = 'common/adapters/approval/'

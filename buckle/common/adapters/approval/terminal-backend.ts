@@ -1,6 +1,7 @@
 import type { CliOutcome, RequestCli } from '@5straps/runtime'
+import { saveAnswerOf, saveEndingLine, settleUnsaved, unsavedOf, type SaveEnding, type Unsaved } from '../../domain/approval/grant-save-question.js'
 import type { ApprovalBackend, ApprovalHost, BackendCapabilities, DecisionBody, FullAsk, SubmitContext, SubmitResult } from '../../types/ports/approval-backend.js'
-import { questionFor, type QuestionInput } from './terminal-question.js'
+import { questionFor, saveQuestionFor, type QuestionInput } from './terminal-question.js'
 
 export interface TerminalBackendOptions {
   /** The asking operation's requester: this process's terminal, or undefined where nobody sits at one. */
@@ -14,10 +15,13 @@ const ACCEPTED: SubmitResult = { kind: 'accepted', refs: [] }
 // Not this backend's to ask, so core may send the asks to a fallback route.
 const NOT_OPEN: SubmitResult = { kind: 'declined', reason: 'not open' }
 const CLOSED: SubmitResult = { kind: 'declined', reason: 'closed' }
+/** How a save question's ending is logged: on the serve terminal, where the question was. */
+const SAVE_ENDING_LEVELS: Readonly<Record<SaveEnding['ending'], 'info' | 'warn'>> = { saved: 'info', skipped: 'info', denied_once: 'info', left: 'warn', refused: 'warn' }
 
 /**
  * The serve terminal and the one-shot prompt: one question per ask, in order, each answer decided through the host.
  * A denial ends a call's questions, since the call is refused either way. A submit settles once its questions end.
+ * A decision whose grant did not save asks a save question next, which only the person's answer resends or skips.
  */
 export function createTerminalBackend(options: TerminalBackendOptions): ApprovalBackend {
   let host: ApprovalHost | undefined
@@ -49,7 +53,9 @@ export function createTerminalBackend(options: TerminalBackendOptions): Approval
       if (outcome.status === 'answered' || outcome.status === 'denied') {
         const decision = decisionFor(ask, outcome)
         const receipt = await input.host.decide({ kind: 'plain', decision })
-        if (receipt.status === 'refused') input.host.log('warn', 'Approval decision rejected', { reason: receipt.error.message })
+        const unsaved = unsavedOf({ decision, receipt })
+        if (unsaved !== undefined) await settleSave({ host: input.host, requestCli, ask, decision, unsaved, stop })
+        else if (receipt.status === 'refused') input.host.log('warn', 'Approval decision rejected', { reason: receipt.error.message })
         if (decision.outcome === 'deny') return
         continue
       }
@@ -58,6 +64,40 @@ export function createTerminalBackend(options: TerminalBackendOptions): Approval
       // Nobody can be asked now: each ask still gets its pending line, not only the first.
       if (outcome.status === 'unavailable' && (outcome.reason === 'no_consumer' || outcome.reason === 'no_listener')) continue
       return
+    }
+  }
+
+  async function settleSave(input: { host: ApprovalHost; requestCli: RequestCli; ask: FullAsk; decision: DecisionBody; unsaved: Unsaved; stop: AbortSignal }): Promise<void> {
+    const { host, decision } = input
+    let attempt = 0
+    const ending = await settleUnsaved({
+      decision, unsaved: input.unsaved,
+      route: {
+        ask: async (unsaved) => {
+          attempt += 1
+          const outcome = await askSave({ ...input, unsaved, attempt })
+          return outcome?.status === 'answered' ? saveAnswerOf(unsaved.kind, outcome.answer.choice) : undefined
+        },
+        retry: () => host.decide({ kind: 'plain', decision }),
+        skipSave: () => host.skipSave(decision.token),
+        denyOnce: () => host.decide({ kind: 'plain', decision: { token: decision.token, outcome: 'deny', scope: 'once' } }),
+      },
+    })
+    host.log(SAVE_ENDING_LEVELS[ending.ending], saveEndingLine(ending))
+  }
+
+  // A denial's question ends with its ask, which still waits; any other outlives the ask its decision answered, until the
+  // person answers it or this backend closes.
+  async function askSave(input: { requestCli: RequestCli; ask: FullAsk; unsaved: Unsaved; attempt: number; stop: AbortSignal }): Promise<CliOutcome | undefined> {
+    const { token } = input.ask
+    if (input.unsaved.kind !== 'denial') return input.requestCli(saveQuestionFor(input), { signal: closing.signal })
+    if (closed.has(token)) return undefined
+    const question = new AbortController()
+    questions.set(token, question)
+    try {
+      return await input.requestCli(saveQuestionFor(input), { signal: AbortSignal.any([input.stop, question.signal]) })
+    } finally {
+      questions.delete(token)
     }
   }
 

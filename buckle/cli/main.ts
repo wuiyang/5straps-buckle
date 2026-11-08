@@ -16,7 +16,11 @@ import { auditOf, judgeNoteOf } from '../common/services/judge/judge-gate.js'
 import { floorCause } from '../common/domain/permission/judged.js'
 import type { JudgeAudit } from '../common/types/ports/action-log.js'
 import { shownCall } from '../common/domain/approval/asked-call.js'
-import { GRANT_OWED_NOTE, type PendingAsk } from '../common/services/approvals/approval-registry.js'
+import type { PendingAsk } from '../common/services/approvals/approval-registry.js'
+import { saveEndingLine, settleUnsaved, unsavedOf, type SaveEnding, type Unsaved } from '../common/domain/approval/grant-save-question.js'
+import type { CoreDecisionInput, CoreDecisionReceipt } from '../common/services/approvals/core-approval-api.js'
+import type { DecisionBody } from '../common/types/ports/approval-backend.js'
+import { APPROVAL_REQUIRED_EXIT, SAVE_FAILED_EXIT } from './exit-codes.js'
 import { floorSubjectPath } from '../common/domain/permission/rules/destructive-path-rule.js'
 import { SCRIPT_CALL_NOTE } from '../common/domain/describe-call.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
@@ -45,7 +49,7 @@ import { runProcess } from '../common/adapters/process-runner.js'
 import { serviceManagerFor } from '../common/adapters/service-manager/index.js'
 import { builtMainPath } from '../common/runtime/package-root.js'
 import { BUCKLE_BUILD } from '../common/runtime/version.js'
-import { terminalConfirm, type Confirm } from './terminal-consumer.js'
+import { terminalChooseSave, terminalConfirm, type ChooseSave, type Confirm } from './terminal-consumer.js'
 
 export interface CliResult {
   exitCode: number
@@ -93,14 +97,21 @@ export function answerWithoutConfiguration(argv: string[]): CliResult | null {
   return null
 }
 
-export type { Confirm } from './terminal-consumer.js'
+export type { ChooseSave, Confirm } from './terminal-consumer.js'
+
+/** What an owner's command asks at this process's terminal: null for each where the process has none. */
+interface OwnerPrompts { confirm: Confirm | null; chooseSave: ChooseSave | null }
 
 /** `cwd`: the directory the command means where it names no workspace (D83 (4)); the process's own by default. */
-export async function runCli(input: { argv: string[]; config: NodeConfig; confirm?: Confirm | null; cwd?: string }): Promise<CliResult> {
+export async function runCli(input: { argv: string[]; config: NodeConfig; confirm?: Confirm | null; chooseSave?: ChooseSave | null; cwd?: string }): Promise<CliResult> {
   const answered = answerWithoutConfiguration(input.argv)
   if (answered) return answered
   const [command = '', ...rest] = input.argv
-  const confirm = input.confirm !== undefined ? input.confirm : terminalConfirm({ input: process.stdin, output: process.stdout })
+  const terminal = { input: process.stdin, output: process.stdout }
+  const prompts: OwnerPrompts = {
+    confirm: input.confirm !== undefined ? input.confirm : terminalConfirm(terminal),
+    chooseSave: input.chooseSave !== undefined ? input.chooseSave : terminalChooseSave(terminal),
+  }
 
   // One command is one process owner: its common runtime closes when the command ends. At a terminal, the move onto
   // workspaces may ask for a name (D85, Q15), on stderr, where its questions go.
@@ -112,7 +123,7 @@ export async function runCli(input: { argv: string[]; config: NodeConfig; confir
   common.bindRequester(cli.requestCli)
   common.owner.onClose('waiters', 'terminal questions', () => cli.close())
   try {
-    return await runCliCommand({ common, config: input.config, command, rest, confirm, cwd: input.cwd ?? process.cwd() })
+    return await runCliCommand({ common, config: input.config, command, rest, prompts, cwd: input.cwd ?? process.cwd() })
   } catch (error) {
     if (isStateBusy(error)) return fail(error.message)
     throw error
@@ -123,7 +134,7 @@ export async function runCli(input: { argv: string[]; config: NodeConfig; confir
   }
 }
 
-async function runCliCommand(input: { common: BuckleCommon; config: NodeConfig; command: string; rest: string[]; confirm: Confirm | null; cwd: string }): Promise<CliResult> {
+async function runCliCommand(input: { common: BuckleCommon; config: NodeConfig; command: string; rest: string[]; prompts: OwnerPrompts; cwd: string }): Promise<CliResult> {
   const { common, command } = input
   try {
     await common.start()
@@ -190,7 +201,7 @@ async function runNodeCommand(input: { workspaces: WorkspaceManager; config: Nod
  * A command on the workspace it targets (D83 (4)): `--workspace <name>`, else `--dir <path>`, else the directory it runs
  * in. `buckle policy` opens an offline workspace too, so its owner can set it up before it serves.
  */
-async function runWorkspaceCommand(input: { workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; target: CommandTarget; confirm: Confirm | null; cwd: string }): Promise<CliResult> {
+async function runWorkspaceCommand(input: { workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; target: CommandTarget; prompts: OwnerPrompts; cwd: string }): Promise<CliResult> {
   const { workspaces, command } = input
   let runtime: BuckleRuntime
   try {
@@ -213,7 +224,7 @@ async function runWorkspaceCommand(input: { workspaces: WorkspaceManager; config
  * answered in the workspace whose queue holds it, and audited in its log; a node with one online workspace reads as a
  * single one; the list and the watch over several are audited in the node's log.
  */
-async function runApproverCommand(input: { workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; confirm: Confirm | null }): Promise<CliResult> {
+async function runApproverCommand(input: { workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; prompts: OwnerPrompts }): Promise<CliResult> {
   const runtimes = await onlineRuntimes(input.workspaces)
   if (runtimes.length === 0) return nodeAudited(input, () => fail('No workspace is online, so none has asks waiting. Name one with --workspace <name>, or serve one again with buckle workspace enable <name>.'))
   // A watch follows the online workspaces as they change, however many there are at its start (finding 10).
@@ -263,9 +274,9 @@ function holderOfAsk(runtimes: BuckleRuntime[], token: string): BuckleRuntime | 
 }
 
 /** A command on one workspace's runtime, audited in its log where the command is one the owner's log keeps. */
-async function runOnWorkspace(input: { runtime: BuckleRuntime; workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; confirm: Confirm | null }): Promise<CliResult> {
+async function runOnWorkspace(input: { runtime: BuckleRuntime; workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; prompts: OwnerPrompts }): Promise<CliResult> {
   const { runtime, workspaces, command } = input
-  const context: CommandContext = { runtime, workspaces, config: input.config, command, rest: input.rest, confirm: input.confirm }
+  const context: CommandContext = { runtime, workspaces, config: input.config, command, rest: input.rest, prompts: input.prompts }
   try {
     const browserClose = isBrowserClose(command, input.rest)
     if (!AUDITED_COMMANDS.includes(command) && !browserClose) return await dispatchRuntimeCommand(context)
@@ -281,7 +292,7 @@ async function runOnWorkspace(input: { runtime: BuckleRuntime; workspaces: Works
   }
 }
 
-interface CommandContext { runtime: BuckleRuntime; workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; confirm: Confirm | null }
+interface CommandContext { runtime: BuckleRuntime; workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; prompts: OwnerPrompts }
 
 function dispatchRuntimeCommand(input: CommandContext): CliResult | Promise<CliResult> {
   const { runtime, command, rest } = input
@@ -290,7 +301,7 @@ function dispatchRuntimeCommand(input: CommandContext): CliResult | Promise<CliR
   if (command === 'tools') return printTools(runtime)
   if (command === 'manifest') return print(runtime.manifest())
   if (command === 'skills') return printSkills(runtime, rest)
-  if (command === 'approve') return reportWorkspaceErrors(() => approve({ config: input.config, runtime, argv: rest, confirm: input.confirm }))
+  if (command === 'approve') return reportWorkspaceErrors(() => approve({ config: input.config, runtime, argv: rest, ...input.prompts }))
   if (command === 'approvals') return reportWorkspaceErrors(() => approvals({ config: input.config, runtime, argv: rest }))
   if (command === 'check-url') return checkUrlCommand({ argv: rest, runtime: async () => runtime })
   if (command === 'grants') return grants(runtime, rest)
@@ -682,7 +693,7 @@ function approveArguments(argv: string[]) {
   return parseArgs({ args: argv, options: { scope: { type: 'string' }, deny: { type: 'boolean' }, host: { type: 'string' }, below: { type: 'boolean' } }, allowPositionals: true })
 }
 
-async function approve(input: CommandInput & { confirm: Confirm | null }): Promise<CliResult> {
+async function approve(input: CommandInput & OwnerPrompts): Promise<CliResult> {
   const unusable = refusedArguments('approve', input.argv)
   if (unusable) return fail(unusable)
   const { positionals, values } = approveArguments(input.argv)
@@ -709,23 +720,70 @@ async function approve(input: CommandInput & { confirm: Confirm | null }): Promi
       return { exitCode: 1 }
     }
   }
+  const decision: DecisionBody = { token, outcome: values.deny === true ? 'deny' : 'approve', scope: scope.data, ...(below === null ? {} : { widen: 'below' }) }
   // `BUCKLE-D18`: `--host` widens a network approval to a pattern, from `buckle approve` alone.
-  const receipt = await runtime.approvalApi.decide({ source: 'cli', decision: { token, outcome: values.deny === true ? 'deny' : 'approve', scope: scope.data, ...(below === null ? {} : { widen: 'below' }) }, ...(values.host === undefined ? {} : { hostPattern: values.host }) })
-  if (receipt.status === 'refused') return fail(`${receipt.error.message} in workspace ${runtime.workspaceName()}`)
-  // Recorded either way; a grant the decision owes is said beside it, and in its audit entry.
-  const owed = receipt.save === 'owed' ? `; ${GRANT_OWED_NOTE}` : ''
-  const recorded = (line: string, detail?: string): CliResult => {
-    process.stdout.write(`${line}${owed}\n`)
-    const noted = [detail, receipt.save === 'owed' ? GRANT_OWED_NOTE : undefined].filter(part => part !== undefined).join('; ')
-    return { exitCode: 0, ...(noted === '' ? {} : { detail: noted }) }
-  }
-  const applied = receipt.status === 'applied' ? receipt : undefined
-  if (applied?.granted !== undefined) return recorded(`Approved ${token} (${scope.data}) for ${printable(applied.granted)}, every delete in that folder and its subfolders, in workspace ${runtime.workspaceName()}`, `write_scope ${scope.data} approval widened to the folder and its subfolders`)
+  const sent: CliDecision = { source: 'cli', decision, ...(values.host === undefined ? {} : { hostPattern: values.host }) }
+  const receipt = await runtime.approvalApi.decide(sent)
+  const unsaved = unsavedOf({ decision, receipt })
+  if (receipt.status === 'refused' && unsaved === undefined) return fail(`${receipt.error.message} in workspace ${runtime.workspaceName()}`)
+  const recorded = receipt.status === 'refused' ? undefined : recordedLine({ receipt, decision, workspaceName: runtime.workspaceName() })
+  if (recorded) process.stdout.write(`${recorded.line}\n`)
+  if (unsaved === undefined) return { exitCode: 0, ...(recorded?.detail === undefined ? {} : { detail: recorded.detail }) }
+  return approveUnsaved({ unsaved, sent, runtime, chooseSave: input.chooseSave, ...(recorded?.detail === undefined ? {} : { detail: recorded.detail }) })
+}
+
+/** The decision `buckle approve` sends, as it sends it again on a retry. */
+type CliDecision = Extract<CoreDecisionInput, { source: 'cli' }>
+
+/** What `buckle approve` prints of a recorded decision, and the line its audit entry keeps of a widened one. */
+function recordedLine(input: { receipt: Exclude<CoreDecisionReceipt, { status: 'refused' }>; decision: DecisionBody; workspaceName: string }): { line: string; detail?: string } {
+  const { decision: { token, scope }, workspaceName } = input
+  const applied = input.receipt.status === 'applied' ? input.receipt : undefined
+  if (applied?.granted !== undefined) return { line: `Approved ${token} (${scope}) for ${printable(applied.granted)}, every delete in that folder and its subfolders, in workspace ${workspaceName}`, detail: `write_scope ${scope} approval widened to the folder and its subfolders` }
   if (applied?.widened) {
     const { pattern, askedBy } = applied.widened
-    return recorded(`Approved ${token} (${scope.data}) for ${pattern}, asked by ${printable(askedBy)}, in workspace ${runtime.workspaceName()}`, `network_egress ${scope.data} approval widened to ${pattern}, asked by ${askedBy}`)
+    return { line: `Approved ${token} (${scope}) for ${pattern}, asked by ${printable(askedBy)}, in workspace ${workspaceName}`, detail: `network_egress ${scope} approval widened to ${pattern}, asked by ${askedBy}` }
   }
-  return recorded(`${values.deny ? 'Denied' : 'Approved'} ${token} in workspace ${runtime.workspaceName()}`)
+  return { line: `${input.decision.outcome === 'deny' ? 'Denied' : 'Approved'} ${token} in workspace ${workspaceName}` }
+}
+
+/** The exit a save question's ending gives `buckle approve`. */
+const SAVE_ENDING_EXITS: Readonly<Record<SaveEnding['ending'], number>> = { saved: 0, skipped: 0, denied_once: 0, left: SAVE_FAILED_EXIT, refused: 1 }
+
+/**
+ * A decision `buckle approve` sent whose grant did not save (the owner's ruling: a warning, and a retry or a skip): at a
+ * terminal, the save question until it saves, is skipped, or is left; without one, the warning and the commands that
+ * retry and skip it. Its audit entry keeps the warning, which names no path.
+ */
+async function approveUnsaved(input: { unsaved: Unsaved; sent: CliDecision; runtime: BuckleRuntime; chooseSave: ChooseSave | null; detail?: string }): Promise<CliResult> {
+  const { unsaved, sent, runtime } = input
+  const noted = (ending: string) => [input.detail, unsaved.warning, ending].filter(part => part !== undefined).join('; ')
+  if (input.chooseSave === null) {
+    const untaken = untakenSave({ unsaved, decision: sent.decision, workspaceName: runtime.workspaceName() })
+    process.stderr.write(`${unsaved.warning}.\n${untaken}\n`)
+    return { exitCode: SAVE_FAILED_EXIT, detail: noted(untaken) }
+  }
+  const { token } = sent.decision
+  const ending = await settleUnsaved({
+    decision: sent.decision, unsaved,
+    route: {
+      ask: input.chooseSave,
+      retry: () => runtime.approvalApi.decide(sent),
+      skipSave: () => runtime.approvalApi.skipSave({ source: 'cli', token }),
+      denyOnce: () => runtime.approvalApi.decide({ source: 'cli', decision: { token, outcome: 'deny', scope: 'once' } }),
+    },
+  })
+  const line = saveEndingLine(ending)
+  process.stdout.write(`${line}\n`)
+  return { exitCode: SAVE_ENDING_EXITS[ending.ending], detail: noted(line) }
+}
+
+/** Where `buckle approve` had no terminal to ask at: a retry is the same command, and a lasting denial's skip a once denial. */
+function untakenSave(input: { unsaved: Unsaved; decision: DecisionBody; workspaceName: string }): string {
+  const { token, scope } = input.decision
+  if (input.unsaved.kind !== 'denial') return 'Retry with the same command; to skip, run it at a terminal and answer s.'
+  const named = { request: { token }, workspaceName: input.workspaceName }
+  return `Retry with: ${denyCommand({ ...named, scope })}. To deny this call once instead: ${denyCommand(named)}`
 }
 
 /**
@@ -863,7 +921,7 @@ function reportResponse(input: { response: InvokeResponse; workspaceId: string; 
       const [first, ...rest] = describeApprovalRequest({ request: approval, workspaceId: input.workspaceId, workspaceName: input.workspaceName })
       process.stderr.write(`Approval required: ${first}\n${rest.map(line => `  ${line}\n`).join('')}`)
     }
-    return { exitCode: 3 }
+    return { exitCode: APPROVAL_REQUIRED_EXIT }
   }
 
   process.stderr.write(`${response.error.code}: ${response.error.message}\n`)

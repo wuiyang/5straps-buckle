@@ -6,7 +6,7 @@ import { acquireFileLock } from '@5straps/runtime/sqlite'
 import type { InvokeResponse } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { approvalsPath, grantsPath, type BuckleConfig } from '../common/runtime/config.js'
-import { createApprovalRegistry, GRANT_OWED_NOTE } from '../common/services/approvals/approval-registry.js'
+import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { NO_INTERACTION, type Interaction } from '../common/runtime/interaction.js'
@@ -173,20 +173,20 @@ describe('a lasting decision', () => {
     expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', scope: 'session', sessionId: 's' })])
   })
 
-  it('audits buckle approve as recorded, naming the grant it owes, when the grant cannot be written', async () => {
+  it('audits buckle approve as recorded, naming why the grant it owes was not written, when the grant cannot be written', async () => {
     const { config, runtime } = await open()
     const token = tokenOf(await write(runtime, 'one/a.md'))
     failing.rename = grantsPath(config)
     let stdout = ''
     const output = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { stdout += String(chunk); return true })
-    const approved = await runCli({ argv: ['approve', token, '--scope', 'session'], config, confirm: async () => true }).finally(() => output.mockRestore())
+    const errors = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const approved = await runCli({ argv: ['approve', token, '--scope', 'session'], config, confirm: async () => true, chooseSave: null }).finally(() => { output.mockRestore(); errors.mockRestore() })
 
-    expect(approved.exitCode).toBe(0)
+    expect(approved.exitCode).toBe(5)
     expect(stdout).toContain(`Approved ${token} in workspace`)
-    expect(stdout).toContain(GRANT_OWED_NOTE)
     expect(onDisk(config, token)).toEqual({ pending: false, resolved: true, owes: true })
     const result = (await auditEntries(runtime.actions, 50)).find(entry => entry.tool === 'cli_approve' && entry.event === 'result')
-    expect(result).toMatchObject({ outcome: 'ok', detail: expect.stringContaining(GRANT_OWED_NOTE) })
+    expect(result).toMatchObject({ outcome: 'error', detail: expect.stringContaining('saving it for the session failed: a disk I/O error') })
   })
 
   it('keeps a revoked grant revoked when the mark its write cleared never reached the disk', async () => {

@@ -6,8 +6,11 @@ import { SOURCES } from '../../common/types/ports/approval-source.js'
 // The contract kit: the duties every approval backend owes core, run against a fake host that records every call. The
 // guard's checks are core's own tests. A save the host reports owed is retried or skipped on its person's say alone.
 
-/** What the person at a backend does with each ask it shows, in order: decide it, or leave it showing. */
-export type KitChoice = { outcome: 'approve' | 'deny'; scope: GrantScope } | 'wait'
+/**
+ * What the person at a backend does with each ask it shows, in order: decide it, or leave it showing. `save`: what they
+ * answer when the backend warns that the decision did not save; without it, they leave the warning unanswered.
+ */
+export type KitChoice = { outcome: 'approve' | 'deny'; scope: GrantScope; save?: 'retry' | 'skip' } | 'wait'
 
 export interface KitSubject {
   name: string
@@ -25,6 +28,8 @@ export interface FakeHost extends ApprovalHost {
 }
 
 const APPLIED: DecisionReceipt = { status: 'applied', state: 'approved', assurance: 'local' }
+const OWED: DecisionReceipt = { status: 'applied', state: 'approved', assurance: 'local', save: 'owed', saveError: 'permission denied' }
+const UNSAVED_DENIAL: DecisionReceipt = { status: 'refused', error: { code: 'grant_unsaved', message: 'Not denied for the session: saving failed: permission denied; the call still waits', retryable: true } }
 const SKIPPED: SkipReceipt = { status: 'skipped' }
 const ONCE: KitChoice = { outcome: 'approve', scope: 'once' }
 
@@ -156,27 +161,51 @@ export function runApprovalBackendKit(subject: KitSubject): void {
 
     it('neither sends again nor skips on its own an approval whose grant the host could not save', async () => {
       const asks = [askFor('a')]
-      const { backend, host } = await opened([{ outcome: 'approve', scope: 'session' }], asks, () => ({ status: 'applied', state: 'approved', assurance: 'local', save: 'owed', saveError: 'permission denied' }))
-      const control = new AbortController()
-      const submitted = backend.submit(asks, { signal: control.signal, resend: false })
+      const { backend, host } = await opened([{ outcome: 'approve', scope: 'session' }], asks, () => OWED)
+      const submitted = backend.submit(asks, live())
       await sleep(50)
       expect(tokensOf(host)).toEqual(['a'])
       expect(host.skipped).toEqual([])
-      control.abort()
+      await backend.close()
       await submitted
     })
 
     it('neither sends again nor skips on its own a lasting denial the host could not save, though the refusal is retryable', async () => {
       const asks = [askFor('a')]
-      const unsaved: DecisionReceipt = { status: 'refused', error: { code: 'grant_unsaved', message: 'Not denied for the session: saving failed: permission denied; the call still waits', retryable: true } }
-      const { backend, host } = await opened([{ outcome: 'deny', scope: 'session' }], asks, () => unsaved)
-      const control = new AbortController()
-      const submitted = backend.submit(asks, { signal: control.signal, resend: false })
+      const { backend, host } = await opened([{ outcome: 'deny', scope: 'session' }], asks, () => UNSAVED_DENIAL)
+      const submitted = backend.submit(asks, live())
       await sleep(50)
       expect(tokensOf(host)).toEqual(['a'])
       expect(host.skipped).toEqual([])
-      control.abort()
+      await backend.close()
       await submitted
+    })
+
+    it('sends the same decision once more when its person retries a save the host could not make', async () => {
+      const asks = [askFor('a')]
+      const { backend, host } = await opened([{ outcome: 'approve', scope: 'session', save: 'retry' }], asks, (_decision, sent) => (sent === 1 ? OWED : { status: 'repeated', state: 'approved', save: 'saved' }))
+      await backend.submit(asks, live())
+      expect(host.decided.map(sent => sent.decision)).toEqual([{ token: 'a', outcome: 'approve', scope: 'session' }, { token: 'a', outcome: 'approve', scope: 'session' }])
+      expect(host.skipped).toEqual([])
+      await backend.close()
+    })
+
+    it('skips the save of an approval when its person skips it, and sends no decision for it again', async () => {
+      const asks = [askFor('a')]
+      const { backend, host } = await opened([{ outcome: 'approve', scope: 'always', save: 'skip' }], asks, () => OWED)
+      await backend.submit(asks, live())
+      expect(tokensOf(host)).toEqual(['a'])
+      expect(host.skipped).toEqual(['a'])
+      await backend.close()
+    })
+
+    it('denies the call once in place of a lasting denial its person skips, and skips no save', async () => {
+      const asks = [askFor('a')]
+      const { backend, host } = await opened([{ outcome: 'deny', scope: 'session', save: 'skip' }], asks, (_decision, sent) => (sent === 1 ? UNSAVED_DENIAL : { status: 'applied', state: 'denied', assurance: 'local' }))
+      await backend.submit(asks, live())
+      expect(host.decided.map(sent => sent.decision)).toEqual([{ token: 'a', outcome: 'deny', scope: 'session' }, { token: 'a', outcome: 'deny', scope: 'once' }])
+      expect(host.skipped).toEqual([])
+      await backend.close()
     })
 
     it('settles an aborted submit within a second and opens nothing more', async () => {
