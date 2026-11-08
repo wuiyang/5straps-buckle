@@ -8,8 +8,8 @@ import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { withRegistryAudit, withSetupAudit } from '../layers/admin/server/utils/audit.js'
 import { withTransportAudit } from '../layers/common/server/utils/audit.js'
 
-// APPROVAL-16's working choice, reversed by its one constant: the owner's own change waits for its attempt's record, so a
-// broken log stops it before it runs, as it stops an agent's call.
+// With OWNER_RECORDS_WAIT on, the owner's own change waits for its attempt's record, so a broken log stops it before it
+// runs, as it stops an agent's call.
 vi.mock('../common/runtime/log-budget.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/runtime/log-budget.js')>(), OWNER_RECORDS_WAIT: true }))
 
 afterEach(() => { vi.restoreAllMocks() })
