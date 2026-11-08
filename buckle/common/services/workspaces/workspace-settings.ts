@@ -95,7 +95,7 @@ const StandardScriptSchema = z.string().min(1).max(1_000).refine((glob) => {
 }, { message: 'not a command glob Buckle reads' })
 
 /**
- * Its decision AI (D91): `judge` says when it rates an interpreter call (off, on-request, or automated), `judgeProvider`
+ * Its decision AI (D91): `judge` says when it rates an unknown interpreter call or a script file run (off, on-request, or automated), `judgeProvider`
  * and `judgeModel` which model rates it (Buckle's own: an OpenAI-compatible endpoint and gpt-6-luna), and `judgeStandardScripts` the commands rated on
  * their command line alone; `quickJudge` which calls the optional quick stage rates (off, interpreters, asks, or all),
  * with `quickJudgeProvider` and `quickJudgeModel` (Buckle's own: TypeSafe's jev-latest). None holds a credential: the

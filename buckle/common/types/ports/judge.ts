@@ -15,7 +15,7 @@ export const JUDGE_PROVIDERS = ['openai-compatible'] as const
 export type JudgeProvider = typeof JUDGE_PROVIDERS[number]
 
 /**
- * When a workspace hands interpreter calls to the decision AI (approval.judge): never; when its owner asks
+ * When a workspace hands unknown interpreter calls and script file runs to the decision AI (approval.judge): never; when its owner asks
  * (`buckle approvals judge <token>`); or at each call, where a safe rating runs the call without a person.
  */
 export const JUDGE_MODES = ['off', 'on-request', 'automated'] as const

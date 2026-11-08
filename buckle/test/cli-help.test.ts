@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { MODES_HELP } from '../cli/dangerously-allow-words.js'
 import { answerWithoutConfiguration } from '../cli/main.js'
+import { SETTING_KEYS } from '../cli/workspace-keys.js'
 import { runCli } from './support/cli.js'
 import { policyCommand, repairStoredPolicy } from '../cli/policy.js'
 import { StoredPolicyError } from '../common/domain/policy.js'
@@ -60,6 +61,12 @@ describe('buckle --help', () => {
     answerWithoutConfiguration(['--help'])
     expect(io.out()).toContain('buckle init')
     expect(io.out()).not.toMatch(/\bRings\b|--pair|--rings/i)
+  })
+})
+
+describe('what buckle workspace show says a key takes', () => {
+  it('says approval.judge sets when the decision AI rates a script file run as well as an unknown interpreter call', () => {
+    expect(SETTING_KEYS.find(key => key.key === 'approval.judge')?.takes).toContain('whether the decision AI rates an unknown interpreter call or a script file run')
   })
 })
 

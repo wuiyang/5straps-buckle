@@ -192,7 +192,7 @@ export interface BuckleConfig extends NodeConfig {
   /** Whether its shell runs on private copies of the folder (shell.isolation). */
   isolateShell: boolean
   /**
-   * Its decision AI (D91): when it rates an interpreter call (approval.judge), the provider and model that rate it,
+   * Its decision AI (D91): when it rates an unknown interpreter call or a script file run (approval.judge), the provider and model that rate it,
    * each with Buckle's built-in default (openai-compatible, gpt-6-luna), and the commands it rates on their command
    * line alone (approval.judgeStandardScripts).
    */
