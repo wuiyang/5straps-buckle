@@ -9,7 +9,7 @@ asks out and decisions in, and enforces nothing. Paths are in `buckle/`.
 
 - **`ApprovalBackend`:** core calls `open(host)`, which answers with the backend's
   capabilities, then `submit(asks, context)` for one call's asks, `notify(events)` when an ask
-  leaves the queue, and `close()`. A submit is `accepted` or `declined`, never a decision.
+  leaves the queue (`session_ended` where [its session ended](approval-backend-06.md)), and `close()`. A submit is `accepted` or `declined`, never a decision.
 - **`ApprovalHost`:** handed over at open. `decide` is the one way a decision enters,
   `skipSave` gives up an approval's grant; `pending` and `ask` give the asks routed to the
   backend; `log` writes the node's log. Core binds `host.source` and `host.reach`, what that
@@ -29,8 +29,7 @@ ask ledger, the `once` store, and the core approval API. The guard, source right
 are in `common/domain/approval/`.
 
 **Core clients, not backends:** `buckle approve`, `buckle approvals --watch`,
-`--approve-if-safe`, and the setup routes. Each holds `runtime.approvalApi`, the core approval
-API, and calls `decide` with a source tag (`cli`, `judge`, `devices`, or `sealed`); core holds
+`--approve-if-safe`, and the setup routes. Each holds `runtime.approvalApi` and calls `decide` with a source tag (`cli`, `judge`, `devices`, or `sealed`); core holds
 the source that tag names. Faces get a runtime type without the ledger or service;
 `CoreRuntime` adds them. A `devices` input carries the `DeviceProof` the request verifier
 minted for the body it checked; core spends it on one decision. A refusal names its step:
@@ -47,7 +46,7 @@ schema, a service, or the node's logger.
 1. Core reads the input: a device's proof, or a sealed envelope opened and its nonce claimed,
    then the body as the statement. A refusal here skips the decision audit.
 2. The decision audit hears it received, with its proof kind.
-3. The guard screens it before the ledger lock: a form answer only while [forms are
+3. The guard screens it before the lock: a form answer only while [forms are
    on](approval-backend-04.md), the source's kind may approve, a lasting scope needs `local` or
    above, and a host pattern comes from `cli` alone.
 4. Under the lock, in order: that screen again, [the caller](approval-backend-04.md#the-caller),

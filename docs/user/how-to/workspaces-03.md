@@ -81,6 +81,7 @@ checked as a workspace's own would be:
 | `shell-network` and `shell-isolation` (`BUCKLE_SHELL_*`) | `shell.network` and `shell.isolation` |
 | `allowed-interpreters` (`BUCKLE_ALLOWED_INTERPRETERS`) | the allowed interpreters |
 | `approval-forms` (`BUCKLE_APPROVAL_FORMS`) | `approval.forms` |
+| `approval-session-idle` (`BUCKLE_APPROVAL_SESSION_IDLE_MS`) | `approval.sessionIdleMs` |
 | `approval-judge`, `approval-judge-provider`, `approval-judge-model`, and `approval-judge-standard-scripts` (`BUCKLE_APPROVAL_JUDGE*`) | `approval.judge`, `approval.judgeProvider`, `approval.judgeModel`, and `approval.judgeStandardScripts` |
 | `approval-quick-judge` and `approval-quick-judge-model` (`BUCKLE_APPROVAL_QUICK_JUDGE*`) | `approval.quickJudge` and `approval.quickJudgeModel`; `approval.quickJudgeProvider` has no node default |
 | `delete-in-workspace` (`BUCKLE_DELETE_IN_WORKSPACE`) and `mass-delete-limit` (`BUCKLE_MASS_DELETE_LIMIT`) | `files.deleteInWorkspace` and `files.massDeleteLimit` |

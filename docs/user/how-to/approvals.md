@@ -29,8 +29,9 @@ whatever the [policy](policy.md) denies.
 
 - `once` covers this call alone: the same caller, session, tool, and arguments. Retrying that
   call spends it; unspent, it lapses ten minutes after the decision.
-- `session` lasts until revoked, for the caller's session. Every CLI call shares the session
-  `cli`; MCP uses the client's session id, or `mcp`; HTTP uses `context.sessionId`, or `rpc`.
+- `session` lasts for the caller's session, until revoked or until the workspace has [no
+  activity for 15 minutes](approvals-07.md). Every CLI call shares the session `cli`; MCP uses
+  the client's session id, or `mcp`; HTTP uses `context.sessionId`, or `rpc`.
 - `always` lasts until revoked, for every caller in the workspace.
 
 Only the owner's authority records a `session` or `always` grant: every local route below,

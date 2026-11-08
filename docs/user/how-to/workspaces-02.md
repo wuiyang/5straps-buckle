@@ -32,6 +32,7 @@ node's applies again:
 | `browser.idleTimeoutMs` | milliseconds an idle browser lives, `60000` to `86400000` | `300000` |
 | `browser.profile`, `browser.cdp`, `browser.args`, `browser.headed` | the browser's profile folder, attached Chrome, arguments, and window ([Using your own browser](browser-login.md)) | a fresh, headless browser |
 | `approval.forms` | `on` or `off`: an MCP host's [form answers](approvals-06.md) decide its asks | off |
+| `approval.sessionIdleMs` | milliseconds without activity before its [sessions end](approvals-07.md), or `0` for never at idle | `900000` |
 | `approval.judge` | the [decision AI](judge.md), an optional model check: `off`, `on-request`, or `automated` | `off` |
 | `approval.judgeProvider` | the thorough model's provider: `openai-compatible` | `openai-compatible` |
 | `approval.judgeModel` | the thorough model's name, as your AI gateway serves it | `gpt-6-luna` |
@@ -50,8 +51,7 @@ node's applies again:
 The browser's mode is one setting: a workspace that sets its own `browser.cdp` or
 `browser.profile` takes both from itself, never the node's other one, and under an attached Chrome
 the node's `browser.args` and `browser.headed` do not apply. A workspace's own arguments or window
-beside the node's `BUCKLE_BROWSER_CDP` is refused, naming it, at `buckle workspace set` and in a
-hand-edited `workspace.json`.
+beside the node's `BUCKLE_BROWSER_CDP` is refused, naming it, whether set or hand-edited.
 
 A new workspace sets its mount, `/workspace`, and nothing else. Its [mounts](mounts.md) change
 with `buckle workspace mount`. `buckle workspace set` refuses a
@@ -67,15 +67,15 @@ word of it. Keep real secrets in your own store: `buckle workspace show` prints 
 and every command can read them. A call's own `env` is set over them.
 
 The policy lists change with `buckle policy` ([Policy](policy.md)). A profile folder or an
-attached Chrome belongs to one workspace at a time: naming one another workspace names as its own
-is refused, naming that workspace.
+attached Chrome belongs to one workspace at a time: naming one another workspace holds is
+refused, naming that workspace.
 
 ## When a change applies
 
 A running `buckle serve` or `buckle mcp` watches a workspace's state folder and takes a change up
 while the workspace is idle, with a check at each call's start as the fallback. A change to the
-policy lists, the variables, the browser settings, or the approval wait applies from the next
-call, even while another runs, which keeps its own rules; a list change alone waits while a
+policy lists, the variables, the browser settings, the approval wait, or the idle window applies
+from the next call, even while another runs, which keeps its own rules; a list change alone waits while a
 workbench that process runs is open, as taking it up stops its terminals. A change to the packs,
 to where the folder shows, to the mounts, or to the shell settings waits until the workspace has
 no active work, such as a running call or a shell copy awaiting review. A waiting change, or one that will not apply, refuses calls with a 409 until it applies.

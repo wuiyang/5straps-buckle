@@ -33,8 +33,13 @@ Skipping the save of an approval whose grant could not be written
 grant is not confirmed removed ends `ok` with `removed: false` and `unfinished: true`. A retry of the save is
 the same decision sent again, recorded as any decision is, with `repeated`.
 
-No tool takes a name Buckle writes its own records under: `approval_decision`, `log_dropped`, and
-those starting `cli_`, `setup_`, `workspace_`, or `policy_`. An agent's call naming one is refused
+Each session that [ends](approvals-07.md) writes one `approval_session_ended` result entry under
+that session's id. Its `args` hold the `cause` (`idle`), and how many asks it `withdrawn`, unspent
+`onces` it dropped, `owed` grants it kept from being written, and session `grants` and `denials`
+it removed. A session with none of these writes none.
+
+No tool takes a name Buckle writes its own records under: `approval_decision`, `log_dropped`,
+`approval_session_ended`, and those starting `cli_`, `setup_`, `workspace_`, or `policy_`. An agent's call naming one is refused
 as an unknown tool, and leaves no entry.
 
 `buckle approve` also keeps its `cli_approve` entries, whose result reads `ok` for a decision that

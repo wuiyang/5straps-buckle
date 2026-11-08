@@ -37,7 +37,7 @@ the workspace Buckle makes of a 0.1 node's own folder included.
 | `approvals.json`, `approval-calls/`, `approval-revocations.json` | asks waiting for a person, recent decisions, unspent once approvals, the whole call behind each ask, and revokes made while `approvals.json` could not be read, kept until the next decision; while that last file is damaged, decisions are refused, and removing it forgets those revokes, so check `buckle grants` and revoke again |
 | `actions.jsonl` | the [audit log](../how-to/audit-log.md): in the state directory the node's own commands and refusals, and in each workspace's folder its calls |
 | `plugins.json` | plugins added with `buckle plugin add` |
-| `history/` | checkpoints of file changes, read by `buckle history` |
+| `history/` | checkpoints of file changes, read by `buckle history`, and `activity.sqlite`, each session's and the workspace's last activity, which the [idle end of sessions](../how-to/approvals-07.md) reads |
 | `code-journal/` | stopped scripts' text and calls' results, kept ten minutes |
 | `isolated-shell/` | the private workspace copies shell commands run in |
 | `browser-sessions/`, `workbenches/`, `receive-git-hooks/` | browser session state, workbench files, and the guard hook local pushes run |
