@@ -63,8 +63,7 @@ export interface FullAsk {
   workspace: { id: string; name?: string; node: string }
   requester: { actor: string | null; sessionId: string }
   tool: string
-  /** `floor`: a person decides it (sudo, the destructive list, the file floor), whatever else could answer. */
-  policy: { rule: PermissionRuleId; subject: string; reason: string; offeredScopes: GrantScope[]; widerSubject?: string; floor: boolean }
+  policy: { rule: PermissionRuleId; subject: string; reason: string; offeredScopes: GrantScope[]; widerSubject?: string }
   /** `notes`: what the decision AI said of the call's command asks (D91). */
   risk: { severity?: ApprovalSeverity; notes: readonly RatingNote[] }
   deadline: { expiresAt: string; hold: ApprovalHold | null }
@@ -185,11 +184,11 @@ export type SubmitResult =
   | { kind: 'declined'; reason: string }
 
 /**
- * What the decision guard lets a source decide, read from the row it rates the source's kind by: a scope that outlives the
- * call (`lasting`), the approval of a floor ask (`floor`), and, where `sameCaller` holds, only the asks its answer's own
- * caller raised. A backend offers no more than this; the guard still checks every answer.
+ * Whose asks the decision guard lets a source answer, read from the row it rates the source's kind by: where `sameCaller`
+ * holds, only those its answer's own caller raised. A backend offers each of those asks what the ask offers; the guard
+ * still checks every answer.
  */
-export interface SourceReach { lasting: boolean; floor: boolean; sameCaller: boolean }
+export interface SourceReach { sameCaller: boolean }
 
 /** What core hands a backend at open, bound to the source core holds for it. */
 export interface ApprovalHost {

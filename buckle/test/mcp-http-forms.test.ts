@@ -19,10 +19,10 @@ import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
 // The HTTP MCP face draws forms inside a tool call for a client on the 2026-07-28 revision, while the forms setting is
-// on: the same input_required round trip as stdio. Its answers come in as http-forms, which anything holding the agent's
-// token can send, so they approve a non-floor ask once, and only the asks their own caller raised. Claude Code's HTTP
-// client was recorded at that revision (fixtures/claude-code-http-mcp.json); the probe saw no answer round, so these
-// tests build its tools/call from the envelope it sent.
+// on: the same input_required round trip as stdio, offering what a stdio form offers. Its answers come in as http-forms,
+// which decide only the asks their own caller raised. Claude Code's HTTP client was recorded at that revision
+// (fixtures/claude-code-http-mcp.json); the probe saw no answer round, so these tests build its tools/call from the
+// envelope it sent.
 
 const PROTOCOL = '2026-07-28'
 const A = 'agent:token-a'
@@ -100,63 +100,58 @@ describe('the HTTP MCP face, forms on', () => {
     expect(readFileSync(args.path, 'utf8')).toBe('from the agent')
   })
 
-  it('offers a non-floor ask once alone, and refuses a session or an always answer as relayed, so the ask still waits', async () => {
+  it('offers a non-floor ask every scope it offers, as a stdio form does, and a session answer runs the call and saves its own caller\'s grant', async () => {
     const node = await httpNode({ forms: true })
     const args = writeOutside(node)
     const asked = await send(node, claudeCodeCall({ tool: 'fs_write', args }))
     const [token] = node.waitingTokens()
-    expect(schemaOf(formOf(asked, token!))['scope']?.enum).toEqual(['once'])
-    expect(formOf(asked, token!).message).toContain('this form approves it once')
+    expect(schemaOf(formOf(asked, token!))['scope']?.enum).toEqual(['once', 'session', 'always'])
+    expect(formOf(asked, token!).message).not.toContain('this form')
 
-    for (const scope of ['session', 'always']) {
-      const again = await send(node, claudeCodeCall({ tool: 'fs_write', args, responses: accept(token!, { approve: true, scope }) }))
-      expect(again.resultType).toBe('input_required')
-    }
-    expect(node.waitingTokens()).toEqual([token])
-    expect(node.runtime.grants.list()).toEqual([])
-    expect(existsSync(args.path)).toBe(false)
-    expect((await node.decisions()).filter(entry => entry.event === 'result').map(entry => entry.detail)).toEqual(['assurance_too_low', 'assurance_too_low'])
+    const ran = await send(node, claudeCodeCall({ tool: 'fs_write', args, responses: accept(token!, { approve: true, scope: 'session' }) }))
+    expect(ran.isError).toBeUndefined()
+    expect(ran.resultType).not.toBe('input_required')
+    expect(readFileSync(args.path, 'utf8')).toBe('from the agent')
+    expect(node.runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', scope: 'session', sessionId: 'mcp', actor: A })])
+    expect((await node.decisions()).filter(entry => entry.event === 'result').map(entry => [entry.outcome, (entry.args as { assurance?: string }).assurance])).toEqual([['ok', 'local']])
+
+    const again = await send(node, claudeCodeCall({ tool: 'fs_write', args: { ...args, content: 'again' } }))
+    expect(again.resultType).not.toBe('input_required')
+    expect(readFileSync(args.path, 'utf8')).toBe('again')
   })
 
-  it('draws a floor ask as a denial alone, naming where a person approves it, refuses a forged approval of it, and denies the call on its denial', async () => {
+  it('draws a floor ask\'s approval as a stdio form does, and a once approval from its own caller runs the call', async () => {
     const node = await httpNode({ forms: true, environment: { BUCKLE_DELETE_IN_WORKSPACE: 'ask' } })
-    await node.runtime.grants.grant({ sessionId: 'mcp', rule: 'write_scope', subject: node.runtime.paths().root, scope: 'always' })
-    writeFileSync(join(node.workspace, 'notes.txt'), 'keep me')
-    const args = { paths: ['notes.txt'] }
-    const asked = await send(node, claudeCodeCall({ tool: 'fs_delete', args }))
-    const [token] = node.waitingTokens()
-    const form = formOf(asked, token!)
-    expect(schemaOf(form)['action']?.enum).toEqual(['deny'])
-    expect(schemaOf(form)['approve']).toBeUndefined()
-    expect(form.message).toContain(`a person approves this at the node, at the serve terminal or with buckle approve ${token}`)
-
-    expect((await send(node, claudeCodeCall({ tool: 'fs_delete', args, responses: accept(token!, { approve: true, scope: 'once' }) }))).resultType).toBe('input_required')
-    expect(existsSync(join(node.workspace, 'notes.txt'))).toBe(true)
-    expect((await node.decisions()).filter(entry => entry.event === 'result').map(entry => entry.detail)).toEqual(['assurance_too_low'])
-
-    const denied = await send(node, claudeCodeCall({ tool: 'fs_delete', args, responses: accept(token!, { action: 'deny' }) }))
-    expect(denied.isError).toBe(true)
-    expect(existsSync(join(node.workspace, 'notes.txt'))).toBe(true)
-    expect(node.waitingTokens()).toEqual([])
-  })
-
-  it('holds a call sent again with its floor ask\'s form dismissed, as the serve terminal holds one, so a person\'s approval at the node during the hold runs it', async () => {
-    const node = await httpNode({ forms: true, hold: 'grace', environment: { BUCKLE_DELETE_IN_WORKSPACE: 'ask' } })
     await node.runtime.grants.grant({ sessionId: 'mcp', rule: 'write_scope', subject: node.runtime.paths().root, scope: 'always' })
     writeFileSync(join(node.workspace, 'notes.txt'), 'delete me')
     const args = { paths: ['notes.txt'] }
     const asked = await send(node, claudeCodeCall({ tool: 'fs_delete', args }))
     const [token] = node.waitingTokens()
-    expect(formOf(asked, token!).message).toContain('dismissing it holds the call for their answer')
+    expect(node.runtime.approvalService.waiting().map(ask => ask.floor)).toEqual([true])
+    const form = formOf(asked, token!)
+    expect(schemaOf(form)['approve']).toBeDefined()
+    expect(schemaOf(form)['scope']?.enum).toEqual(['once', 'session', 'always'])
+    expect(form.message).not.toContain('this form only denies it')
 
-    const before = fileVersion(approvalsPath(node.config))
-    const resent = send(node, claudeCodeCall({ tool: 'fs_delete', args, responses: { [token!]: { action: 'decline' } } }))
-    await vi.waitFor(() => expect(fileVersion(approvalsPath(node.config))).not.toBe(before), { timeout: 20_000 })
-    expect(await node.runtime.approvalService.answer({ decision: { token: token!, approved: true, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: true })
-    const ran = await resent
-    expect(ran.resultType).not.toBe('input_required')
+    const ran = await send(node, claudeCodeCall({ tool: 'fs_delete', args, responses: accept(token!, { approve: true, scope: 'once' }) }))
     expect(ran.isError).toBeUndefined()
     expect(existsSync(join(node.workspace, 'notes.txt'))).toBe(false)
+    expect(node.waitingTokens()).toEqual([])
+  })
+
+  it('draws the forms again at once for a call sent again with its form dismissed: no form holds the call for the node', async () => {
+    const node = await httpNode({ forms: true, hold: 'grace', environment: { BUCKLE_DELETE_IN_WORKSPACE: 'ask' } })
+    await node.runtime.grants.grant({ sessionId: 'mcp', rule: 'write_scope', subject: node.runtime.paths().root, scope: 'always' })
+    writeFileSync(join(node.workspace, 'notes.txt'), 'keep me')
+    const args = { paths: ['notes.txt'] }
+    await send(node, claudeCodeCall({ tool: 'fs_delete', args }))
+    const [token] = node.waitingTokens()
+
+    const resent = await send(node, claudeCodeCall({ tool: 'fs_delete', args, responses: { [token!]: { action: 'decline' } } }))
+    expect(resent.resultType).toBe('input_required')
+    expect(Object.keys(resent.inputRequests ?? {})).toEqual([token])
+    expect(node.waitingTokens()).toEqual([token])
+    expect(existsSync(join(node.workspace, 'notes.txt'))).toBe(true)
   })
 
   it('holds a form answer to its own caller: another token\'s answer to the ask is not read, and its own caller\'s runs the call', async () => {

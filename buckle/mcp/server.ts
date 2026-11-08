@@ -27,8 +27,7 @@ export interface McpServerOptions {
   /**
    * The face's forms, through which a host's answers decide under the face's forms source while the workspace's forms
    * setting is on, read at each call: over stdio as the forms source, over HTTP as http-forms, which the agent's token
-   * reaches, so those decide only a non-floor ask once and only their own caller's. Off, a call's `inputResponses` are not
-   * read.
+   * reaches, so those decide only their own caller's asks. Off, a call's `inputResponses` are not read.
    */
   forms?: FormsBackend
   callScope?: ToolCallScope
@@ -109,8 +108,7 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
           const approvalTokens = answered?.tokens ?? []
           // A save whose retry or skip failed again is told in whatever the call answers with: its forms, or its result.
           const warnings = answered?.warnings ?? []
-          // A dismissed form a person at the node may answer further holds the call for them, as forms off does.
-          const wait = elicits && answered?.holds !== true ? { mode: 'none' as const } : shorterWait(options.approvalWait?.(), hints.approvalWait)
+          const wait = elicits ? { mode: 'none' as const } : shorterWait(options.approvalWait?.(), hints.approvalWait)
 
           const { response, replay } = await invokeJoined({
             runtime, joins: joinsOf(runtime), tool: tool.capability.name, args: args as JsonObject, hints, approvalTokens, sessionId: options.sessionId, signal: context.mcpReq?.signal,

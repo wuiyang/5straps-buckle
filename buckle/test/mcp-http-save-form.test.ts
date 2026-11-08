@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { SourceKind } from '../common/types/ports/approval-source.js'
 import { grantsPath } from '../common/runtime/config.js'
 import { NO_INTERACTION, type Interaction } from '../common/runtime/interaction.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -14,14 +13,8 @@ import { fixedInteraction } from './support/interaction.js'
 import { asCaller, claudeCodeCall, formOf, sendAs } from './support/mcp-http-call.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
-// The save form over HTTP. Under today's rights an HTTP form approves once alone, which writes no grant, so it never draws
-// one; were HTTP forms given stdio's rights, their one row in the rights table is all that changes, and the HTTP face then
-// draws the save form as stdio does, held to its own caller. This file makes that change, and only for itself.
-
-vi.mock('../common/domain/approval/assurance.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../common/domain/approval/assurance.js')>()
-  return { ...actual, rightsOf: (kind: SourceKind) => (kind === 'http-forms' ? { ...actual.rightsOf(kind), assurance: 'local' as const } : actual.rightsOf(kind)) }
-})
+// The save form over HTTP: an HTTP form offers what a stdio one does, session and always included, so the HTTP face draws
+// the save form as stdio does after an approval whose grant did not save, held to its own caller.
 
 // The renames onto `rename` to fail, `count` times.
 const failing = vi.hoisted(() => ({ rename: undefined as string | undefined, count: 0 }))
@@ -70,7 +63,7 @@ async function httpNode() {
 
 const accept = (key: string, content: Record<string, unknown>) => ({ [key]: { action: 'accept', content } })
 
-describe('the save form over HTTP, with HTTP forms given stdio\'s rights', () => {
+describe('the save form over HTTP', () => {
   it('draws it after an approval whose grant did not save, takes it only from its own caller, as core refuses another\'s skip, and a retry saves the grant before the call runs once', async () => {
     const node = await httpNode()
     const args = { path: join(node.root, 'outside', 'note.md'), content: 'saved' }

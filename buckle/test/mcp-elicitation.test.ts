@@ -67,7 +67,7 @@ function gatedServer(decide: ApprovalHost['decide'] = async () => APPLIED, waiti
   // The asks as core hands them to the forms: from the ledger, each whole where its call was kept whole.
   const asks = () => waiting.map(ask => ledgerAskOf(ask, { workspace: { id: 'default', node: 'node-7' }, idempotencyKey: key => key }))
   const forms = createFormsBackend({ workspace: () => ({ id: 'default', name: 'Fixture workspace' }), node: 'node-7', approves: () => judgeApproves })
-  void forms.open({ source: SOURCES.forms, reach: { lasting: true, floor: true, sameCaller: false }, decide, skipSave: async () => ({ status: 'skipped' }), pending: asks, ask: token => asks().find(ask => ask.token === token), log: () => undefined })
+  void forms.open({ source: SOURCES.forms, reach: { sameCaller: false }, decide, skipSave: async () => ({ status: 'skipped' }), pending: asks, ask: token => asks().find(ask => ask.token === token), log: () => undefined })
 
   return createMcpServer({ runtime, serverName: 'buckle-test', serverId: 'node-7', version: '0.0.0', sessionId: 'mcp', forms })
 }

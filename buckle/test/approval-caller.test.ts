@@ -94,17 +94,21 @@ describe('the caller check in the decision guard', () => {
 })
 
 describe('the rights of an HTTP form answer', () => {
-  it('rates it relayed, read while forms are on and bound to its own caller, and routes it to every ask today', () => {
-    expect(rightsOf('http-forms')).toMatchObject({ assurance: 'relayed', approves: true, whileFormsOn: true, sameCaller: true })
+  it('rates it local, as a stdio form answer, read while forms are on and bound to its own caller, and routes it to every ask today', () => {
+    expect(rightsOf('http-forms')).toMatchObject({ assurance: 'local', approves: true, person: true, whileFormsOn: true, sameCaller: true })
     expect(rightsOf('forms')).not.toHaveProperty('sameCaller')
     expect(TODAYS_ROUTES).toContainEqual({ id: 'http-forms', role: 'decide' })
   })
 
-  it('approves its own caller\'s non-floor ask once, and nothing lasting nor a floor ask, whose denial it still makes', () => {
+  it('approves its own caller\'s ask for each scope the ask offers, a floor ask included, as a stdio form answer does, and none of another caller\'s', () => {
     const scoped = (scope: 'session' | 'always'): ApprovalDecision => ({ token: 't-1', approved: true, scope })
-    for (const scope of ['session', 'always'] as const) expect(guard(claimOf(HTTP, { caller: 'agent:a', decision: scoped(scope) }), waitingFor('agent:a'))).toMatchObject({ ok: false, code: 'assurance_too_low' })
-    expect(guard(claimOf(HTTP, { caller: 'agent:a' }), waitingFor('agent:a', FILE_FLOOR_MARKS))).toEqual({ ok: false, code: 'assurance_too_low', reason: 'A person decides a floor ask: approve it at the node, or with an enrolled key' })
-    expect(guard(claimOf(HTTP, { caller: 'agent:a', decision: once(false) }), waitingFor('agent:a', FILE_FLOOR_MARKS))).toEqual({ ok: true, apply: {} })
+    for (const scope of ['session', 'always'] as const) {
+      expect(guard(claimOf(HTTP, { caller: 'agent:a', decision: scoped(scope) }), waitingFor('agent:a'))).toEqual({ ok: true, apply: {} })
+      expect(guard(claimOf(HTTP, { caller: 'agent:b', decision: scoped(scope) }), waitingFor('agent:a'))).toEqual(ANOTHER_CALLER)
+    }
+    expect(guard(claimOf(HTTP, { caller: 'agent:a' }), waitingFor('agent:a', FILE_FLOOR_MARKS))).toEqual({ ok: true, apply: {} })
+    expect(guard(claimOf(HTTP, { caller: 'agent:a', decision: scoped('session') }), waitingFor('agent:a', FILE_FLOOR_MARKS))).toEqual({ ok: true, apply: {} })
+    expect(guard(claimOf(HTTP, { caller: 'agent:b' }), waitingFor('agent:a', FILE_FLOOR_MARKS))).toEqual(ANOTHER_CALLER)
   })
 })
 
@@ -169,6 +173,15 @@ describe('the caller in the ledger', () => {
     expect(await registry.skipSave({ token, source: HTTP, caller: 'agent:b' })).toEqual({ ...ANOTHER_CALLER })
     expect(await registry.skipSave({ token, source: HTTP, caller: 'agent:a' })).toMatchObject({ ok: false, code: 'approver_not_allowed', reason: 'cli recorded this decision, so only it may skip its save' })
     await registry.recover()
+    expect(store.list()).toEqual([expect.objectContaining({ subject: '/outside/a', scope: 'session', actor: 'agent:a' })])
+  })
+
+  it('lets an HTTP form answer decide its own caller\'s ask for the session, writing the grant for that caller, and refuses another caller\'s', async () => {
+    const { store, registry, askBy } = ledger()
+    const token = await askBy('agent:a')
+    expect(await registry.resolve(decision(token, 'session'), HTTP, { caller: 'agent:b' })).toEqual({ ...ANOTHER_CALLER })
+    expect(store.list()).toEqual([])
+    expect(await registry.resolve(decision(token, 'session'), HTTP, { caller: 'agent:a' })).toMatchObject({ ok: true, save: 'saved' })
     expect(store.list()).toEqual([expect.objectContaining({ subject: '/outside/a', scope: 'session', actor: 'agent:a' })])
   })
 

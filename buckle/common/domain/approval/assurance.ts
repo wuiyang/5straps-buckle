@@ -21,15 +21,16 @@ export interface SourceRights {
 
 const AT_THE_NODE: SourceRights = { assurance: 'local', approves: true, person: true, widens: true, everyAsk: false }
 
+// Ruling 3 of 2026-09-25, which the owner keeps: a form's answers count as the person's, while the owner's forms setting is on.
+const FORMS: SourceRights = { assurance: 'local', approves: true, person: true, widens: false, everyAsk: false, whileFormsOn: true }
+
 const RIGHTS: Record<SourceKind, SourceRights> = {
   terminal: AT_THE_NODE,
   cli: { ...AT_THE_NODE, everyAsk: true },
-  // Ruling 3 of 2026-09-25, which the owner keeps: a stdio host's form answers count as the person's, while the owner's
-  // forms setting is on. `relayed` would hold them to a non-floor once.
-  forms: { assurance: 'local', approves: true, person: true, widens: false, everyAsk: false, whileFormsOn: true },
-  // Anything holding the agent's token sends these, so they approve a non-floor once; `local` would give them the stdio
-  // forms' rights.
-  'http-forms': { assurance: 'relayed', approves: true, person: true, widens: false, everyAsk: false, whileFormsOn: true, sameCaller: true },
+  forms: FORMS,
+  // Where an ask is answered changes nothing it offers (the owner's ruling of 2026-11-09), so an HTTP form decides as a
+  // stdio one; anything holding an agent's token can send one, so it decides only the asks that token raised.
+  'http-forms': { ...FORMS, sameCaller: true },
   devices: { assurance: 'key', approves: true, person: true, widens: false, everyAsk: false },
   judge: { assurance: 'relayed', approves: true, person: false, widens: false, everyAsk: true },
   // The setup route's envelope keeps today's lasting denials of a sensitive file.
@@ -41,10 +42,9 @@ export function rightsOf(kind: SourceKind): SourceRights {
   return RIGHTS[kind]
 }
 
-/** What a backend is told its source may decide, by the rules the decision guard holds these rights to. */
+/** Whose asks a backend is told its source may answer, by the rule the decision guard holds these rights to. */
 export function reachOf(rights: SourceRights): SourceReach {
-  const local = atLeast(rights.assurance, 'local')
-  return { lasting: local, floor: rights.approves && rights.person && local, sameCaller: rights.sameCaller === true }
+  return { sameCaller: rights.sameCaller === true }
 }
 
 export function atLeast(assurance: Assurance, least: Assurance): boolean {

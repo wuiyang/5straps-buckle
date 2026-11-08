@@ -2,8 +2,8 @@ import { acceptedContent, inputRequired, inputResponse } from '@modelcontextprot
 import { GrantScopeSchema, type ApprovalRequest, type GrantScope } from '@5straps/protocol'
 import { z } from 'zod'
 import { saveEndingLine, settleUnsaved, unsavedOf, type SaveAnswer, type SaveEnding, type SaveRoute, type Unsaved, type UnsavedKind } from '../common/adapters/approval/grant-save-question.js'
-import { approveCommand, describeAsk, describeAskOfShownCall, describeCallAsks, printable, type ShownCall } from '../common/domain/approval-instruction.js'
-import type { AnswerSender, ApprovalBackend, ApprovalHost, BackendCapabilities, DecisionBody, FullAsk, SkipReceipt, SourceReach, SubmitResult } from '../common/types/ports/approval-backend.js'
+import { describeAsk, describeAskOfShownCall, describeCallAsks, printable, type ShownCall } from '../common/domain/approval-instruction.js'
+import type { AnswerSender, ApprovalBackend, ApprovalHost, BackendCapabilities, DecisionBody, FullAsk, SkipReceipt, SubmitResult } from '../common/types/ports/approval-backend.js'
 
 // An approval form's answer names its approval or its action; one that names neither, a save answer among them, is none.
 const FormAnswerSchema = z.object({
@@ -28,15 +28,14 @@ export interface UnsavedDecision { decision: DecisionBody; unsaved: Unsaved; ask
 
 /**
  * What a call's answers came to: the tokens the call sent again spends, and the decisions whose lasting part did not save.
- * `holds`: a form came back dismissed whose ask a person at the node may give more than the form offered, so the face holds
- * the call for their answer, as it would with forms off, before it draws the forms again. `warnings`: each save whose retry
- * or skip failed again, which no further save form asks about, for the face to show in whatever the call answers with.
+ * `warnings`: each save whose retry or skip failed again, which no further save form asks about, for the face to show in
+ * whatever the call answers with.
  */
-export interface FormsAnswered { tokens: string[]; unsaved: UnsavedDecision[]; holds: boolean; warnings?: string[] }
+export interface FormsAnswered { tokens: string[]; unsaved: UnsavedDecision[]; warnings?: string[] }
 
 /**
  * An MCP host's forms: drawn in the call's own answer, and decided when the retried call carries them back. Each form
- * offers what its host's source may decide, and no more.
+ * offers what its ask offers, whichever face draws it.
  */
 export interface FormsBackend extends ApprovalBackend {
   /** One form per ask of the call, the first headed by `warnings`, the saves this call's answers left. */
@@ -57,8 +56,8 @@ const IN_THE_ANSWER: SubmitResult = { kind: 'declined', reason: 'an MCP host\'s 
 const ALLOW_LABELS: Readonly<Record<GrantScope, string>> = { once: 'Allow once', session: 'Allow this session', always: 'Always allow' }
 type Denial = 'deny' | 'deny_session' | 'always_deny'
 const DENIAL_LABELS: Readonly<Record<Denial, string>> = { deny: 'Deny', deny_session: 'Deny this session', always_deny: 'Always deny' }
-// Forms that are not open draw what nothing that outlives the call or approves a floor ask may answer.
-const NO_REACH: SourceReach = { lasting: false, floor: false, sameCaller: true }
+// A credential file's ask may be denied for longer than the call; every other ask's denial is for the call alone.
+const SENSITIVE_DENIALS: readonly Denial[] = ['deny', 'deny_session', 'always_deny']
 /** A call makes at most as many asks as one session keeps waiting (50), so one round of its forms comes back under no more keys. */
 export const MOST_FORM_ANSWERS = 50
 /** The key a save form's answer comes under, before its decision's token, so it never reads as an approval form's. */
@@ -82,10 +81,10 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
   const live = () => (closed ? undefined : host)
 
   async function decideAnswers(responses: Record<string, unknown>, sender: AnswerSender | undefined): Promise<FormsAnswered> {
-    const answered: FormsAnswered = { tokens: [], unsaved: [], holds: false }
+    const answered: FormsAnswered = { tokens: [], unsaved: [] }
     const reading = live()
     if (!reading) return answered
-    const keys = answerableKeys({ host: reading, keys: roundKeys({ host: reading, responses }) })
+    const keys = roundKeys({ host: reading, responses })
     const waiting = answerableAsks({ host: reading, sender, keys })
     for (const key of keys) {
       const opened = live()
@@ -99,10 +98,6 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
       }
       const ask = waiting.get(key)
       if (ask === undefined) continue
-      if (dismissed(responses, key)) {
-        if (moreAtTheNode(ask, opened.reach)) answered.holds = true
-        continue
-      }
       const answer = acceptedContent(responses, key, FormAnswerSchema)
       if (!answer) continue
       const decision = decisionOf(key, answer)
@@ -178,11 +173,11 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
 
     forms(approvals, warnings = []) {
       const opened = live()
-      return formsFor({ approvals, waiting: opened?.pending() ?? [], reach: opened?.reach ?? NO_REACH, options, warnings })
+      return formsFor({ approvals, waiting: opened?.pending() ?? [], options, warnings })
     },
 
     answer(responses, sender) {
-      if (!live() || !responses) return Promise.resolve({ tokens: [], unsaved: [], holds: false })
+      if (!live() || !responses) return Promise.resolve({ tokens: [], unsaved: [] })
       const run = decideAnswers(responses, sender)
       answering.add(run)
       const forget = () => { answering.delete(run) }
@@ -207,17 +202,6 @@ function roundKeys(input: { host: ApprovalHost; responses: Record<string, unknow
 }
 
 /**
- * A round's keys this host's forms may answer: a save form's only where its source decides past the call, since no save
- * form is drawn otherwise (an HTTP host's, under today's rights), so an answer under one costs no lock and no record.
- */
-function answerableKeys(input: { host: ApprovalHost; keys: string[] }): string[] {
-  if (input.host.reach.lasting) return input.keys
-  const read = input.keys.filter(key => !key.startsWith(SAVE_KEY))
-  if (read.length < input.keys.length) input.host.log('info', 'MCP save form answers came where no save form is drawn, so nothing was sent for them', { answers: input.keys.length - read.length })
-  return read
-}
-
-/**
  * The asks an approval answer under these keys may decide, read once: those waiting, and where the host's source answers
  * its own caller's asks alone, those its sender raised. A key naming any other is sent nowhere, so it costs no record.
  */
@@ -236,17 +220,6 @@ function skipEndingOf(receipt: SkipReceipt): SaveEnding {
   if (receipt.status === 'refused') return { ending: 'refused', error: receipt.error }
   if (receipt.status === 'unfinished') return { ending: 'left', kind: 'removal' }
   return { ending: 'skipped', removed: receipt.removed === true }
-}
-
-function dismissed(responses: Record<string, unknown>, key: string): boolean {
-  const view = inputResponse(responses, key)
-  return view.kind === 'elicit' && view.action !== 'accept'
-}
-
-/** Whether a person at the node may give an ask more than its form offers: a floor ask's approval, or a scope past the call. */
-function moreAtTheNode(ask: FullAsk, reach: SourceReach): boolean {
-  if (ask.action === undefined) return false
-  return (ask.policy.floor && !reach.floor) || (!reach.lasting && ask.policy.offeredScopes.some(scope => scope !== 'once'))
 }
 
 /** A save form's answer: retry or skip as accepted, a decline as a skip, and a cancel, or none, as leaving it. */
@@ -285,12 +258,11 @@ function decisionOf(token: string, answer: FormAnswer): DecisionBody {
  * One form per ask, whose message is the whole action as the node's terminal shows it (owner decision D17): the ask, then
  * every argument, the directory, the effects and the node's summary from the call the ask recorded. An ask whose whole
  * call was not kept has none: its form says so and offers denials only. A call that made several asks is shown whole
- * once, in the form of its first ask, which lists the others; each other form names that ask. Each form offers what the
- * host's source may decide: a floor ask it may not approve is a denial naming where a person approves it, and a scope
- * past the call it may not grant is left out, naming where it is granted.
+ * once, in the form of its first ask, which lists the others; each other form names that ask. Each form offers the
+ * scopes its ask offers.
  */
-function formsFor(input: { approvals: ApprovalRequest[]; waiting: FullAsk[]; reach: SourceReach; options: FormsBackendOptions; warnings: readonly string[] }) {
-  const { options, reach } = input
+function formsFor(input: { approvals: ApprovalRequest[]; waiting: FullAsk[]; options: FormsBackendOptions; warnings: readonly string[] }) {
+  const { options } = input
   const workspace = options.workspace()
   const asked = new Map(input.waiting.map(ask => [ask.token, ask]))
   const groupOf = (token: string) => asked.get(token)?.group
@@ -304,22 +276,10 @@ function formsFor(input: { approvals: ApprovalRequest[]; waiting: FullAsk[]; rea
     if (call && group !== undefined && earlier === undefined) shownWith.set(group, approval.token)
     const asks = group === undefined ? [] : input.approvals.filter(other => groupOf(other.token) === group)
     const lines = !call ? describeAsk(shown) : earlier !== undefined ? describeAskOfShownCall(shown, earlier) : [...describeAsk(shown), ...(asks.length > 1 ? describeCallAsks(asks) : [])]
-    const named = { workspaceId: workspace.id, workspaceName: workspace.name, request: approval }
-    const scopes = reach.lasting ? approval.offeredScopes : approval.offeredScopes.filter(scope => scope === 'once')
-    const approvable = call !== undefined && scopes.length > 0 && (reach.floor || ask?.policy.floor !== true)
-    const note = call === undefined ? [] : !approvable ? [floorNote(approveCommand(named))] : scopes.length < approval.offeredScopes.length ? [onceNote(approveCommand(named))] : []
-    const message = [...(index === 0 ? input.warnings : []), ...lines, ...note].join('\n')
-    return [approval.token, approvable ? approvalForm({ approval, message, scopes, reach }) : denialForm({ approval, message, reach })]
+    const message = [...(index === 0 ? input.warnings : []), ...lines].join('\n')
+    return [approval.token, call ? approvalForm({ approval, message }) : denialForm({ approval, message })]
   }))
   return inputRequired({ inputRequests })
-}
-
-function floorNote(command: string): string {
-  return `  approve:  a person approves this at the node, at the serve terminal or with ${command}; this form only denies it, and dismissing it holds the call for their answer`
-}
-
-function onceNote(command: string): string {
-  return `  scope:    this form approves it once; for the session or always, approve it at the serve terminal or with ${command}, then dismiss this form to hold the call for that answer`
 }
 
 /** The whole call a form shows, where the ask came with one. */
@@ -327,21 +287,16 @@ function shownCallOf(ask: FullAsk): ShownCall | undefined {
   return ask.action === undefined ? undefined : { ...ask.action, judge: ask.risk.notes }
 }
 
-/** The denials a form offers a credential file's ask: a lasting one only where the host's source may decide past the call. */
-function denialsOf(reach: SourceReach): Denial[] {
-  return reach.lasting ? ['deny', 'deny_session', 'always_deny'] : ['deny']
-}
-
-function approvalForm(input: { approval: ApprovalRequest; message: string; scopes: GrantScope[]; reach: SourceReach }) {
-  const { approval, scopes } = input
-  const denials = denialsOf(input.reach)
+function approvalForm(input: { approval: ApprovalRequest; message: string }) {
+  const { approval } = input
+  const scopes = approval.offeredScopes
   return inputRequired.elicit({
     message: input.message,
     requestedSchema: {
       type: 'object',
       // A credential file is allowed once; a secret file's use offers each scope its ask does (docs/user/how-to/secrets.md).
       properties: approval.rule === 'sensitive_path' ? {
-        action: { type: 'string', enum: [...scopes.map(scope => `allow_${scope}`), ...denials], description: [...scopes.map(scope => ALLOW_LABELS[scope]), ...denials.map(denial => DENIAL_LABELS[denial])].join(', ') },
+        action: { type: 'string', enum: [...scopes.map(scope => `allow_${scope}`), ...SENSITIVE_DENIALS], description: [...scopes.map(scope => ALLOW_LABELS[scope]), ...SENSITIVE_DENIALS.map(denial => DENIAL_LABELS[denial])].join(', ') },
       } : {
         approve: { type: 'boolean', description: 'Allow this operation' },
         scope: {
@@ -355,9 +310,9 @@ function approvalForm(input: { approval: ApprovalRequest; message: string; scope
   })
 }
 
-/** An ask nobody was shown whole, or one the host's source may not approve: it may be denied here, never approved. */
-function denialForm(input: { approval: ApprovalRequest; message: string; reach: SourceReach }) {
-  const denials = input.approval.rule === 'sensitive_path' ? denialsOf(input.reach) : ['deny' as const]
+/** An ask nobody was shown whole: it may be denied here, never approved. */
+function denialForm(input: { approval: ApprovalRequest; message: string }) {
+  const denials: Denial[] = input.approval.rule === 'sensitive_path' ? [...SENSITIVE_DENIALS] : ['deny']
   return inputRequired.elicit({
     message: input.message,
     requestedSchema: {
