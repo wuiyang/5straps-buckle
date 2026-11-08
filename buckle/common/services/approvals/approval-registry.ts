@@ -10,6 +10,7 @@ import type { PermissionOutcome } from '../../domain/permission/engine.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
 import { endsWithSessions, servesHolder, type GrantHolder } from '../../domain/permission/grant-holder.js'
 import type { GrantStore, LedgerGrants, SessionEnding } from '../../types/ports/grant-store.js'
+import type { CallAttempt } from '../../types/ports/action-log.js'
 import { askedCallSchema, type AskedCall } from '../../domain/approval/asked-call.js'
 import { guardDecision, guardSkip, screenDecision, screenSkip, type DecisionClaim, type LedgerView, type LiveSettings } from '../../domain/approval/decision-guard.js'
 import { TODAYS_ROUTES } from '../../domain/approval/routes.js'
@@ -88,9 +89,12 @@ const lapse = { lapsesAt: z.iso.datetime().optional(), abandonedAt: z.iso.dateti
 // the budgets once per group; `complete` repeats the call's own mark. An ask recorded before this build keeps its
 // call inline, in `call`.
 const callFileSchema = z.object({ id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/), bytes: z.number().int().nonnegative(), complete: z.literal(true).optional() })
+// attempt: the attempt entry of the call that raised the ask, which each decision's record names; a re-send that joins
+// shares its requestId.
+const attempt = { attempt: z.object({ auditId: z.string(), requestId: z.string() }).optional() }
 // floor and destructive: the marks the rule that asked set (AskMarks); an ask recorded before they were kept reads as both.
 const marks = { floor: z.boolean().default(true), destructive: z.boolean().default(true) }
-const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...marks, ...joinKey, ...fingerprint, notify: z.literal(true).optional(), call: askedCallSchema.optional(), callFile: callFileSchema.optional(), ...lapse })
+const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...marks, ...joinKey, ...fingerprint, ...attempt, notify: z.literal(true).optional(), call: askedCallSchema.optional(), callFile: callFileSchema.optional(), ...lapse })
 // grant: the session or always grant an approval makes, kept with its resolved entry under the id it is written with.
 // `save` is `owed` until the grant store holds it, then `saved`; a skip turns it `skipping` until a grant that may have
 // saved is confirmed gone, then `skipped`, which nothing writes again. The entry commits first, so a grant never stands
@@ -106,7 +110,7 @@ const lastingGrantSchema = z.object({
 type LastingGrant = z.infer<typeof lastingGrantSchema>
 const resolvedSchema = z.object({
   workspace: z.string(), decision: ApprovalDecisionSchema, widenedTo: z.string().optional(), expiresAt: z.string(),
-  request: ApprovalRequestSchema.optional(), sessionId: z.string().optional(), ...joinKey, ...fingerprint, ...decidedBy,
+  request: ApprovalRequestSchema.optional(), sessionId: z.string().optional(), ...joinKey, ...fingerprint, ...decidedBy, ...attempt,
   grant: lastingGrantSchema.optional(),
 })
 const deliverySchema = z.object({ id: z.string().uuid(), workspace: z.string(), notice: ApprovalNoticeSchema, expiresAt: z.iso.datetime() })
@@ -302,6 +306,8 @@ export interface AskInput {
   fingerprint?: string
   /** The whole call as a challenge shows it: its redacted arguments, their directory, the node's description and the judged effects. */
   call?: AskedCall
+  /** The asking call's attempt entry, which each decision on its asks names. */
+  attempt?: CallAttempt
   /**
    * How long the asking caller is held, in ms; null holds it until answered. An ask that states no deadline lapses this
    * long and ten minutes more from now, and a re-send that joins restarts that clock (the MCP asks brief, item 5); one held
@@ -334,14 +340,18 @@ export interface ResolveOptions {
 /**
  * On a widened grant, the pattern recorded and the host it was asked for, for the audit entry.
  * `repeated` marks an answer identical to the one already recorded, which changes nothing. `asked`
- * is the rule and subject the decision answered, for the decision's audit entry (review item 6).
+ * is the rule and subject the decision answered, and `attempt` the asking call's attempt entry, for the decision's audit
+ * entry, a refusal's too where the ledger read the ask (review item 6).
  * `granted`: the ask's wider subject, where the decision granted it in place of the ask's own (the delete policy brief).
  * `save`: where the session or always grant an approval made stands; while it is `owed`, `saveError` says why, naming no
  * path. A refusal is `retryable` where the same decision sent again may apply; a `grant_unsaved` one says why in `saveError`.
  */
 export type Resolution =
-  | { ok: true; widened?: { pattern: string; askedBy: string }; repeated?: true; asked?: { rule: PermissionRuleId; subject: string }; granted?: string; save?: GrantSave; saveError?: string }
-  | { ok: false; code: ApprovalErrorCode; reason: string; retryable?: true; saveError?: string }
+  | ({ ok: true; widened?: { pattern: string; askedBy: string }; repeated?: true; granted?: string; save?: GrantSave; saveError?: string } & AnsweredAsk)
+  | ({ ok: false; code: ApprovalErrorCode; reason: string; retryable?: true; saveError?: string } & AnsweredAsk)
+
+/** The ask a decision met in the ledger: its rule and subject, and the attempt entry of the call that raised it. */
+interface AnsweredAsk { asked?: { rule: PermissionRuleId; subject: string }; attempt?: CallAttempt }
 
 /** Why a grant given up is not confirmed gone: it `stands`, since it could not be removed, or the grants could not be read. */
 export interface UnfinishedRemoval { stands: boolean; saveError: string }
@@ -1023,16 +1033,18 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     const now = Date.now()
     const previous = state.resolved.find(entry => entry.workspace === workspace && entry.decision.token === token)
     const approval = previous === undefined ? state.pending.find(entry => entry.workspace === workspace && entry.request.token === token) : undefined
-    const decision = widened({ decision: input.claim.decision, widen: options.widen, request: (approval ?? previous)?.request })
-    if (decision === null) return { ok: false, code: 'scope_not_offered', reason: 'This ask has no wider subject to grant' }
+    const met = approval ?? previous
+    const answered = answeredAsk(met)
+    const decision = widened({ decision: input.claim.decision, widen: options.widen, request: met?.request })
+    if (decision === null) return { ok: false, code: 'scope_not_offered', reason: 'This ask has no wider subject to grant', ...answered }
     const claim: DecisionClaim = { ...input.claim, decision }
     const waiting = approval === undefined ? undefined : waitingView(withCall(approval), options.challenge)
     const owedBy = previous?.grant?.save === 'owed' ? { owedBy: previous.grant.source } : {}
     const ledger: LedgerView = { ...(previous === undefined ? {} : { resolved: { ...previous, ...owedBy } }), ...(waiting === undefined ? {} : { waiting }) }
     const verdict = guardDecision({ claim, ledger, now, live: live() })
-    if (!verdict.ok) return { ok: false, code: verdict.code, reason: verdict.reason }
+    if (!verdict.ok) return { ok: false, code: verdict.code, reason: verdict.reason, ...answered }
     if ('repeated' in verdict) {
-      const repeated: Extract<Resolution, { ok: true }> = { ok: true, repeated: true, ...(verdict.asked ? { asked: verdict.asked } : {}) }
+      const repeated: Extract<Resolution, { ok: true }> = { ok: true, repeated: true, ...answered, ...(previous === undefined ? {} : grantedBy(previous)) }
       if (previous === undefined) return repeated
       progress.decided = { resolution: repeated, entry: previous }
       progress.recorded = true
@@ -1053,14 +1065,14 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     const holder = { sessionId: approval.sessionId, ...(actor === undefined ? {} : { actor }) }
     if (!decision.approved && decision.scope !== 'once') {
       const unsaved = await writeDenial({ state, commit, progress, holder, rule, subject, scope: decision.scope, decider })
-      if (unsaved) return unsaved
+      if (unsaved) return { ...unsaved, ...answered }
     }
     const grant = lastingGrantOf({ decision, holder, rule, subject, widenedTo, wider, decider, source: input.claim.source })
     state.pending = state.pending.filter(entry => entry.request.token !== decision.token)
     const resolved: ResolvedEntry = {
       workspace, decision, ...(widenedTo ? { widenedTo } : {}), expiresAt, request: approval.request, sessionId: approval.sessionId,
       ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(approval.fingerprint === undefined ? {} : { fingerprint: approval.fingerprint }), ...decider,
-      ...(grant === undefined ? {} : { grant }),
+      ...(approval.attempt === undefined ? {} : { attempt: approval.attempt }), ...(grant === undefined ? {} : { grant }),
     }
     state.resolved.push(resolved)
     if (approval.notify || durableNotices) enqueueOutcome(state, workspace, {
@@ -1069,8 +1081,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     })
     const onceFor = (): OnceEntry => ({ workspace, token: decision.token, subject: { rule, subject }, sessionId: approval.sessionId, ...(actor === undefined ? {} : { actor }), tool, expiresAt, ...(requestId === undefined ? {} : { requestId }), ...bound, ...decider, ...coded })
     if (decision.approved && decision.scope === 'once') state.once.push(onceFor())
-    const answered = { rule, subject }
-    const resolution: Extract<Resolution, { ok: true }> = wider ? { ok: true, asked: answered, granted: wider } : widenedTo ? { ok: true, widened: { pattern: widenedTo, askedBy: subject }, asked: answered } : { ok: true, asked: answered }
+    const resolution: Extract<Resolution, { ok: true }> = { ok: true, ...answered, ...(wider ? { granted: wider } : widenedTo ? { widened: { pattern: widenedTo, askedBy: subject } } : {}) }
     progress.decided = { resolution, entry: resolved }
     // The subject can carry a command's arguments, so the log names its size only; the action log keeps it.
     if (decision.approved) logger.info('Approval granted', { rule, scope: decision.scope, tool, subjectLength: subject.length, ...(widenedTo || wider ? { widened: true } : {}) })
@@ -1232,6 +1243,19 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     }
   }
 
+  /** The ask a decision met, waiting or answered, as its resolution names it for the decision's record. */
+  function answeredAsk(entry: PendingEntry | ResolvedEntry | undefined): AnsweredAsk {
+    if (entry?.request === undefined) return {}
+    return { asked: { rule: entry.request.rule, subject: entry.request.subject }, ...(entry.attempt === undefined ? {} : { attempt: entry.attempt }) }
+  }
+
+  /** What an answered entry granted in place of its ask's subject, as a repeat of it names: a host pattern, or the wider subject. */
+  function grantedBy(entry: ResolvedEntry): Pick<Extract<Resolution, { ok: true }>, 'granted' | 'widened'> {
+    if (entry.widenedTo !== undefined && entry.request !== undefined) return { widened: { pattern: entry.widenedTo, askedBy: entry.request.subject } }
+    const { subject } = entry.decision
+    return subject !== undefined && subject !== entry.request?.subject ? { granted: subject } : {}
+  }
+
   // An ask the ledger does not hold keeps the decision as sent, which the decision guard refuses.
   function widened(input: { decision: ApprovalDecision; widen: ResolveOptions['widen']; request: ApprovalRequest | undefined }): ApprovalDecision | null {
     if (input.widen === undefined || input.request === undefined) return input.decision
@@ -1244,7 +1268,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
 
     endSessions,
 
-    async ask({ tool, sessionId, asks, requestId, actor, fingerprint: callFingerprint, call, waitMs: lifetime = waitMs, holdMs }) {
+    async ask({ tool, sessionId, asks, requestId, actor, fingerprint: callFingerprint, call, attempt: asking, waitMs: lifetime = waitMs, holdMs }) {
       const evicted: PendingEntry[] = []
       const result = await update(async (state, commit): Promise<AskResult> => {
         await applyRevocations(state, commit)
@@ -1260,7 +1284,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
           // (owner ruling B); a subject is already what its rule asks under, which holds no credential the display redacts.
           // Keep the label in the signed reason so strict older challenges need no new field.
           const requests = asks.map(item => ({ token: randomUUID(), rule: item.rule, subject: item.subject, reason: redactCredentials(item.severity === undefined ? item.reason : `[${item.severity}] ${item.reason}`, 'text'), ...(item.severity === undefined ? {} : { severity: item.severity }), tool, offeredScopes: item.offeredScopes, expiresAt, ...(item.widerSubject === undefined ? {} : { widerSubject: item.widerSubject }) }))
-          const entries: PendingEntry[] = requests.map((request, index) => ({ request, sessionId, workspace, floor: asks[index]!.floor, destructive: asks[index]!.destructive, ...(options.durableNotices ? { notify: true as const } : {}), ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(callFingerprint === undefined ? {} : { fingerprint: callFingerprint }), ...(lapsesAt === undefined ? {} : { lapsesAt }) }))
+          const entries: PendingEntry[] = requests.map((request, index) => ({ request, sessionId, workspace, floor: asks[index]!.floor, destructive: asks[index]!.destructive, ...(options.durableNotices ? { notify: true as const } : {}), ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(callFingerprint === undefined ? {} : { fingerprint: callFingerprint }), ...(asking === undefined ? {} : { attempt: asking }), ...(lapsesAt === undefined ? {} : { lapsesAt }) }))
           assertDeliveryRoom(state, entries, notifies)
           // The group's whole call is kept once, in its own file, however many asks the call made (review M5).
           if (call === undefined) assertBytesFor({ waiting: state.pending.filter(entry => entry.workspace === workspace), group: entries, callBytes: 0 })

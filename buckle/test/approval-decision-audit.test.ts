@@ -45,9 +45,14 @@ async function asked(input: { decisionAudit: DecisionAudit; terminal?: ApprovalB
   roots.push(root)
   const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' }), join(root, 'approvals.json'), 15_000)
   const service = createApprovalService({ registry, workspaceId: 'w-1', serverId: 'node-1', graceMs: 200, hold: async () => 'grace', terminal: IDLE, nonces: createMemoryNonceClaims(), ...input })
-  const { requests } = await registry.ask({ tool: 'fs_write', sessionId: 's', requestId: 'r', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside/a.md', reason: 'outside', offeredScopes: ['once', 'session'] }], call: { arguments: { path: '/outside/a.md' }, cwd: '/w', description: null, effects: [], complete: true } })
+  const { requests } = await registry.ask({ tool: 'fs_write', sessionId: 's', requestId: 'r', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside/a.md', reason: 'outside', offeredScopes: ['once', 'session'] }], call: CALL, attempt: ATTEMPT })
   return { registry, service, token: requests[0]!.token }
 }
+
+const CALL = { arguments: { path: '/outside/a.md' }, cwd: '/w', description: null, effects: [], complete: true as const }
+const ATTEMPT = { auditId: 'call-audit-1', requestId: 'write-1' }
+const ANSWERED = { rule: 'write_scope', subject: '/outside/a.md', attempt: ATTEMPT }
+const NONE = { kind: 'none' }
 
 describe('the decision audit seam', () => {
   it('tells the audit of each decision as received, then applied or refused', async () => {
@@ -55,12 +60,31 @@ describe('the decision audit seam', () => {
     const { service, token } = await asked({ decisionAudit: audit })
     expect(await service.answer({ decision: { token, approved: true, scope: 'always' }, source: SOURCES.cli })).toMatchObject({ ok: false, code: 'scope_not_offered' })
     expect(await service.answer({ decision: { token, approved: true, scope: 'session' }, source: SOURCES.cli })).toMatchObject({ ok: true })
-    const decision = { token, approved: true, source: SOURCES.cli, proof: 'none' }
+    const decision = { token, approved: true, source: SOURCES.cli, proof: 'none', widen: NONE }
     expect(entries).toEqual([
       { step: 'received', fields: { ...decision, scope: 'always' } },
-      { step: 'refused', fields: { ...decision, scope: 'always', code: 'scope_not_offered' } },
+      { step: 'refused', fields: { ...decision, scope: 'always', code: 'scope_not_offered', call: ANSWERED } },
       { step: 'received', fields: { ...decision, scope: 'session' } },
-      { step: 'applied', fields: { ...decision, scope: 'session', assurance: 'local', repeated: false, save: 'saved' } },
+      { step: 'applied', fields: { ...decision, scope: 'session', assurance: 'local', repeated: false, save: 'saved', call: ANSWERED } },
+    ])
+    await service.close()
+  })
+
+  it('tells the audit the widening each answer asked for and the subject its grant took, and the call a repeat answered', async () => {
+    const { audit, entries } = recordingDecisionAudit()
+    const { registry, service } = await asked({ decisionAudit: audit })
+    const ask = { kind: 'ask' as const, ...PLAIN_MARKS, reason: 'asks', offeredScopes: ['once' as const, 'session' as const, 'always' as const] }
+    const [below, host] = (await registry.ask({ tool: 'fs_delete', sessionId: 's', requestId: 'r-2', asks: [{ ...ask, rule: 'write_scope', subject: 'delete:/srv/data/a.txt', widerSubject: 'delete-below:/srv/data' }, { ...ask, rule: 'network_egress', subject: 'api.example.com' }], call: CALL, attempt: { auditId: 'call-audit-2', requestId: 'delete-1' } })).requests
+    const attempt = { auditId: 'call-audit-2', requestId: 'delete-1' }
+    expect(await service.answer({ decision: { token: below!.token, approved: true, scope: 'session' }, source: SOURCES.cli, widen: 'below' })).toMatchObject({ ok: true })
+    expect(await service.answer({ decision: { token: host!.token, approved: true, scope: 'always' }, source: SOURCES.cli, widenTo: '*.example.com' })).toMatchObject({ ok: true })
+    expect(await service.answer({ decision: { token: host!.token, approved: true, scope: 'always' }, source: SOURCES.cli, widenTo: '*.example.com' })).toMatchObject({ ok: true, repeated: true })
+
+    const results = entries.filter(entry => entry.step === 'applied').map(entry => entry.fields)
+    expect(results.map(fields => [fields.widen, 'widenedTo' in fields ? fields.widenedTo : undefined, fields.call])).toEqual([
+      [{ kind: 'below' }, 'delete-below:/srv/data', { rule: 'write_scope', subject: 'delete:/srv/data/a.txt', attempt }],
+      [{ kind: 'host', pattern: '*.example.com' }, '*.example.com', { rule: 'network_egress', subject: 'api.example.com', attempt }],
+      [{ kind: 'host', pattern: '*.example.com' }, '*.example.com', { rule: 'network_egress', subject: 'api.example.com', attempt }],
     ])
     await service.close()
   })
@@ -131,7 +155,7 @@ describe('the decision audit seam', () => {
     const { service } = await asked({ decisionAudit: audit, terminal: stray })
     void service.request({ sessionId: 's', requestId: 'other', tool: 'fs_write', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside/b.md', reason: 'outside', offeredScopes: ['once'] }], wait: { mode: 'none' } })
     await decided.promise
-    const decision = { token: 'not-routed', approved: false, scope: 'once', source: SOURCES.terminal, proof: 'none' }
+    const decision = { token: 'not-routed', approved: false, scope: 'once', source: SOURCES.terminal, proof: 'none', widen: NONE }
     expect(entries).toEqual([
       { step: 'received', fields: decision },
       { step: 'refused', fields: { ...decision, code: 'approver_not_allowed' } },
@@ -172,16 +196,20 @@ describe('the decision audit seam', () => {
     await service.close()
   })
 
-  it('records each decision in the workspace\'s own log, as the runtime composes it', async () => {
+  it('records each decision in the workspace\'s own log, as the runtime composes it, joined to the attempt of the call it answered', async () => {
     const { runtime, token } = await askedInRuntime()
+    const [subject] = runtime.approvalService.pending().map(request => request.subject)
     expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'session' }, source: SOURCES.terminal })).toMatchObject({ ok: true })
 
-    const decisions = (await auditEntries(runtime.actions, 200)).filter(entry => entry.tool === 'approval_decision')
-    const decision = { token, outcome: 'approve', scope: 'session', source: { id: 'terminal', kind: 'terminal' }, proof: 'none' }
+    const entries = await auditEntries(runtime.actions, 200)
+    const call = entries.find(entry => entry.tool === 'fs_write' && entry.event === 'attempt')!
+    const decisions = entries.filter(entry => entry.tool === 'approval_decision')
+    const decision = { token, outcome: 'approve', scope: 'session', source: { id: 'terminal', kind: 'terminal' }, proof: 'none', widening: { kind: 'none' } }
     expect(decisions).toEqual([
       expect.objectContaining({ event: 'attempt', outcome: 'started', workspaceId: runtime.workspaceId, args: decision }),
-      expect.objectContaining({ event: 'result', outcome: 'ok', workspaceId: runtime.workspaceId, args: { ...decision, assurance: 'local', repeated: false, save: 'saved' } }),
+      expect.objectContaining({ event: 'result', outcome: 'ok', workspaceId: runtime.workspaceId, args: { ...decision, assurance: 'local', repeated: false, save: 'saved', call: { requestId: 'write-1', auditId: call.auditId, rule: 'write_scope', subject } } }),
     ])
+    expect(call.requestId).toBe('write-1')
   })
 
   it('records each skip in the workspace\'s own log, beside the decision it gave up the save of', async () => {

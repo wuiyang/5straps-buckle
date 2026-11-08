@@ -30,26 +30,59 @@ function workspaceLog() {
   return { filePath, actions, audit: createLoggedDecisionAudit({ actions, workspaceId: 'w-1' }) }
 }
 
-const DEVICE = { token: 'token-1', approved: true, scope: 'once' as const, source: SOURCES.devices, proof: 'device' as const, decidedBy: 'key:device-1' }
+const NONE = { kind: 'none' as const }
+const DEVICE = { token: 'token-1', approved: true, scope: 'once' as const, source: SOURCES.devices, proof: 'device' as const, decidedBy: 'key:device-1', widen: NONE }
+const CALL = { rule: 'write_scope' as const, subject: '/outside/a.md', attempt: { auditId: 'call-audit-1', requestId: 'write-1' } }
 
 describe('the logged decision audit', () => {
-  it('records a decision as received, then applied, under one auditId in the workspace\'s log', async () => {
+  it('records a decision as received, then applied, under one auditId in the workspace\'s log, naming its widening and the call it answered', async () => {
     const { actions, audit } = workspaceLog()
-    audit.received(DEVICE).applied({ assurance: 'key', repeated: false, save: 'owed' })
+    audit.received(DEVICE).applied({ assurance: 'key', repeated: false, save: 'owed', call: CALL })
 
     const [attempt, result] = await auditEntries(actions, 10)
-    const decision = { token: 'token-1', outcome: 'approve', scope: 'once', source: { id: 'devices', kind: 'devices' }, proof: 'device', decidedBy: 'key:device-1' }
+    const decision = { token: 'token-1', outcome: 'approve', scope: 'once', source: { id: 'devices', kind: 'devices' }, proof: 'device', decidedBy: 'key:device-1', widening: { kind: 'none' } }
     expect(attempt).toMatchObject({ tool: DECISION_TOOL, event: 'attempt', outcome: 'started', workspaceId: 'w-1', workspaceName: 'The site', sessionId: 'approvals', effects: [], args: decision })
-    expect(result).toMatchObject({ tool: DECISION_TOOL, event: 'result', outcome: 'ok', auditId: attempt!.auditId, requestId: attempt!.requestId, args: { ...decision, assurance: 'key', repeated: false, save: 'owed' } })
+    expect(result).toMatchObject({ tool: DECISION_TOOL, event: 'result', outcome: 'ok', auditId: attempt!.auditId, requestId: attempt!.requestId, args: { ...decision, assurance: 'key', repeated: false, save: 'owed', call: { requestId: 'write-1', auditId: 'call-audit-1', rule: 'write_scope', subject: '/outside/a.md' } } })
     expect(DECISION_TOOL).toBe('approval_decision')
+  })
+
+  it('names a widening as it was asked for, then with the subject the grant took in place of the ask\'s own', async () => {
+    const { actions, audit } = workspaceLog()
+    const cli = { approved: true, source: SOURCES.cli, proof: 'none' as const }
+    audit.received({ ...cli, token: 't-below', scope: 'session', widen: { kind: 'below' } }).applied({ assurance: 'local', repeated: false, widenedTo: 'delete-below:/srv/data', call: { rule: 'write_scope', subject: 'delete:/srv/data/a.txt' } })
+    audit.received({ ...cli, token: 't-host', scope: 'always', widen: { kind: 'host', pattern: '*.example.com' } }).applied({ assurance: 'local', repeated: false, widenedTo: '*.example.com', call: { rule: 'network_egress', subject: 'api.example.com' } })
+    audit.received({ ...cli, token: 't-refused', scope: 'session', widen: { kind: 'below' } }).refused({ code: 'scope_not_offered', call: { rule: 'write_scope', subject: '/outside' } })
+
+    const entries = await auditEntries(actions, 10)
+    expect(entries.map(entry => [entry.event, (entry.args as { widening: unknown }).widening])).toEqual([
+      ['attempt', { kind: 'below' }], ['result', { kind: 'below', subject: 'delete-below:/srv/data' }],
+      ['attempt', { kind: 'host', subject: '*.example.com' }], ['result', { kind: 'host', subject: '*.example.com' }],
+      ['attempt', { kind: 'below' }], ['result', { kind: 'below' }],
+    ])
+    expect(entries.filter(entry => entry.event === 'result').map(entry => (entry.args as { call: unknown }).call)).toEqual([
+      { rule: 'write_scope', subject: 'delete:/srv/data/a.txt' }, { rule: 'network_egress', subject: 'api.example.com' }, { rule: 'write_scope', subject: '/outside' },
+    ])
+  })
+
+  it('names the call as the audit keeps subjects: a command line by its executable and its length, a credential hidden, and every id cut to 200 characters', async () => {
+    const { actions, audit } = workspaceLog()
+    const long = 'r'.repeat(5_000)
+    audit.received({ token: 't', approved: true, scope: 'once', source: SOURCES.cli, proof: 'none', widen: NONE }).refused({ code: 'assurance_too_low', call: { rule: 'destructive_command', subject: 'rm -rf /srv/data', attempt: { auditId: 'call-audit-2', requestId: long } } })
+
+    audit.received({ token: 't-2', approved: true, scope: 'session', source: SOURCES.cli, proof: 'none', widen: { kind: 'below' } }).applied({ assurance: 'local', repeated: false, widenedTo: 'delete-below:/w/token=synthetic-value', call: { rule: 'write_scope', subject: 'delete:/w/token=synthetic-value/a.txt' } })
+
+    const entries = await auditEntries(actions, 10)
+    expect((entries[1]!.args as { call: unknown }).call).toEqual({ requestId: 'r'.repeat(200), auditId: 'call-audit-2', rule: 'destructive_command', subject: 'rm [16 characters]' })
+    expect(entries[3]!.args).toMatchObject({ widening: { kind: 'below', subject: 'delete-below:/w/token=[redacted]' }, call: { subject: 'delete:/w/token=[redacted]/a.txt' } })
+    expect(JSON.stringify(entries)).not.toContain('synthetic-value')
   })
 
   it('records a refused decision with its code, and none of the reason, which may name a path', async () => {
     const { actions, audit } = workspaceLog()
-    audit.received({ token: 'token-2', approved: false, scope: 'session', source: SOURCES.cli, proof: 'none' }).refused({ code: 'scope_not_offered' })
+    audit.received({ token: 'token-2', approved: false, scope: 'session', source: SOURCES.cli, proof: 'none', widen: NONE }).refused({ code: 'scope_not_offered' })
 
     const [attempt, result] = await auditEntries(actions, 10)
-    expect(attempt!.args).toEqual({ token: 'token-2', outcome: 'deny', scope: 'session', source: { id: 'cli', kind: 'cli' }, proof: 'none' })
+    expect(attempt!.args).toEqual({ token: 'token-2', outcome: 'deny', scope: 'session', source: { id: 'cli', kind: 'cli' }, proof: 'none', widening: { kind: 'none' } })
     expect(result).toMatchObject({ event: 'result', outcome: 'error', auditId: attempt!.auditId, detail: 'scope_not_offered', args: { ...attempt!.args as object, code: 'scope_not_offered' } })
   })
 
@@ -74,7 +107,7 @@ describe('the logged decision audit', () => {
 
   it('closes a decision that stopped on an error with an error result, so no later process reads it as interrupted', async () => {
     const { actions, audit } = workspaceLog()
-    audit.received({ token: 'token-3', approved: true, scope: 'once', source: SOURCES.terminal, proof: 'none' }).failed()
+    audit.received({ token: 'token-3', approved: true, scope: 'once', source: SOURCES.terminal, proof: 'none', widen: NONE }).failed()
 
     const entries = await auditEntries(actions, 10)
     expect(entries.map(entry => [entry.event, entry.outcome])).toEqual([['attempt', 'started'], ['result', 'error']])
@@ -83,13 +116,13 @@ describe('the logged decision audit', () => {
 
   it('names a configured backend by its kind beside its id, as the guard rates it', async () => {
     const { actions, audit } = workspaceLog()
-    audit.received({ token: 't', approved: false, scope: 'once', source: { id: 'terminal', kind: 'backend' }, proof: 'none' }).refused({ code: 'approver_not_allowed' })
+    audit.received({ token: 't', approved: false, scope: 'once', source: { id: 'terminal', kind: 'backend' }, proof: 'none', widen: NONE }).refused({ code: 'approver_not_allowed' })
     expect((await auditEntries(actions, 10))[0]!.args).toMatchObject({ source: { id: 'terminal', kind: 'backend' } })
   })
 
   it('cuts a token past 200 characters, as every identifier the log keeps', async () => {
     const { actions, audit } = workspaceLog()
-    audit.received({ token: 'x'.repeat(5_000), approved: false, scope: 'once', source: SOURCES.forms, proof: 'none' }).refused({ code: 'unknown_ask' })
+    audit.received({ token: 'x'.repeat(5_000), approved: false, scope: 'once', source: SOURCES.forms, proof: 'none', widen: NONE }).refused({ code: 'unknown_ask' })
     expect((await auditEntries(actions, 10)).map(entry => (entry.args as { token: string }).token)).toEqual(['x'.repeat(200), 'x'.repeat(200)])
   })
 
@@ -97,11 +130,11 @@ describe('the logged decision audit', () => {
     const { actions, audit } = workspaceLog()
     const decisions = [
       DEVICE,
-      { token: 't-cli', approved: true, scope: 'session' as const, source: SOURCES.cli, proof: 'none' as const },
-      { token: 't-terminal', approved: false, scope: 'once' as const, source: SOURCES.terminal, proof: 'none' as const },
-      { token: 't-judge', approved: true, scope: 'once' as const, source: SOURCES.judge, proof: 'none' as const, decidedBy: 'judge:jev' },
-      { token: 't-forms', approved: true, scope: 'once' as const, source: SOURCES.forms, proof: 'none' as const },
-      { token: 't-backend', approved: false, scope: 'once' as const, source: { id: 'pager', kind: 'backend' as const }, proof: 'none' as const },
+      { token: 't-cli', approved: true, scope: 'session' as const, source: SOURCES.cli, proof: 'none' as const, widen: NONE },
+      { token: 't-terminal', approved: false, scope: 'once' as const, source: SOURCES.terminal, proof: 'none' as const, widen: NONE },
+      { token: 't-judge', approved: true, scope: 'once' as const, source: SOURCES.judge, proof: 'none' as const, decidedBy: 'judge:jev', widen: NONE },
+      { token: 't-forms', approved: true, scope: 'once' as const, source: SOURCES.forms, proof: 'none' as const, widen: NONE },
+      { token: 't-backend', approved: false, scope: 'once' as const, source: { id: 'pager', kind: 'backend' as const }, proof: 'none' as const, widen: NONE },
     ]
     for (const decision of decisions) audit.received(decision).refused({ code: 'unknown_ask' })
 
@@ -115,10 +148,10 @@ describe('the logged decision audit', () => {
   it('names an HTTP form answer, and its skip, by the caller its transport authenticated, and one with none by its route', async () => {
     const { actions, audit } = workspaceLog()
     const http = SOURCES['http-forms']
-    audit.received({ token: 't-own', approved: true, scope: 'once', source: http, proof: 'none', caller: 'agent:tok-a' }).refused({ code: 'unknown_ask' })
+    audit.received({ token: 't-own', approved: true, scope: 'once', source: http, proof: 'none', caller: 'agent:tok-a', widen: NONE }).refused({ code: 'unknown_ask' })
     audit.skipReceived({ token: 't-own', source: http, caller: 'agent:tok-a' }).refused({ code: 'unknown_ask' })
-    audit.received({ token: 't-none', approved: true, scope: 'once', source: http, proof: 'none' }).refused({ code: 'unknown_ask' })
-    audit.received({ token: 't-stdio', approved: true, scope: 'once', source: SOURCES.forms, proof: 'none', caller: 'mcp-stdio' }).refused({ code: 'unknown_ask' })
+    audit.received({ token: 't-none', approved: true, scope: 'once', source: http, proof: 'none', widen: NONE }).refused({ code: 'unknown_ask' })
+    audit.received({ token: 't-stdio', approved: true, scope: 'once', source: SOURCES.forms, proof: 'none', caller: 'mcp-stdio', widen: NONE }).refused({ code: 'unknown_ask' })
 
     const attempts = (await auditEntries(actions, 20)).filter(entry => entry.event === 'attempt')
     expect(attempts.map(entry => [entry.actorId, (entry.args as { source: unknown }).source])).toEqual([
@@ -131,10 +164,10 @@ describe('the logged decision audit', () => {
     const appended: Array<{ event: string; outcome: string; untrusted: boolean }> = []
     const audit = createLoggedDecisionAudit({ actions: { append: (entry, options) => { appended.push({ event: entry.event ?? 'none', outcome: entry.outcome ?? 'none', untrusted: options?.untrusted === true }) } }, workspaceId: 'w-1' })
     const http = SOURCES['http-forms']
-    audit.received({ token: 't-1', approved: true, scope: 'always', source: http, proof: 'none', caller: 'agent:tok-a' }).refused({ code: 'assurance_too_low' })
+    audit.received({ token: 't-1', approved: true, scope: 'always', source: http, proof: 'none', caller: 'agent:tok-a', widen: NONE }).refused({ code: 'assurance_too_low' })
     audit.skipReceived({ token: 't-2', source: http, caller: 'agent:tok-a' }).refused({ code: 'unknown_ask' })
-    audit.received({ token: 't-3', approved: true, scope: 'once', source: http, proof: 'none', caller: 'agent:tok-a' }).applied({ assurance: 'relayed', repeated: false })
-    audit.received({ token: 't-4', approved: false, scope: 'session', source: SOURCES.cli, proof: 'none' }).refused({ code: 'scope_not_offered' })
+    audit.received({ token: 't-3', approved: true, scope: 'once', source: http, proof: 'none', caller: 'agent:tok-a', widen: NONE }).applied({ assurance: 'relayed', repeated: false })
+    audit.received({ token: 't-4', approved: false, scope: 'session', source: SOURCES.cli, proof: 'none', widen: NONE }).refused({ code: 'scope_not_offered' })
 
     const given = (event: string, outcome: string, untrusted: boolean) => ({ event, outcome, untrusted })
     expect(appended).toEqual([

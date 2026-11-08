@@ -147,7 +147,7 @@ describe('the log service', () => {
     const refuse = (count: number) => {
       for (const index of range(0, count)) recordRefusal(log, { tool: 'rpc_invoke_rejected', workspaceId: 'w-1', sessionId: 'rpc-untrusted', status: 400, detail: `refusal ${index}` })
     }
-    createLoggedDecisionAudit({ actions: log, workspaceId: 'w-1' }).received({ token: 't-1', approved: true, scope: 'session', source: SOURCES.cli, proof: 'none' }).applied({ assurance: 'local', repeated: false, save: 'saved' })
+    createLoggedDecisionAudit({ actions: log, workspaceId: 'w-1' }).received({ token: 't-1', approved: true, scope: 'session', source: SOURCES.cli, proof: 'none', widen: { kind: 'none' } }).applied({ assurance: 'local', repeated: false, save: 'saved' })
     refuse(100)
     // Past the write deadline, the stalled batch may give up entries too.
     await delay(1_200)
@@ -173,7 +173,7 @@ describe('the log service', () => {
     faulty.stall()
     log.append(entry('held'))
     await tick()
-    createLoggedDecisionAudit({ actions: log, workspaceId: 'w-1' }).received({ token: 't-1', approved: true, scope: 'session', source: SOURCES.cli, proof: 'none' }).applied({ assurance: 'local', repeated: false, save: 'saved' })
+    createLoggedDecisionAudit({ actions: log, workspaceId: 'w-1' }).received({ token: 't-1', approved: true, scope: 'session', source: SOURCES.cli, proof: 'none', widen: { kind: 'none' } }).applied({ assurance: 'local', repeated: false, save: 'saved' })
     for (const index of range(0, 40)) {
       recordRefusal(log, { tool: 'rpc_invoke_rejected', workspaceId: 'w-1', sessionId: 'rpc-untrusted', status: 401, detail: `refusal ${index}` })
       answer(401)

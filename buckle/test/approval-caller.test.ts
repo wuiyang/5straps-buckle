@@ -156,13 +156,13 @@ describe('the caller in the ledger', () => {
   it('refuses another caller\'s HTTP form answer under the lock and leaves the ask waiting, then lets its own caller\'s once through and its repeat', async () => {
     const { registry, askBy } = ledger()
     const token = await askBy('agent:a')
-    expect(await registry.resolve(decision(token), HTTP, { caller: 'agent:b' })).toEqual({ ...ANOTHER_CALLER })
-    expect(await registry.resolve(decision(token, 'once', false), HTTP, { caller: 'agent:b' })).toEqual({ ...ANOTHER_CALLER })
+    expect(await registry.resolve(decision(token), HTTP, { caller: 'agent:b' })).toMatchObject(ANOTHER_CALLER)
+    expect(await registry.resolve(decision(token, 'once', false), HTTP, { caller: 'agent:b' })).toMatchObject(ANOTHER_CALLER)
     expect(registry.pending().map(asked => asked.token)).toEqual([token])
 
     expect(await registry.resolve(decision(token), HTTP, { caller: 'agent:a' })).toMatchObject({ ok: true })
     expect(registry.unspent('s')).toEqual([expect.objectContaining({ tool: 'fs_write', actor: 'agent:a' })])
-    expect(await registry.resolve(decision(token), HTTP, { caller: 'agent:b' })).toEqual({ ...ANOTHER_CALLER })
+    expect(await registry.resolve(decision(token), HTTP, { caller: 'agent:b' })).toMatchObject(ANOTHER_CALLER)
     expect(await registry.resolve(decision(token), HTTP, { caller: 'agent:a' })).toMatchObject({ ok: true, repeated: true })
   })
 
@@ -170,7 +170,7 @@ describe('the caller in the ledger', () => {
     const { store, registry, askBy } = ledger({ failingGrants: 1 })
     const token = await askBy('agent:a')
     expect(await registry.resolve(decision(token, 'session'), SOURCES.cli)).toMatchObject({ ok: true, save: 'owed' })
-    expect(await registry.skipSave({ token, source: HTTP, caller: 'agent:b' })).toEqual({ ...ANOTHER_CALLER })
+    expect(await registry.skipSave({ token, source: HTTP, caller: 'agent:b' })).toMatchObject(ANOTHER_CALLER)
     expect(await registry.skipSave({ token, source: HTTP, caller: 'agent:a' })).toMatchObject({ ok: false, code: 'approver_not_allowed', reason: 'cli recorded this decision, so only it may skip its save' })
     await registry.recover()
     expect(store.list()).toEqual([expect.objectContaining({ subject: '/outside/a', scope: 'session', actor: 'agent:a' })])
@@ -179,7 +179,7 @@ describe('the caller in the ledger', () => {
   it('lets an HTTP form answer decide its own caller\'s ask for the session, writing the grant for that caller, and refuses another caller\'s', async () => {
     const { store, registry, askBy } = ledger()
     const token = await askBy('agent:a')
-    expect(await registry.resolve(decision(token, 'session'), HTTP, { caller: 'agent:b' })).toEqual({ ...ANOTHER_CALLER })
+    expect(await registry.resolve(decision(token, 'session'), HTTP, { caller: 'agent:b' })).toMatchObject(ANOTHER_CALLER)
     expect(store.list()).toEqual([])
     expect(await registry.resolve(decision(token, 'session'), HTTP, { caller: 'agent:a' })).toMatchObject({ ok: true, save: 'saved' })
     expect(store.list()).toEqual([expect.objectContaining({ subject: '/outside/a', scope: 'session', actor: 'agent:a' })])

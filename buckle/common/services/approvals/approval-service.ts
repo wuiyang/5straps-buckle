@@ -9,7 +9,8 @@ import { MAX_TIMER_MS, remainingMs } from '../../domain/approval/expiry.js'
 import { reachOf, rightsOf } from '../../domain/approval/assurance.js'
 import type { AnswerSender, ApprovalBackend, ApprovalHold, ApprovalHost, DecisionBody, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent, SkipReceipt } from '../../types/ports/approval-backend.js'
 import { FORMS_SOURCES, SOURCES, type ApprovalSource, type FormsFace } from '../../types/ports/approval-source.js'
-import type { DecisionAudit, DecisionEnding, DecisionProofKind, SessionEndCause } from '../../types/ports/decision-audit.js'
+import type { CallAttempt } from '../../types/ports/action-log.js'
+import type { AuditedWidening, DecisionAudit, DecisionEnding, DecisionProofKind, SessionEndCause } from '../../types/ports/decision-audit.js'
 import type { SessionEnding } from '../../types/ports/grant-store.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
@@ -73,6 +74,8 @@ export interface ApprovalAskInput {
   fingerprint?: string
   /** The whole call as the node's signed challenge shows it (owner decisions D9 and D17): redacted arguments, their directory, the node's description and the judged effects. */
   call?: AskedCall
+  /** The asking call's attempt entry, which each decision on its asks names. */
+  attempt?: CallAttempt
 }
 
 /**
@@ -295,7 +298,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const key = joinKey({ ...input, actor })
       const ownHold = holdFor({ hold, graceMs: options.graceMs, hint: input.wait })
       // The hold the asks are recorded with: an ask that states no deadline lapses ten minutes after it where the face sends the call again (the MCP asks brief, item 5).
-      const issued = await options.registry.ask({ tool: input.tool, sessionId: input.sessionId, asks: input.asks, requestId: input.requestId, waitMs: askLifetime(options.graceMs, input.wait), ...(input.resends ? { holdMs: ownHold } : {}), ...(actor === undefined ? {} : { actor }), ...(input.fingerprint === undefined ? {} : { fingerprint: input.fingerprint }), ...(input.call === undefined ? {} : { call: input.call }) })
+      const issued = await options.registry.ask({ tool: input.tool, sessionId: input.sessionId, asks: input.asks, requestId: input.requestId, waitMs: askLifetime(options.graceMs, input.wait), ...(input.resends ? { holdMs: ownHold } : {}), ...(actor === undefined ? {} : { actor }), ...(input.fingerprint === undefined ? {} : { fingerprint: input.fingerprint }), ...(input.call === undefined ? {} : { call: input.call }), ...(input.attempt === undefined ? {} : { attempt: input.attempt }) })
       const { requests: approvals, answered } = issued
       if (issued.evicted?.length) notices.cancelled(issued.evicted)
       if (issued.lapsesAt !== undefined) scheduleSweepAt(issued.lapsesAt)
@@ -355,7 +358,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const recording = Promise.withResolvers<void>()
       for (const ask of asks) ask.deciding = recording.promise
       try {
-        const received = options.decisionAudit.received({ token: input.decision.token, approved: input.decision.approved, scope: input.decision.scope, source: input.source, proof: input.proof ?? 'none', ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }), ...(input.caller === undefined ? {} : { caller: input.caller }) })
+        const received = options.decisionAudit.received({ token: input.decision.token, approved: input.decision.approved, scope: input.decision.scope, source: input.source, proof: input.proof ?? 'none', widen: widenOf(input), ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }), ...(input.caller === undefined ? {} : { caller: input.caller }) })
         let result: Resolution
         try {
           result = await options.registry.resolve(input.decision, input.source, {
@@ -611,7 +614,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     if (routed.has(body.token)) return decideAs({ source, body })
     const decision = decisionOf(body)
     const result: Resolution = { ok: false, code: 'approver_not_allowed', reason: 'This ask was not routed to the terminal' }
-    endDecision({ received: options.decisionAudit.received({ token: body.token, approved: decision.approved, scope: body.scope, source, proof: 'none' }), source, result })
+    endDecision({ received: options.decisionAudit.received({ token: body.token, approved: decision.approved, scope: body.scope, source, proof: 'none', widen: widenOf(body) }), source, result })
     return backendReceipt(receiptOf({ answer: { decision, source }, result }))
   }
 
@@ -814,11 +817,25 @@ async function announce(notify: ApprovalServiceOptions['announce'], requests: Ap
   }
 }
 
-/** Tells a received decision's audit how the guard and the ledger ended it, rated as the guard rates its source. */
+/** The widening an answer asks for, as its audit names it: a host pattern, the ask's wider subject, or none. */
+function widenOf(input: Pick<ApprovalAnswer, 'widen' | 'widenTo'>): AuditedWidening {
+  if (input.widenTo !== undefined) return { kind: 'host', pattern: input.widenTo }
+  return input.widen === 'below' ? { kind: 'below' } : { kind: 'none' }
+}
+
+/**
+ * Tells a received decision's audit how the guard and the ledger ended it, rated as the guard rates its source, with the
+ * subject a widened grant took and the call the ledger's ask came from, where it read one.
+ */
 function endDecision(input: { received: DecisionEnding; source: ApprovalSource; result: Resolution }): void {
   const { received, result } = input
-  if (result.ok) received.applied({ assurance: rightsOf(input.source.kind).assurance, repeated: result.repeated === true, ...(result.save === undefined ? {} : { save: result.save }) })
-  else received.refused({ code: result.code })
+  const answered = result.asked === undefined ? {} : { call: { ...result.asked, ...(result.attempt === undefined ? {} : { attempt: result.attempt }) } }
+  if (!result.ok) {
+    received.refused({ code: result.code, ...answered })
+    return
+  }
+  const widenedTo = result.granted ?? result.widened?.pattern
+  received.applied({ assurance: rightsOf(input.source.kind).assurance, repeated: result.repeated === true, ...(result.save === undefined ? {} : { save: result.save }), ...(widenedTo === undefined ? {} : { widenedTo }), ...answered })
 }
 
 /** How an ask that left the queue ended; one another process dropped is expired past its stated expiry, else cancelled. */

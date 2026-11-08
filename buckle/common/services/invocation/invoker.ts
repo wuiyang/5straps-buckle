@@ -19,7 +19,7 @@ import { announcePass, judgeAuditOf, judgeNotes, withJudgeReason, type JudgedAsk
 import { AUDIT_UNAVAILABLE, AuditUnavailableError } from '../../adapters/action-log/file-action-log.js'
 import type { ToolRegistry } from '../../domain/tool-registry.js'
 import { CODE_REPLAY_DIVERGED, LockWaitError, NestedApprovalRequired, ScriptEndedError, ToolExecutionError, ToolInputError, type FileChannel, type NestedCall, type NetworkVerdict, type PreparedCall, type RegisteredTool, type ToolContext } from '../../domain/tool.js'
-import type { ActionLog, ActionLogEntry, GrantUse } from '../../types/ports/action-log.js'
+import type { ActionLog, ActionLogEntry, CallAttempt, GrantUse } from '../../types/ports/action-log.js'
 import type { GrantHolder } from '../../domain/permission/grant-holder.js'
 import type { Reporter } from '../../types/ports/reporter.js'
 import { logger } from '../../runtime/log.js'
@@ -216,8 +216,11 @@ export function createInvoker(options: InvokerOptions): Invoker {
           return feedback
         }
         const auditId = randomUUID()
+        const started = attemptEntry({ auditId, workspaceId: options.workspaceId, request, sessionId, via })
         // A required audit write that fails stops the call here, before anything runs (data.md).
-        await options.actions.record(attemptEntry({ auditId, workspaceId: options.workspaceId, request, sessionId, via }))
+        await options.actions.record(started)
+        // Each decision on this call's asks names this entry, so the log joins the decision to the call.
+        const attempt: CallAttempt = { auditId, requestId: started.requestId }
         let effects: ResolvedEffect[] = []
         // What the tool's result entry keeps as it is (ToolDefinition.audited), once the call is prepared.
         let audited: PreparedCall['audited']
@@ -286,7 +289,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
 
             // A tool that takes the write lock itself runs its program in a copy of the workspace's folder (the isolated shell).
             const fromCopy = prepared.managesHistory === true
-            gate = await clearPermissions({ options, request, sessionId, holder, effects, fromCopy, signal, isCancel, approvalWait, holdUntil, key, held, judgment, via, ...(scriptRun ? { scriptRun } : {}), ...(deleteRun ? { deleteRun } : {}), ...(onAsked ? { onAsked } : {}), ...(resends ? { resends } : {}), ...(prepared.facts ? { facts: prepared.facts } : {}) })
+            gate = await clearPermissions({ options, request, sessionId, holder, effects, fromCopy, signal, isCancel, approvalWait, holdUntil, key, held, judgment, via, attempt, ...(scriptRun ? { scriptRun } : {}), ...(deleteRun ? { deleteRun } : {}), ...(onAsked ? { onAsked } : {}), ...(resends ? { resends } : {}), ...(prepared.facts ? { facts: prepared.facts } : {}) })
             // A script's call whose ask was recorded only as its script ended, behind a slow approvals lock, is still an
             // ask: it answers approval_required, which the pack hands back, never the script's end (re-check of round 2,
             // finding deadline-announce invoker.ts:175).
@@ -368,7 +371,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
             // The code a pass rated changed before the program started: nothing ran, so the claim is settled unstarted (a
             // re-send asks again) and the asks the passes lifted go to a person with the reason (fix brief 9, B31).
             if (error instanceof CodeChangedError && !ran && !options.shutdown?.aborted) {
-              const after = await askAfterChange({ options, request, sessionId, holder, effects, judgment, subjects: error.subjects, key, via, ...(signal ? { signal } : {}), ...(isCancel ? { isCancel } : {}), ...(onAsked ? { onAsked } : {}), ...(resends ? { resends } : {}) })
+              const after = await askAfterChange({ options, request, sessionId, holder, effects, judgment, subjects: error.subjects, key, via, attempt, ...(signal ? { signal } : {}), ...(isCancel ? { isCancel } : {}), ...(onAsked ? { onAsked } : {}), ...(resends ? { resends } : {}) })
               const lifted = new Set(error.subjects.map(subject => `${JUDGE}:destructive_command:${subject}`))
               gate = { ...gate, asked: after.asked, approvedBy: gate.approvedBy.filter(item => !lifted.has(item)) }
               return after.response
@@ -715,6 +718,8 @@ async function clearPermissions(input: {
   held: { claim?: ExecutionClaim }
   judgment: Judgment
   via?: NestedOrigin
+  /** The call's attempt entry, which its asks keep for the decisions on them to name. */
+  attempt: CallAttempt
   /** For a call a script made: what the script removed before it, which the call is judged with and added to once cleared. */
   deleteRun?: DeleteRun
   /** What the tool settled before the rules judged the call, which its description names (PreparedCall.facts). */
@@ -818,7 +823,7 @@ async function clearPermissions(input: {
   input.onAsked?.()
   const asking = () => options.approvals.ask({
     sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: outcome.asks.map(ask => withStaleReason(withJudgeReason(ask, input.judgment.judged), input.judgment.stale)), signal: input.signal, ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait,
-    ...(input.holdUntil === undefined ? {} : { holdUntil: input.holdUntil }), ...(input.resends ? { resends: true } : {}), fingerprint: input.key.fingerprint, call,
+    ...(input.holdUntil === undefined ? {} : { holdUntil: input.holdUntil }), ...(input.resends ? { resends: true } : {}), fingerprint: input.key.fingerprint, call, attempt: input.attempt,
   })
   const waited = await (input.scriptRun ? input.scriptRun.paused(asking) : asking())
   // A re-send joined to asks already answered has none still waiting: it is told what it asked.
@@ -902,6 +907,7 @@ async function askAfterChange(input: {
   signal?: AbortSignal
   isCancel?: (reason: unknown) => boolean
   via?: NestedOrigin
+  attempt: CallAttempt
   onAsked?: () => void
   resends?: boolean
 }): Promise<{ response: InvokeResponse; asked: string[] }> {
@@ -922,7 +928,7 @@ async function askAfterChange(input: {
   input.onAsked?.()
   const waited = await options.approvals.ask({
     sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: asks.map(ask => withStaleReason(withJudgeReason(ask, judgment.judged), judgment.stale)),
-    ...(input.signal ? { signal: input.signal } : {}), ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait: { mode: 'none' }, ...(input.resends ? { resends: true } : {}), fingerprint: input.key.fingerprint, call,
+    ...(input.signal ? { signal: input.signal } : {}), ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait: { mode: 'none' }, ...(input.resends ? { resends: true } : {}), fingerprint: input.key.fingerprint, call, attempt: input.attempt,
   })
   return { response: { requestId: request.requestId, outcome: 'approval_required', approvals: waited.approvals }, asked: waited.approvals.map(approval => `${approval.rule}:${approval.subject}`) }
 }

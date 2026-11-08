@@ -1,9 +1,13 @@
-import type { GrantScope } from '@5straps/protocol'
+import type { GrantScope, PermissionRuleId } from '@5straps/protocol'
+import type { CallAttempt } from './action-log.js'
 import type { ApprovalErrorCode, GrantSave } from './approval-backend.js'
 import type { ApprovalSource, Assurance } from './approval-source.js'
 
 /** What carried a decision: nothing beyond its route, a device's signed request, or the envelope the paired key sealed. */
 export type DecisionProofKind = 'none' | 'device' | 'envelope'
+
+/** The widening an answer asked for: none, the ask's wider subject (`below`), or a host pattern `buckle approve --host` sent. */
+export type AuditedWidening = { kind: 'none' } | { kind: 'below' } | { kind: 'host'; pattern: string }
 
 /**
  * A decision as its audit entries name it; `decidedBy` names the key that signed a device's decision, or the judge that
@@ -15,9 +19,13 @@ export interface AuditedDecision {
   scope: GrantScope
   source: ApprovalSource
   proof: DecisionProofKind
+  widen: AuditedWidening
   decidedBy?: string
   caller?: string
 }
+
+/** The call a decision answered, as the ledger held its ask: the rule and subject asked about, and the call's attempt entry where the ask kept it. */
+export interface AnsweredCall { rule: PermissionRuleId; subject: string; attempt?: CallAttempt }
 
 /** A skip of an approval's save, as its audit entries name it. */
 export interface AuditedSkip {
@@ -27,15 +35,21 @@ export interface AuditedSkip {
 }
 
 /** How a received answer ended, told once. */
-export interface AuditEnding<Applied> {
+export interface AuditEnding<Applied, Refused = { code: ApprovalErrorCode }> {
   applied(outcome: Applied): void
-  refused(refusal: { code: ApprovalErrorCode }): void
+  refused(refusal: Refused): void
   /** The answer stopped on an error before the ledger said how it ended. */
   failed(): void
 }
 
-/** `save`: where the lasting grant of a session or always approval stands once the answer applied. */
-export type DecisionEnding = AuditEnding<{ assurance: Assurance; repeated: boolean; save?: GrantSave }>
+/**
+ * `save`: where the lasting grant of a session or always approval stands once the answer applied; `widenedTo`: the subject
+ * the grant took in place of the ask's own; `call`: the call it answered, where the ledger held its ask, a refusal's too.
+ */
+export type DecisionEnding = AuditEnding<
+  { assurance: Assurance; repeated: boolean; save?: GrantSave; widenedTo?: string; call?: AnsweredCall },
+  { code: ApprovalErrorCode; call?: AnsweredCall }
+>
 /** `repeated`: the save was skipped already; `removed`: its grant had saved and is gone; `unfinished`: its removal is not confirmed. */
 export type SkipEnding = AuditEnding<{ repeated: boolean; removed: boolean; unfinished?: true }>
 

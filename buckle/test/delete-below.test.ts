@@ -157,7 +157,7 @@ describe('the approval queue', () => {
     expect(await registry.resolve(decision, SOURCES.cli)).toEqual({ ok: true, asked: { rule: 'write_scope', subject: `delete:${MOUNT}/reports` }, granted: `delete-below:${MOUNT}/reports`, save: 'saved' })
     expect(grants.list()).toMatchObject([{ rule: 'write_scope', subject: `delete-below:${MOUNT}/reports`, scope: 'session', sessionId: 's1' }])
     expect(await registry.resolve(decision, SOURCES.cli)).toMatchObject({ ok: true, repeated: true })
-    expect(await registry.resolve({ ...decision, subject: undefined }, SOURCES.cli)).toEqual({ ok: false, code: 'conflicting_decision', reason: 'Approval already has a different decision' })
+    expect(await registry.resolve({ ...decision, subject: undefined }, SOURCES.cli)).toEqual({ ok: false, code: 'conflicting_decision', reason: 'Approval already has a different decision', asked: { rule: 'write_scope', subject: `delete:${MOUNT}/reports` } })
   })
 
   it('grants the ask\'s own subject where the decision names none, or names it', async () => {
@@ -176,7 +176,7 @@ describe('the approval queue', () => {
   ] as const)('refuses %o, granting nothing', async (decision, code, reason) => {
     const { registry, grants } = queue()
     const [request] = (await registry.ask({ tool: 'fs_delete', sessionId: 's1', asks: [WIDE], call: CALL })).requests
-    expect(await registry.resolve({ token: request!.token, ...decision }, SOURCES.cli)).toEqual({ ok: false, code, reason })
+    expect(await registry.resolve({ token: request!.token, ...decision }, SOURCES.cli)).toEqual({ ok: false, code, reason, asked: { rule: 'write_scope', subject: `delete:${MOUNT}/reports` } })
     expect(grants.list()).toEqual([])
     expect(registry.pending()).toHaveLength(1)
   })
@@ -186,7 +186,7 @@ describe('the approval queue', () => {
     const { widerSubject: _none, ...narrow } = WIDE
     const [request] = (await registry.ask({ tool: 'fs_delete', sessionId: 's1', asks: [narrow], call: CALL })).requests
     expect(request).not.toHaveProperty('widerSubject')
-    expect(await registry.resolve({ token: request!.token, approved: true, scope: 'session', subject: `delete-below:${MOUNT}/reports` }, SOURCES.cli)).toEqual({ ok: false, code: 'scope_not_offered', reason: `This ask grants delete:${MOUNT}/reports, not delete-below:${MOUNT}/reports` })
+    expect(await registry.resolve({ token: request!.token, approved: true, scope: 'session', subject: `delete-below:${MOUNT}/reports` }, SOURCES.cli)).toEqual({ ok: false, code: 'scope_not_offered', reason: `This ask grants delete:${MOUNT}/reports, not delete-below:${MOUNT}/reports`, asked: { rule: 'write_scope', subject: `delete:${MOUNT}/reports` } })
   })
 })
 

@@ -32,6 +32,9 @@ export type JudgeAudit =
   | ({ provider: string; model: string; unavailable: string; passed: false; quick?: QuickAudit } & JudgeMarks)
   | ({ quick: QuickAudit; passed: boolean } & JudgeMarks)
 
+/** A call's attempt entry, by its auditId and the requestId it logged: what a later record names to join that call. */
+export interface CallAttempt { auditId: string; requestId: string }
+
 /** One attempted tool call, recorded whether it ran, was gated, or failed. */
 export interface ActionLogEntry {
   /**
