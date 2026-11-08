@@ -253,15 +253,13 @@ async function record(context: AskContext, decision: DecisionBody): Promise<Save
   }
   if (unsaved === undefined) return undefined
   const { token } = decision
-  // The core approval API, as buckle approve holds it.
-  const api = context.approvals
   const ending = await settleUnsaved({
     decision, unsaved,
     route: {
       ask: asked => askSave(context, asked),
-      retry: () => api.decide({ source: 'cli', decision }),
-      skipSave: () => api.skipSave({ source: 'cli', token }),
-      denyOnce: () => api.decide({ source: 'cli', decision: { token, outcome: 'deny', scope: 'once' } }),
+      retry: () => context.approvals.decide({ source: 'cli', decision }),
+      skipSave: () => context.approvals.skipSave({ source: 'cli', token }),
+      denyOnce: () => context.approvals.decide({ source: 'cli', decision: { token, outcome: 'deny', scope: 'once' } }),
     },
   })
   context.output.write(`  ${saveEndingLine(ending)}\n`)

@@ -4,10 +4,13 @@ import { describe, expect, expectTypeOf, it } from 'vitest'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { PACKAGE_ROOT, sourceFiles } from './support/sources.js'
 
-// The registry's `resolve` records a verdict, and `skipSave` a skip; it is reached as `approvals` on the runtime or `registry`
-// in the service.
-const RESOLVES_ON_REGISTRY = /\b(?:approvals|registry)\??\.(?:resolve|skipSave)\(/
+// A module holds the registry only by importing its type or its factory, under whatever name it then gives it.
+const HOLDS_THE_REGISTRY = /^import\b[^\n]*\b(?:ApprovalRegistry|ApprovalLedger|createApprovalRegistry)\b/m
+// The registry's `resolve` records a verdict and `skipSave` a skip; Promise.resolve and a resolver's `resolve()` are neither.
+const RECORDS_ON_THE_REGISTRY = /(?<!\bPromise)\.(?:resolve\((?!\))|skipSave\()/
 const SERVICE = 'common/services/approvals/approval-service.ts'
+// Every module that may hold the registry besides the registry: the service, the gate, the webhook notices, and the runtime.
+const REGISTRY_HOLDERS = ['common/services/approvals/approval-gate.ts', 'common/services/approvals/approval-notices.ts', SERVICE, 'common/services/workspaces/workspace-runtime.ts']
 // The registry's `evaluate` spends a `once` and claims the execution; the approval gate reaches it as `ledger`.
 const EVALUATES_ON_REGISTRY = /\b(?:approvals|registry|ledger)\??\.evaluate\(/
 const GATE = 'common/services/approvals/approval-gate.ts'
@@ -78,11 +81,15 @@ const importing = (paths: string[], target: RegExp): string[] => sourceFiles(...
 
 // Ruling 4 of 2026-09-28: the approval service is the single answerer (review L8).
 describe('the approval boundary', () => {
-  it('lets only the approval service record a verdict or a skip on the registry', () => {
-    const callers = sourceFiles('main.ts', 'common', 'cli', 'mcp', 'server', 'layers')
-      .filter(file => RESOLVES_ON_REGISTRY.test(readFileSync(file, 'utf8')))
+  it('lets only the approval service record a verdict or a skip: of the modules that may hold the registry, it alone calls resolve or skipSave', () => {
+    const holders = sourceFiles('main.ts', 'common', 'cli', 'mcp', 'server', 'layers')
+      .filter(file => HOLDS_THE_REGISTRY.test(readFileSync(file, 'utf8')))
       .map(file => relative(PACKAGE_ROOT, file))
-    expect(callers).toEqual([SERVICE])
+      .filter(file => file !== REGISTRY)
+    expect(holders.sort()).toEqual([...REGISTRY_HOLDERS].sort())
+    expect(holders.filter(file => RECORDS_ON_THE_REGISTRY.test(readFileSync(join(PACKAGE_ROOT, file), 'utf8')))).toEqual([SERVICE])
+    expect(RECORDS_ON_THE_REGISTRY.test('const ledger = registry; await ledger.resolve(decision, source)')).toBe(true)
+    expect(RECORDS_ON_THE_REGISTRY.test('await Promise.resolve(); ask.settled.resolve()')).toBe(false)
   })
 
   it('lets only the approval gate spend a once and claim a call on the registry', () => {
