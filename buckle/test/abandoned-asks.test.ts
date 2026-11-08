@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InvokeRequest } from '@5straps/protocol'
 import { APPROVAL_NO_DEADLINE } from '@5straps/protocol'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { APPROVAL_OUTBOX_COUNT_MAX, APPROVAL_OUTBOX_RETENTION_MS, createApprovalRegistry, MAX_PENDING_BYTES_PER_ACTOR, MAX_PENDING_BYTES_PER_SESSION, MAX_PENDING_PER_SESSION, MAX_PENDING_PER_WORKSPACE } from '../common/services/approvals/approval-registry.js'
 
@@ -12,7 +12,7 @@ import { createRuntime, type BuckleRuntime } from '../common/services/workspaces
 import { fixedInteraction, approvalServiceWithTerminal } from './support/interaction.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
-import { auditEntries } from './support/action-log-writer.js'
+import { auditEntries, startActionLogWriter } from './support/action-log-writer.js'
 
 // The MCP asks brief, item 5: a call whose caller left before its hold ended did not run, and its audit entry says so in a
 // code of its own; its ask is marked abandoned, stays answerable for the join window, and makes room under the caps.
@@ -29,6 +29,8 @@ const write = (requestId: string, path = 'one/a.md'): InvokeRequest => ({ reques
 
 const MINUTE = 60_000
 
+// The writer's thread starts on its first write, which the first call's wait for its ask would otherwise include.
+beforeAll(startActionLogWriter)
 afterEach(() => { vi.useRealTimers() })
 
 /** Moves the wall clock the asks' expiries are read on, and nothing else, so the node's own timers keep running. */
