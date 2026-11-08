@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { isSqliteBusy, openDatabase, rawConnection, type SqliteDatabase } from '@5straps/runtime/sqlite'
 import { join } from 'pathe'
+import { SESSION_IDLE_BOUNDS } from '../../domain/approval/session-idle.js'
 import type { GrantHolder } from '../../domain/permission/grant-holder.js'
 import { logger } from '../../runtime/log.js'
 
@@ -18,14 +19,20 @@ const UNPERSISTED = 'History activity could not be persisted; turn grouping may 
 const UNTOUCHED = 'Session activity could not be recorded; the session may end at idle sooner than its window'
 // A session is its id under its actor; one no actor asked in is kept under ''.
 const TOUCH_SESSION = 'INSERT INTO sessions (session, actor, at) VALUES (?, ?, ?) ON CONFLICT(session, actor) DO UPDATE SET at = max(at, excluded.at)'
-/** The sessions whose activity the store keeps, newest first; an older one reads as idle, as one never seen does. */
-const SESSIONS_KEPT = 4096
+/** The session ids whose turns the store keeps, newest first. */
+const TURNS_KEPT = 4096
+/**
+ * The sessions each actor keeps activity for, newest first, so no caller's new session ids push out another's; an older
+ * one reads as idle, as one never seen does.
+ */
+const SESSIONS_KEPT_PER_ACTOR = 4096
 
 /**
  * Each session id's newest call start or end, for turn grouping, and each session's own row, its id under its actor, which
  * its calls' starts and ends, its asks, and its decisions touch: the session's last activity, which the idle check reads.
  */
-export async function openHistoryActivity(directory: string) {
+export async function openHistoryActivity(directory: string, options: { sessionsKept?: number } = {}) {
+  const sessionsKept = options.sessionsKept ?? SESSIONS_KEPT_PER_ACTOR
   const memory = new Map<string, Activity>()
   const active = new Map<string, Map<string | null, { turn: string; count: number }>>()
   let database: SqliteDatabase | undefined
@@ -52,6 +59,12 @@ export async function openHistoryActivity(directory: string) {
     connection.prepare(TOUCH_SESSION).run(holder.sessionId, holder.actor ?? '', at)
   }
 
+  /** Drops every row older than the longest idle window, idle under any, and the holder's actor's own past its newest kept. */
+  function pruneSessions(connection: NonNullable<typeof db>, holder: GrantHolder, at: number): void {
+    connection.prepare('DELETE FROM sessions WHERE at < ?').run(at - SESSION_IDLE_BOUNDS.max)
+    connection.prepare('DELETE FROM sessions WHERE rowid IN (SELECT rowid FROM sessions WHERE actor = ? ORDER BY at DESC LIMIT -1 OFFSET ?)').run(holder.actor ?? '', sessionsKept)
+  }
+
   /** A call's turn; `holder`, the session a call starts in, which counts as its activity, where a call starts. */
   function observe(input: { session: string; holder?: GrantHolder; at: number; stage?: string; idleMs: number; knownTurn?: string; fallback?: Activity }): string {
     const choose = (previous: Activity | undefined): Activity => {
@@ -68,8 +81,8 @@ export async function openHistoryActivity(directory: string) {
         next = choose(previous ?? input.fallback)
         db.prepare('INSERT INTO activity (session, at, turn, stage) VALUES (?, ?, ?, ?) ON CONFLICT(session) DO UPDATE SET at = excluded.at, turn = excluded.turn, stage = excluded.stage').run(input.session, next.at, next.turn, next.stage)
         if (input.holder) touchSession(db, input.holder, input.at)
-        db.exec(`DELETE FROM activity WHERE session IN (SELECT session FROM activity ORDER BY at DESC LIMIT -1 OFFSET ${SESSIONS_KEPT})`)
-        if (input.holder) db.exec(`DELETE FROM sessions WHERE rowid IN (SELECT rowid FROM sessions ORDER BY at DESC LIMIT -1 OFFSET ${SESSIONS_KEPT})`)
+        db.exec(`DELETE FROM activity WHERE session IN (SELECT session FROM activity ORDER BY at DESC LIMIT -1 OFFSET ${TURNS_KEPT})`)
+        if (input.holder) pruneSessions(db, input.holder, input.at)
         db.exec('COMMIT')
       } catch (error) { db.exec('ROLLBACK'); throw error }
       warned.clear()

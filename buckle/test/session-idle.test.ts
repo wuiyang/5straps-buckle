@@ -197,6 +197,28 @@ describe('the activity store', () => {
     await activity.close()
   })
 
+  it('keeps another actor\'s session however many new session ids one actor opens, dropping that actor\'s own oldest past its cap', async () => {
+    const directory = scratch()
+    const activity = await openHistoryActivity(directory, { sessionsKept: 3 })
+    activity.observe({ session: 'mcp', holder: two, at: NOW, idleMs: MINUTE })
+    for (let index = 0; index < 10; index++) activity.observe({ session: `flood-${index}`, holder: { sessionId: `flood-${index}`, actor: 'agent:one' }, at: NOW + 1 + index, idleMs: MINUTE })
+    expect(activity.latest(two)).toBe(NOW)
+    const flooded = Array.from({ length: 10 }, (_, index) => activity.latest({ sessionId: `flood-${index}`, actor: 'agent:one' }))
+    expect(flooded.filter(at => at !== undefined)).toEqual([NOW + 8, NOW + 9, NOW + 10])
+    await activity.close()
+  })
+
+  it('drops a session\'s row once it is older than the longest idle window, idle under any', async () => {
+    const directory = scratch()
+    const activity = await openHistoryActivity(directory)
+    activity.observe({ session: 'mcp', holder: two, at: NOW, idleMs: MINUTE })
+    activity.observe({ session: 'mcp', holder: one, at: NOW + SESSION_IDLE_BOUNDS.max, idleMs: MINUTE })
+    expect(activity.latest(two)).toBe(NOW)
+    activity.observe({ session: 'mcp', holder: one, at: NOW + SESSION_IDLE_BOUNDS.max + 1, idleMs: MINUTE })
+    expect(activity.latest(two)).toBeUndefined()
+    await activity.close()
+  })
+
   it('says it was busy, not unreadable, where another process holds it past the wait', async () => {
     const directory = scratch()
     const activity = await openHistoryActivity(directory)
