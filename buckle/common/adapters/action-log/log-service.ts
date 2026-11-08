@@ -69,6 +69,16 @@ export function createLogService(settings: LogQueueSettings = PROCESS_LOG_QUEUE)
       await held.queue.close({ deadlineMs: 0 })
       if (held.writing) await settleWithin([held.writing], settings.writeDeadlineMs ?? 0)
     },
+    release(name) {
+      const held = logs.get(name)
+      if (!held) return
+      // In the background: a stalled log drains on its own time, and an entry appended meanwhile keeps the queue.
+      void held.queue.flush().then(() => {
+        if (logs.get(name) !== held || held.queue.stats().held > 0) return
+        logs.delete(name)
+        return held.queue.close()
+      })
+    },
     stats: () => ({ held: settings.budget.held(), logs: Object.fromEntries([...logs].map(([name, { queue }]) => [name, queue.stats()])) }),
   }
 }

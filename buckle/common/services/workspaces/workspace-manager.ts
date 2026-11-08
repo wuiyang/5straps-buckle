@@ -698,6 +698,7 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
     runtimes.delete(id)
     auditHealth.forget(actionsPath(opened.config))
     await closeRuntime(opened.runtime)
+    logService().release(actionsPath(opened.config))
   }
 
   async function openedRuntime(id: string): Promise<ManagedWorkspace | null> {

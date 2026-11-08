@@ -39,5 +39,7 @@ export interface LogService {
    * already with the writer answers, or its deadline passes. A later append starts the log again.
    */
   discard(name: string): Promise<void>
+  /** Forgets one log's queue once it holds nothing, as the runtime that wrote it closes. */
+  release(name: string): void
   stats(): LogServiceStats
 }

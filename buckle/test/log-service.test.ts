@@ -300,6 +300,28 @@ describe('the log service', () => {
     }
   })
 
+  it('writes what a removed workspace\'s log holds, then forgets its queue', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-log-service-release-'))
+    for (const folder of ['node', 'site']) mkdirSync(join(root, folder))
+    mkdirSync(join(root, 'state'), { mode: 0o700 })
+    const manager = await workspacesOf(configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'node'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' }))
+    try {
+      await registerWorkspace(manager, { id: 'site', dir: join(root, 'site') })
+      const { runtime } = await byName(manager, 'site')
+      const path = join(root, 'state', 'workspaces', runtime.workspaceId, 'actions.jsonl')
+      runtime.actions.append(entry('queued', { workspaceId: runtime.workspaceId }))
+      expect(Object.keys(logService().stats().logs)).toContain(path)
+
+      await manager.remove(runtime.workspaceId)
+      await logService().flush()
+      await tick()
+      expect(written(path).map(line => line.requestId)).toContain('queued')
+      expect(Object.keys(logService().stats().logs)).not.toContain(path)
+    } finally {
+      await manager.close()
+    }
+  })
+
   it('writes no queued entry of a workspace\'s log once its folder is gone, as when another process purged its records', async () => {
     const folder = mkdtempSync(join(tmpdir(), 'buckle-log-service-gone-'))
     const path = join(folder, 'actions.jsonl')
