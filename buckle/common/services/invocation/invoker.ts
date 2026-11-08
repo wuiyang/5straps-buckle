@@ -28,6 +28,7 @@ import { logCallFeedback, safeErrorDetails } from './call-feedback.js'
 import { withOwnerRemediation } from './owner-remediation.js'
 import { resolveEffects, resolveHostRead, resolveHostWrite } from './resolve-effects.js'
 import type { SessionReads } from './session-reads.js'
+import type { ExecutingMark, ExecutingRun } from '../workspaces/active-work.js'
 import { isStateBusy, STATE_BUSY_MESSAGE } from '../state-busy.js'
 import { ActionTooLargeError, ApprovalConflictError, ApprovalLimitError, RequestIdReusedError } from '../approvals/approval-errors.js'
 import type { ApprovalGate } from '../approvals/approval-gate.js'
@@ -71,6 +72,8 @@ export interface InvokerOptions {
   checkFolder?: () => void
   actions: ActionLog
   reporter: Reporter
+  /** Held on disk while a tool runs, never while a call waits for a person, for another process's idle check. */
+  executing: ExecutingMark
   /** The workspace's decision AI as the call found it (D91): in automated mode it may pass a command ask its stages cover. */
   judge?: JudgeGate
   /** The workspace's secret reference settings as the call found them (docs/user/how-to/secrets.md); on where absent. */
@@ -128,6 +131,8 @@ export interface InvokeInput {
   holdUntil?: number
   /** Set only by the invoker on a call a script made: told when the tool begins to run (NestedCall.onExecute). */
   onExecute?: () => void
+  /** Set only by the invoker on a call a script made: the script's run, which does not hold the workspace while this call waits for a person. */
+  scriptRun?: ExecutingRun
   /**
    * Set only by the invoker on a call a script made: the values the script's calls resolved from references, which this
    * call's are added to and which mask its answer before the script, its record, or the audit sees it (Codex review of
@@ -193,7 +198,7 @@ interface GateOutcome {
 
 export function createInvoker(options: InvokerOptions): Invoker {
   const invoker: Invoker = {
-    async invoke({ request, sessionId, signal, isCancel, approvalWait, via, holdUntil, onExecute, onAsked, onReplayed, resends, file, deleteRun, scriptSecrets }) {
+    async invoke({ request, sessionId, signal, isCancel, approvalWait, via, holdUntil, onExecute, scriptRun, onAsked, onReplayed, resends, file, deleteRun, scriptSecrets }) {
       const startedAt = performance.now()
       let feedback: InvokeResponse | undefined
       // For a tool that reaches tools: the values its script's calls resolve, which mask each of them and its own answer.
@@ -281,7 +286,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
 
             // A tool that takes the write lock itself runs its program in a copy of the workspace's folder (the isolated shell).
             const fromCopy = prepared.managesHistory === true
-            gate = await clearPermissions({ options, request, sessionId, holder, effects, fromCopy, signal, isCancel, approvalWait, holdUntil, key, held, judgment, via, ...(deleteRun ? { deleteRun } : {}), ...(onAsked ? { onAsked } : {}), ...(resends ? { resends } : {}), ...(prepared.facts ? { facts: prepared.facts } : {}) })
+            gate = await clearPermissions({ options, request, sessionId, holder, effects, fromCopy, signal, isCancel, approvalWait, holdUntil, key, held, judgment, via, ...(scriptRun ? { scriptRun } : {}), ...(deleteRun ? { deleteRun } : {}), ...(onAsked ? { onAsked } : {}), ...(resends ? { resends } : {}), ...(prepared.facts ? { facts: prepared.facts } : {}) })
             // A script's call whose ask was recorded only as its script ended, behind a slow approvals lock, is still an
             // ask: it answers approval_required, which the pack hands back, never the script's end (re-check of round 2,
             // finding deadline-announce invoker.ts:175).
@@ -299,6 +304,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
             // changed nothing runs and a person decides (fix brief 9, B31). A tool that takes the lock itself, the isolated
             // shell, is handed the check to call once its copy of the workspace is taken.
             let begun = false
+            let executing: ExecutingRun | undefined
             const markStarted = () => {
               if (begun) return
               begun = true
@@ -311,24 +317,28 @@ export function createInvoker(options: InvokerOptions): Invoker {
               const changed = changedCode({ options, judgment, call: { effects, tool: request.tool, args: request.args, fromCopy } })
               if (changed.length > 0) throw new CodeChangedError(changed)
               markStarted()
+              executing = options.executing.begin()
             }
             const execute = async () => {
-              if (!prepared.managesHistory) beginRun()
-              // A script's calls are named by what its tool says names it (code_run: the script), not every argument.
-              const nestingKey = prepared.replayKey ? { ...key, fingerprint: requestFingerprint({ tool: request.tool, args: prepared.replayKey }) } : key
-              if (prepared.reachesTools) ownSecrets = createScriptSecrets({ protectedRoots: options.protectedRoots ?? [], roots: [options.paths.root] })
-              const nesting = ownSecrets ? { run: options.nested ?? invoker.invoke, key: nestingKey, callerSignal: signal, isCancel, approvalWait, resends, secrets: ownSecrets } : undefined
+              // The run ends here, before its result entry is written or dropped.
               try {
-                const output = await executeWithTimeout({ options, request, sessionId, holder, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: run, timeoutMs: prepared.timeoutMs, nesting, via, ...(prepared.managesHistory ? { beginRun } : {}), ...(file ? { file } : {}) })
-                markStarted()
-                return output
-              } catch (error) {
-                // A tool that failed past the check, or never reached it, counts as run, as every tool did before the check;
-                // one whose own wait for the write lock ended before the check ran nothing, as when the invoker's wait ends
-                // (D91 follow-ups, F4 residue).
-                if (!(error instanceof CodeChangedError || error instanceof LockWaitError)) markStarted()
-                throw error
-              }
+                if (!prepared.managesHistory) beginRun()
+                // A script's calls are named by what its tool says names it (code_run: the script), not every argument.
+                const nestingKey = prepared.replayKey ? { ...key, fingerprint: requestFingerprint({ tool: request.tool, args: prepared.replayKey }) } : key
+                if (prepared.reachesTools) ownSecrets = createScriptSecrets({ protectedRoots: options.protectedRoots ?? [], roots: [options.paths.root] })
+                const nesting = ownSecrets ? { run: options.nested ?? invoker.invoke, key: nestingKey, callerSignal: signal, isCancel, approvalWait, resends, secrets: ownSecrets, ...(executing ? { scriptRun: executing } : {}) } : undefined
+                try {
+                  const output = await executeWithTimeout({ options, request, sessionId, holder, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: run, timeoutMs: prepared.timeoutMs, nesting, via, ...(prepared.managesHistory ? { beginRun } : {}), ...(file ? { file } : {}) })
+                  markStarted()
+                  return output
+                } catch (error) {
+                  // A tool that failed past the check, or never reached it, counts as run, as every tool did before the check;
+                  // one whose own wait for the write lock ended before the check ran nothing, as when the invoker's wait ends
+                  // (D91 follow-ups, F4 residue).
+                  if (!(error instanceof CodeChangedError || error instanceof LockWaitError)) markStarted()
+                  throw error
+                }
+              } finally { executing?.end() }
             }
             // A delete is checkpointed as a write is, from the folder it removes the entry from: a link there is never followed.
             const writes = effects.filter(effect => effect.kind === 'write_path' || effect.kind === 'delete_path')
@@ -708,6 +718,8 @@ async function clearPermissions(input: {
   deleteRun?: DeleteRun
   /** What the tool settled before the rules judged the call, which its description names (PreparedCall.facts). */
   facts?: JsonObject
+  /** For a call a script made: the script's run, which does not hold the workspace while this call waits for a person. */
+  scriptRun?: ExecutingRun
   onAsked?: () => void
   resends?: boolean
 }): Promise<GateOutcome> {
@@ -803,10 +815,11 @@ async function clearPermissions(input: {
   const judge = judgeNotes({ gate: options.judge, asks: outcome.asks, judged: input.judgment.judged })
   const call = { arguments: reviewableArguments(request.args), cwd, description: describeCall({ tool: request.tool, args: request.args, cwd, ...(input.via ? { via: input.via } : {}), ...(input.facts ? { facts: input.facts } : {}) }), effects: effects.map(summarizeEffect), complete: true as const, ...(judge.length > 0 ? { judge } : {}) }
   input.onAsked?.()
-  const waited = await options.approvals.ask({
+  const asking = () => options.approvals.ask({
     sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: outcome.asks.map(ask => withStaleReason(withJudgeReason(ask, input.judgment.judged), input.judgment.stale)), signal: input.signal, ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait,
     ...(input.holdUntil === undefined ? {} : { holdUntil: input.holdUntil }), ...(input.resends ? { resends: true } : {}), fingerprint: input.key.fingerprint, call,
   })
+  const waited = await (input.scriptRun ? input.scriptRun.paused(asking) : asking())
   // A re-send joined to asks already answered has none still waiting: it is told what it asked.
   const approvals = waited.approvals
   const asked = (approvals.length > 0 ? approvals : outcome.asks).map(approval => `${approval.rule}:${approval.subject}`)
@@ -1106,6 +1119,8 @@ interface Nesting {
   resends?: boolean
   /** The values the script's calls resolve, handed to each of them (InvokeInput.scriptSecrets). */
   secrets: ScriptSecrets
+  /** The script's own run, handed to each of its calls (InvokeInput.scriptRun). */
+  scriptRun?: ExecutingRun
 }
 
 /**
@@ -1152,6 +1167,7 @@ function nestedContext(input: { options: InvokerOptions; request: InvokeRequest;
       ...(call.onExecute ? { onExecute: call.onExecute } : {}),
       deleteRun,
       scriptSecrets: nesting.secrets,
+      ...(nesting.scriptRun ? { scriptRun: nesting.scriptRun } : {}),
       via: { tool: request.tool, parentRequestId: parentOf(call) },
     }),
     nestedSecrets: { records: () => nesting.secrets.records(), restore: records => nesting.secrets.restore(records) },

@@ -92,7 +92,7 @@ import { workspaceUntrusted, type NodeRoots } from './node-roots.js'
 import { mountRows, openSettingsFile, ownMount, policySources, resolveSettings, settingsPath, scopeOf, withMount, withPolicy, WorkspaceSettingsSchema, type PolicySources, type ResolvedSettings, type WorkspaceSettings } from './workspace-settings.js'
 import type { MountRow } from '../../domain/mount-table.js'
 import { WorkspaceError } from './registry.js'
-import { activeWorkDirectory, createActiveWorkMark } from './active-work.js'
+import { activeWorkDirectory, createActiveWorkMark, createExecutingMark } from './active-work.js'
 import type { SecretSettings } from '../secrets/places.js'
 import { logCallFeedback } from '../invocation/call-feedback.js'
 import { unavailableToolReason } from '../invocation/owner-remediation.js'
@@ -435,10 +435,11 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   // decision D82, point 3), and never another workspace's (BUCKLE-D07: a token opens one workspace).
   const manifestTools = (): ToolCapability[] => registry.capabilities().filter(tool => toolDenial(tool.name) === null)
   const browserHeldBy = input.browserHeldBy
-  // Which runtime writes the browser's sessions, beside the pid, so a session a runtime left is told from a live one's.
-  const browserInstance = randomUUID()
+  // This runtime's own id beside the pid: it names the browser sessions it writes and its executing mark, so what a
+  // runtime left is told from a live one's.
+  const instance = randomUUID()
   const workspaceName = () => config.serverName
-  const initial = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy, browserInstance, workspaceName })
+  const initial = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy, browserInstance: instance, workspaceName })
   let packs = initial.packs
   // The browser pack packs.enabled leaves out, kept for the owner's buckle browser close and this runtime's shutdown
   // alone, as the browsers the workspace recorded outlive the setting that turned the pack off (Codex review L7).
@@ -449,7 +450,9 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   /** Packs a rebuild replaced while calls ran on them, closed when the last of those calls ends. */
   const retiring: Pack[] = []
   // Marked on disk while any call runs, so `buckle workspace disable` and `remove` in another process see it (finding 9).
-  const activity = createActiveWorkMark({ directory: activeWorkDirectory(config.nodeStateDirectory ?? config.stateDirectory, workspaceId), workspaceId })
+  const marks = activeWorkDirectory(config.nodeStateDirectory ?? config.stateDirectory, workspaceId)
+  const activity = createActiveWorkMark({ directory: marks, workspaceId })
+  const executing = createExecutingMark({ directory: marks, workspaceId, instance })
   const executionBudget = input.executionBudget ?? createExecutionBudget()
   const executions = createExecutions({ budget: executionBudget })
   // What each session read or wrote lately, in memory alone, for the destructive-write check: a restart forgets it.
@@ -726,7 +729,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     // none of them to be open. A process holding no workbenches (another runs them) has none to wait for or stop.
     if (input.waitForWork && (reshaped ? await runtime.hasActiveWork() : policyMoved && await workbenches.hasActiveWork())) throw new WorkspaceError(RESHAPE_WAITS, 409)
     const nextPermissions = buildPermissionEngine({ config: nextConfig, compiled: nextCompiled, paths: nextPaths, dangerouslyAllowMode })
-    const built = rebuild ? await buildPacks({ config: nextConfig, sandbox, plugins, compiled: nextCompiled, paths: nextPaths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy, browserInstance, workspaceName }) : null
+    const built = rebuild ? await buildPacks({ config: nextConfig, sandbox, plugins, compiled: nextCompiled, paths: nextPaths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy, browserInstance: instance, workspaceName }) : null
     const next = built ? carryPacks({ built: built.packs, current: packs, carried: id => id === BROWSER_PACK && browserInputs({ config: nextConfig, compiled: nextCompiled, mounts: [resolved.mount, resolved.mounts] }) === browserInputs({ config, compiled, mounts: [before.mount, before.mounts] }) }) : null
     if (policyMoved) await workbenches.policyChanged()
     // A verdict was given under the policy in force, which its key names too; a new policy rates every call afresh.
@@ -812,6 +815,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
         approvals: approvalGate,
         executions,
         actions,
+        executing,
         history,
         historyRoots: () => checkpointRoots(config.cwd, settled.paths.mounts, settled.paths.mount),
         checkFolder: () => refuseChangedFolder(config.cwd, settled.paths.mount),
