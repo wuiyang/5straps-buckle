@@ -40,7 +40,10 @@ The tool policy treats the two copy tools as the file faces of `fs_write` and `f
 `buckle policy deny-tool fs_write` also denies `fs_receive`, and `deny-tool fs_read` also denies
 `fs_send`. A tool allow list must name them to allow copies.
 `buckle plugin add <id> <module>` adds a plugin, a module that exports `createPack(options)`; one
-that fails to load shows as an unavailable pack. Each built-in pack ships a skill, a short guide
+that fails to load shows as an unavailable pack, and the node's log says why. A plugin's tool may
+not take a name Buckle writes its own records under: `approval_decision`, `log_dropped`,
+`approval_session_ended`, or one starting `cli_`, `setup_`, `workspace_`, or `policy_`. The log
+then names the tool. Each built-in pack ships a skill, a short guide
 for the agent: `buckle skills` lists them and `buckle skills buckle-shell` prints one.
 
 ## Sandboxing per platform
