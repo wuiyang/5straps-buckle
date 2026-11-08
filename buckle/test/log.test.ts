@@ -5,7 +5,7 @@ import { createLogQueue } from '@5straps/runtime'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { createJsonFileStore } from '../common/adapters/json-file-store.js'
-import { processLogBudget } from '../common/runtime/log-budget.js'
+import { LOG_BATCH_LIMIT, LOG_WRITE_DEADLINE_MS, PROCESS_LOG_QUEUE, processLogBudget } from '../common/runtime/log-budget.js'
 import { configureRootLogger, flushLogs, logFormatFrom, logger, loggerConfigFrom, stderrFormat, withoutCause } from '../common/runtime/log.js'
 
 // The root logger writes asynchronously, so every stderr capture flushes before reading.
@@ -242,6 +242,41 @@ describe('what the process holds of its logs', () => {
     } finally {
       await actions.close({ deadlineMs: 1 })
     }
+  })
+
+  describe('beside an action log whose writer stalled', () => {
+    function stalledActions() {
+      const batches: string[][] = []
+      const queue = createLogQueue<string>({ destination: 'actions.jsonl', ...PROCESS_LOG_QUEUE, write: (batch) => { batches.push([...batch]); return new Promise<void>(() => {}) } })
+      for (const line of range(0, 30)) queue.push(line)
+      return { queue, batches }
+    }
+
+    it('keeps the node log\'s newest lines, as the stalled log hands its writer one batch at most', async () => {
+      configureRootLogger({}, { format: 'json' })
+      const actions = stalledActions()
+      try {
+        await new Promise(resolve => setImmediate(resolve))
+        const lines = await captureStderr(() => { for (const line of range(30, 50)) logger.info(line) })
+        expect(lines.map(line => line.message)).toEqual(range(30, 50))
+        expect(actions.batches).toEqual([range(0, LOG_BATCH_LIMIT)])
+      } finally {
+        await actions.queue.close({ deadlineMs: 1 })
+      }
+    })
+
+    it('drops that batch first, oldest first, once its write is past the deadline', async () => {
+      configureRootLogger({}, { format: 'json' })
+      const actions = stalledActions()
+      try {
+        await new Promise(resolve => setTimeout(resolve, LOG_WRITE_DEADLINE_MS + 100))
+        const lines = await captureStderr(() => { for (const line of range(30, 60)) logger.info(line) })
+        expect(lines.map(line => line.message)).toEqual(range(30, 60))
+        expect(actions.queue.stats()).toMatchObject({ dropped: 30, failures: 1 })
+      } finally {
+        await actions.queue.close({ deadlineMs: 1 })
+      }
+    })
   })
 
   it('tries a failed line again after 250 ms, 1 s, and 4 s, then drops it and says so before the next line', async () => {

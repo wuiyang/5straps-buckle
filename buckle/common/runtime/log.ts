@@ -3,7 +3,7 @@ import { createLogger, createRotatingFileSink, createStderrJsonSink, LOG_LEVELS,
 import { maskHeld, maskHeldJson, masksHeld } from '../services/secrets/mask.js'
 import { parseList } from './config.js'
 import { createConsoleWriter, type ConsoleWriter } from './console.js'
-import { LOG_RETRY_DELAYS_MS, processLogBudget } from './log-budget.js'
+import { PROCESS_LOG_QUEUE } from './log-budget.js'
 import { isVerbose, renderEvent } from './log-render.js'
 
 const COMPONENT = 'buckle'
@@ -102,7 +102,8 @@ export function stderrFormat(override: LogFormat | undefined, stream: { isTTY?: 
 }
 
 function createRoot(config: LoggerConfig, output: LogOutput = 'stderr'): LoggerRoot {
-  return createLogger({ ...config, component: COMPONENT, sinks: [sinkFor(output, config.level ?? 'info')], budget: processLogBudget, retryDelaysMs: LOG_RETRY_DELAYS_MS })
+  const { budget, retryDelaysMs, writeDeadlineMs } = PROCESS_LOG_QUEUE
+  return createLogger({ ...config, component: COMPONENT, sinks: [sinkFor(output, config.level ?? 'info')], budget, retryDelaysMs, writeDeadlineMs })
 }
 
 function sinkFor(output: LogOutput, level: LogLevel): LogSink {
