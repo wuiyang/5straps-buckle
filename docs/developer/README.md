@@ -2,7 +2,8 @@
 
 - [Architecture](architecture.md), with [state and packs](architecture-02.md) and the [approval
   backend](approval-backend.md), with its [grant saves](approval-backend-02.md), [their
-  routes](approval-backend-03.md), and [MCP forms](approval-backend-04.md).
+  routes](approval-backend-03.md), [MCP forms](approval-backend-04.md), and [MCP forms over
+  HTTP](approval-backend-05.md).
 - [Building and testing](building-and-testing.md).
 - [Releasing](releasing.md), with [setup](releasing-04.md), [repeats and
   approval](releasing-02.md), and [what ships](releasing-03.md).

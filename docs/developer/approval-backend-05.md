@@ -1,0 +1,73 @@
+# Approval backend: MCP forms over HTTP
+
+How `/mcp` draws forms, what each one offers, and who may open them. [MCP
+forms](approval-backend-04.md) covers the setting and the caller check, and [MCP
+forms](../user/how-to/approvals-06.md) the setting as an owner sets it. Paths are in `buckle/`.
+
+## The wiring
+
+`mcp/http.ts` keeps one stateless SDK handler per workspace runtime, and opens that runtime's HTTP
+forms with it: `openForms(runtime, { face: 'http' })` in `mcp/open-forms.ts`. Each per-request
+server the handler builds gets the same forms backend, so a form drawn in one request is answered
+in the next. The backend closes with the runtime's approvals, as every forms backend the service
+opened does.
+
+`mcp/server.ts` is the same for both faces. At each call it reads the forms setting; on, it hands
+the call's `inputResponses` to the forms with the transport's caller, and, for a client that
+declares form elicitation, answers an ask with `input_required` and one form per ask at once,
+instead of holding the call. The client sends the call again with its answers, which joins the
+first call's ask by the resend join, so the call runs once.
+
+- **A 2026-07-28 client:** declares its capabilities in every request's `_meta` envelope, which the
+  first capability reader takes. Claude Code's HTTP client is one ([the
+  probe](approval-backend-04.md#claude-code-over-http)).
+- **A 2025-era client:** declares them once, in `initialize`. The stateless handler builds a new
+  server for each request, so the one that answers its `tools/call` never saw that handshake,
+  `getClientCapabilities()` is empty, and the call gets the relay text. The SDK's legacy shim
+  could not elicit on that connection either.
+
+## What a form offers
+
+A form offers what its host's source may decide, no more, and the guard still checks each answer.
+
+- **`host.reach`:** `{ lasting, floor }`, which core sets on each host it opens with
+  `reachOf(rightsOf(source.kind))` (`common/domain/approval/assurance.ts`): `lasting` where the row
+  rates the kind `local` or above, `floor` where it also approves as a person. So the reach and the
+  guard read one row.
+- **`FullAsk.policy.floor`:** the ask's floor mark: from the ledger's entry for the forms, and from
+  the call's own asks for the terminal.
+- **The forms:** `mcp/forms-backend.ts` leaves out each scope past `once` that the reach does not
+  allow, and names where it is granted: the serve terminal, or the ask's `buckle approve` command. A
+  floor ask the reach does not approve gets the denial form, naming the same. A credential file's
+  form offers its lasting denials only where `lasting` holds.
+
+For `http-forms`, rated `relayed`, the reach is neither: a non-floor ask is approved `once`, a
+floor ask only denied, and a forged lasting or floor answer is refused `assurance_too_low`. To give
+HTTP forms stdio's rights, change `relayed` to `local` in that row; the reach and every form
+follow.
+
+## The caller
+
+`transportSender()` in `mcp/server.ts` reads the actor of the request's operation scope, which the
+agent guard set to `agent:<tokenId>`, and the forms pass it with each answer. The guard holds an
+`http-forms` answer to the asks that actor raised, and the decision record names it
+(`common/adapters/approval/logged-decision-audit.ts`), so the workspace's log shows which token
+answered. Every client under one token is one caller.
+
+## Who opens forms
+
+The forms opener is no member of the runtime every face holds. `createRuntime` binds each runtime's
+opener in `common/services/workspaces/forms-opener.ts`, which only `mcp/open-forms.ts` imports, and
+only the stdio and HTTP faces import that. `test/approval-boundary.test.ts` holds it by type, the
+runtime type has no opener, and by import, each module's imports resolved, so no other name or
+path reaches it.
+
+## Tests
+
+- `test/mcp-http-forms.test.ts`, on the face's own handler with a real runtime: a `tools/call`
+  built from Claude Code's recorded `_meta` envelope draws one form per ask, and the call sent
+  again with a `once` answer runs, recorded under its caller; `@modelcontextprotocol/client` 2.0.0
+  plays the round itself; `once` alone, a floor ask denied only, another token's answer refused, a
+  2025-era client's relay text, and the setting off.
+- `test/http/mcp-http.test.ts`: the same round on the real `/mcp` route, under the agent token.
+- `test/forms-backend.test.ts`: the forms for each reach, and the reach and floor mark core hands.

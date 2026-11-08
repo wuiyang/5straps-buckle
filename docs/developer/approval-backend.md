@@ -12,11 +12,11 @@ asks out and decisions in, and enforces nothing. Paths are in `buckle/`.
   leaves the queue, and `close()`. A submit is `accepted` or `declined`, never a decision.
 - **`ApprovalHost`:** handed over at open. `decide` is the one way a decision enters,
   `skipSave` gives up an approval's grant; `pending` and `ask` give the asks routed to the
-  backend; `log` writes the node's log. Core binds `host.source`, so a backend never names its
-  own.
+  backend; `log` writes the node's log. Core binds `host.source` and `host.reach`, what that
+  source may decide; a backend names neither.
 - **`FullAsk`:** the whole ask, never cut, as an approver sees the full raw action: token,
-  group, an HMAC idempotency key, the requester, the rule's subject and offered scopes, the
-  decision AI's notes, the deadline, and the call. Without a kept call it has no `action`.
+  group, an HMAC idempotency key, the requester, the rule's subject, offered scopes, floor
+  mark, the decision AI's notes, the deadline, and the call. Without a kept call it has no `action`.
 - **Receipts:** `applied` with the assurance core rated, `repeated`, or `refused` with an
   `ApprovalErrorCode`; one for a lasting approval names its grant's `save` state, and a pathless
   `saveError` while unsettled. Core checks each decision's shape first. A failure is no decision.
@@ -37,8 +37,8 @@ minted for the body it checked; core spends it on one decision. A refusal names 
 proof (401 on the setup POST), statement (400), or decision (409).
 
 `test/approval-boundary.test.ts` holds it: only the service records a verdict, the gate
-spends a `once`, the ledger runs the guard, the verifier mints a proof, and the stdio face
-alone names the forms opener every face's runtime type carries; no face names the service or
+spends a `once`, the ledger runs the guard, the verifier mints a proof, and only the MCP faces
+import the forms opener, which no runtime type carries; no face names the service or
 `CoreRuntime`, and no backend module reaches the permission engine, the guard, the ledger's
 schema, a service, or the node's logger.
 
@@ -67,7 +67,7 @@ schema, a service, or the node's logger.
 | Source | Assurance | Approves |
 |---|---|---|
 | `terminal`, `cli` | `local` | Any ask, and the wider subject; `cli` alone takes a host pattern |
-| `forms` | `local` | Any ask, lasting scopes and floor asks included, while forms are on |
+| `forms` | `local` | Any ask, lasting and floor included, while forms are on |
 | `http-forms` | `relayed` | A non-floor `once` its own caller asked, while forms are on |
 | `devices` | `key` | Any ask it signed the challenge of |
 | `judge` | `relayed` | A non-floor `once`, bound to the code it rated |
@@ -83,11 +83,11 @@ rights and no route. `cli` and `judge` count as routed to every ask.
 one-shot prompt. It asks each ask in turn, one request per call key and group, and drops a
 question whose ask left the queue.
 
-**The forms** (`mcp/forms-backend.ts`): a stdio MCP host's elicitation, pulled.
-The MCP face draws one form per ask in the call's answer, and decides each answer the
-retried call carries; `submit` declines. Only the stdio face opens it, through `openForms`.
+**The forms** (`mcp/forms-backend.ts`): an MCP host's elicitation, pulled, opened by both faces
+([over HTTP](approval-backend-05.md)). Each draws one form per ask in the call's answer, as
+`host.reach` allows, and decides each answer the retried call carries; `submit` declines.
 
-Each maps a person's answer to a decision and its scope, and decides through `host.decide`.
+Each maps a person's answer to a decision and scope, and decides through `host.decide`.
 Neither decides which scopes are allowed, rates an answer, writes a grant, or audits.
 
 ## Switches kept at today's behavior

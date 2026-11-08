@@ -50,9 +50,9 @@
 
 [Approvals over MCP](../how-to/approvals-03.md) says how an agent sees an ask and sends the call again.
 
-- `/mcp` over HTTP never elicits, by ruling: its client holds the agent token, so a form answered
-  there would be the agent approving its own call. A person answers at the node, with
-  `buckle approvals`.
+- With [MCP forms](../how-to/approvals-06.md) on, a form over HTTP approves a non-floor ask once
+  alone: its client holds the agent token, so its answer may be the agent approving its own
+  call. Clients under one token count as one caller, so one may answer the other's ask.
 - With [MCP forms](../how-to/approvals-06.md) on, Buckle cannot tell your answer in a form from one
   the agent's app sent itself: the form proves the channel, not a person.
 - Every HTTP MCP client under one token shares the session `mcp` and one actor. Identical calls
@@ -84,7 +84,6 @@
   it replays do not run again. A folder moved whole is not counted, as nothing of it is removed.
 - The wider subject, `delete-below:<folder>`, is not part of the challenge a device key signs, so a
   person's device cannot grant it yet. The serve terminal, `buckle approve --below`, and `buckle approvals --watch` grant it.
-- MCP elicitation answers `once`, `session`, or `always` for the ask's own subject, and offers no
-  wider choice.
+- An MCP form answers for the ask's own subject, and offers no wider choice.
 - The shell is outside the policy: `rm`, `find -delete`, and the other commands at the command floor
   ask inside the workspace's folder as they did, whatever `files.deleteInWorkspace` says.

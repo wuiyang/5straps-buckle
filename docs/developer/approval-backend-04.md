@@ -43,7 +43,8 @@ is written by the next settling pass, at another decision or at `recover()`.
 
 Form answers over HTTP come in under a kind of their own, `http-forms`, rated `relayed`: a
 non-floor `once`, never a lasting scope or a floor approval. Its row also carries `sameCaller`, so
-it decides only the asks its own caller raised. No face opens it yet.
+it decides only the asks its own caller raised. The HTTP face opens it ([over
+HTTP](approval-backend-05.md)).
 
 - **Where the caller comes from:** the actor the transport authenticated, as the request's
   operation scope holds it: `agent:<tokenId>` over HTTP, `mcp-stdio` over stdio. `mcp/server.ts`
@@ -103,7 +104,7 @@ needs, and `/mcp` offers no other in `supportedVersions`. `test/fixtures/claude-
 keeps the requests. `test/http/mcp-http.test.ts` replays the `2026-07-28` ones against `/mcp`, and
 `test/approval-forms-setting.test.ts` draws forms for the capabilities they declare.
 
-**Not seen:** Claude Code answering a tool's `input_required` over HTTP and sending the call again
-with `inputResponses`. The probe called no tool, as that takes a model. The binary carries client
-code for `input_required`, and the declared `elicitation.form` is what the forms backend checks,
-but that step stays unverified until a real `tools/call` from Claude Code draws a form at `/mcp`.
+**Not seen:** Claude Code itself answering a form at `/mcp` and sending the call again, as the
+probe called no tool, which takes a model. The tests on [MCP forms over
+HTTP](approval-backend-05.md#tests) build that round from the envelope it recorded, and a
+2026-07-28 client of the SDK plays it whole.
