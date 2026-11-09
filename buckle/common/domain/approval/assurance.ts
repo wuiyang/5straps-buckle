@@ -28,9 +28,9 @@ const RIGHTS: Record<SourceKind, SourceRights> = {
   terminal: AT_THE_NODE,
   cli: { ...AT_THE_NODE, everyAsk: true },
   forms: FORMS,
-  // Where an ask is answered changes nothing it offers, a floor ask's approval included (APPROVAL-33, the owner's ruling of
-  // 2026-11-09), so an HTTP form decides as a stdio one; anything holding an agent's token can send one, so it decides only
-  // the asks that token raised, and forms stay off unless the owner turns them on.
+  // Where an ask is answered changes nothing it offers, a floor ask's approval included, so an HTTP form decides as a stdio
+  // one; anything holding an agent's token can send one, so it decides only the asks that token raised, and forms stay off
+  // unless the owner turns them on.
   'http-forms': { ...FORMS, sameCaller: true },
   devices: { assurance: 'key', approves: true, person: true, widens: false, everyAsk: false },
   judge: { assurance: 'relayed', approves: true, person: false, widens: false, everyAsk: true },

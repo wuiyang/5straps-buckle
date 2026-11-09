@@ -817,8 +817,8 @@ async function clearPermissions(input: {
   const judge = judgeNotes({ gate: options.judge, asks: outcome.asks, judged: input.judgment.judged })
   const call = { arguments: reviewableArguments(request.args), cwd, description: describeCall({ tool: request.tool, args: request.args, cwd, ...(input.via ? { via: input.via } : {}), ...(input.facts ? { facts: input.facts } : {}) }), effects: effects.map(summarizeEffect), complete: true as const, ...(judge.length > 0 ? { judge } : {}) }
   input.onAsked?.()
-  // While the call is held for a person, the approval service keeps its session active (APPROVAL-31); a script's run holds
-  // its session the whole time, its calls' waits included.
+  // While the call is held for a person, the approval service keeps its session active; a script's run holds its session
+  // the whole time, its calls' waits included.
   const waited = await options.approvals.ask({
     sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: outcome.asks.map(ask => withStaleReason(withJudgeReason(ask, input.judgment.judged), input.judgment.stale)), signal: input.signal, ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait,
     ...(input.holdUntil === undefined ? {} : { holdUntil: input.holdUntil }), ...(input.resends ? { resends: true } : {}), fingerprint: input.key.fingerprint, call, attempt: input.attempt,
