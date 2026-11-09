@@ -7,6 +7,7 @@ import { loadConfig, unreadWorkspaceDefaults, type NodeConfig } from '../common/
 import type { WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { settingsPath } from '../common/services/workspaces/workspace-settings.js'
 import { createSetupViews } from '../common/services/setup/setup-views.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 import { runCli } from './support/cli.js'
 import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
@@ -18,7 +19,7 @@ import { SOURCES } from '../common/types/ports/approval-source.js'
 // belongs to one workspace at a time, and a second is refused, naming the one that holds it.
 
 const roots: string[] = []
-afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { vi.restoreAllMocks(); await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 function scratch(): string {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-browser-workspaces-')))
   roots.push(root)

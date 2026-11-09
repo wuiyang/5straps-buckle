@@ -15,6 +15,7 @@ import { openChangeHistory } from '../common/services/history/journal.js'
 import { createShellPack } from '../common/services/packs/shell/index.js'
 import { withOwnerMounts } from '../common/services/workspaces/workspace-settings.js'
 import type { ProcessRequest } from '../common/types/ports/process-runner.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
 
 // Phase 2 item 2 of the workspace-model brief: the file, git, code, and browser tools resolve every mount of the table;
@@ -22,7 +23,7 @@ import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspa
 // mount read-only, saying so (Q6).
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 function scratch(): string {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-mount-view-')))
   roots.push(root)

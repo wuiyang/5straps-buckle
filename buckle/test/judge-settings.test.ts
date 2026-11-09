@@ -8,6 +8,7 @@ import { buildChildEnvironment } from '../common/domain/environment.js'
 import { configureRootLogger, flushLogs, logger } from '../common/runtime/log.js'
 import { loadConfig, unreadWorkspaceDefaults } from '../common/runtime/config.js'
 import { openSettingsFile, resolveSettings, settingsPath, STANDARD_SCRIPTS, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 import { runCli } from './support/cli.js'
 import { idOf, workspacesOf } from './support/workspaces.js'
 
@@ -20,7 +21,7 @@ const KEY = 'sk-judge-settings-fixture-0123456789'
 const SOCKET_KEY = 'sktsec_judge-settings-socket-0123456789'
 const QUICK_KEY = 'ts_judge-settings-quick-0123456789'
 const roots: string[] = []
-afterEach(() => { vi.restoreAllMocks(); configureRootLogger({}); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { vi.restoreAllMocks(); configureRootLogger({}); await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 function scratch(): string {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-judge-settings-')))
   roots.push(root)

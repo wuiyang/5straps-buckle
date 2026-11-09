@@ -5,9 +5,10 @@ import { afterEach, expect, it } from 'vitest'
 import { createPathView } from '../common/domain/path-view.js'
 import { readFileEntry, writeFileEntry } from '../common/services/packs/fs/operations.js'
 import { readInput, writeInput } from '../common/services/packs/fs/schemas.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 const roots: string[] = []
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
+afterEach(async () => { await settleAuditLogs(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 async function fixture(content: string | Buffer) {
   const root = await mkdtemp(join(tmpdir(), 'buckle-editor-'))
   roots.push(root)

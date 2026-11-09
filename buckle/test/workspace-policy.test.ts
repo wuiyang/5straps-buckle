@@ -9,6 +9,7 @@ import type { ToolEffect } from '../common/domain/effect.js'
 import { createWebPack } from '../common/services/packs/web/index.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { createMcpServer } from '../mcp/server.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 import { byName, registerWorkspace, workspacesOf } from './support/workspaces.js'
 
 // D83 addendum (7), and D85, Q14 ("Fallback plus node deny floor"): every list is bound to a workspace; where a workspace
@@ -17,7 +18,7 @@ import { byName, registerWorkspace, workspacesOf } from './support/workspaces.js
 // every ask in the workspace, answers the node's destructive asks too, and the node's denials still refuse under it.
 
 const roots: string[] = []
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 function policy(input: { allow?: string[]; deny?: string[]; destructive?: string[]; network?: string[] } = {}): WorkspacePolicy {
   const value = emptyWorkspacePolicy()

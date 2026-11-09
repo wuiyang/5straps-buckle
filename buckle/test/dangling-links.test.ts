@@ -10,7 +10,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 import type { WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { auditEntries } from './support/action-log-writer.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // Review H1 and H2 of B23-B25: a dangling link inside the workspace was judged by its own path while
 // the write followed it, so an agent could create Buckle's absent state files (turn its own switch on,
@@ -36,6 +36,7 @@ const roots: string[] = []
 afterEach(async () => {
   listing.afterRead = undefined
   vi.restoreAllMocks()
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 

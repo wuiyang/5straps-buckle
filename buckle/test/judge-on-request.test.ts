@@ -15,7 +15,7 @@ import type { DecisionClaim, LiveSettings } from '../common/domain/approval/deci
 import { SOURCES } from '../common/types/ports/approval-source.js'
 import { runCli } from './support/cli.js'
 import { byName, idOf, workspacesOf } from './support/workspaces.js'
-import { auditEntries } from './support/action-log-writer.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // `buckle approvals judge <token> [--approve-if-safe]` (D91, addendum C): the decision AI rates one waiting interpreter
 // ask at the owner's request, through the real OpenAI-compatible adapter against a local stand-in at the node's
@@ -37,6 +37,7 @@ afterEach(async () => {
   vi.restoreAllMocks()
   claims.length = 0
   for (const server of servers.splice(0)) await new Promise(resolve => server.close(resolve))
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 

@@ -10,13 +10,13 @@ import type { CoreRuntime } from '../common/services/workspaces/workspace-runtim
 import { fixedInteraction } from './support/interaction.js'
 import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
-import { startActionLogWriter } from './support/action-log-writer.js'
+import { settleAuditLogs, startActionLogWriter } from './support/action-log-writer.js'
 
 const NODE_REPORT_TOKEN = 'node-report-token-fixture-only'
 const roots: string[] = []
 // The writer's thread starts on its first write, which the first child call's wait for its ask would otherwise include.
 beforeAll(startActionLogWriter)
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 /** A node with the owner's callbacks configured, plus one registered child workspace. */
 async function nodeWithChild(environment: Record<string, string> = {}) {

@@ -22,6 +22,7 @@ import { openSettingsFile, resolveSettings, settingsPath, WorkspaceSettingsSchem
 import type { ApprovalBackend, LifecycleEvent } from '../common/types/ports/approval-backend.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 import type { GrantStore } from '../common/types/ports/grant-store.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 import { recordingDecisionAudit } from './support/decision-audit.js'
 import { runCli } from './support/cli.js'
 import { holdLockInProcess, killHolder } from './support/lock-holder.js'
@@ -33,9 +34,10 @@ import { idOf, workspacesOf } from './support/workspaces.js'
 // a session's activity cannot be read, it does not end, and none of its session approvals clears a call.
 
 const roots: string[] = []
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks()
   vi.useRealTimers()
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 

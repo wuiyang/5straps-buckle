@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { settingsCommand } from '../cli/settings.js'
 import { loadConfig, unreadWorkspaceDefaults } from '../common/runtime/config.js'
 import { defaultSettings, openSettingsFile, resolveSettings, settingsPath, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 import { runCli } from './support/cli.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { idOf, workspacesOf } from './support/workspaces.js'
@@ -15,7 +16,7 @@ import { idOf, workspacesOf } from './support/workspaces.js'
 // BUCKLE_MASS_DELETE_LIMIT, which a node reads from its environment file alone, as every workspace default.
 
 const roots: string[] = []
-afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { vi.restoreAllMocks(); await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 function scratch(): string {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-delete-settings-')))
   roots.push(root)

@@ -12,6 +12,7 @@ import { openObjectStore } from '../common/services/history/object-store.js'
 import { checkpointRoots } from '../common/services/workspaces/workspace-runtime.js'
 import { withOwnerMounts } from '../common/services/workspaces/workspace-settings.js'
 import type { ProcessRequest } from '../common/types/ports/process-runner.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
 
 // A mount's source is stored as the disk names it. One swapped for a link since (by another workspace's agent that can
@@ -19,7 +20,7 @@ import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspa
 // the stored source alone and refuse, or leave out, one that no longer lands on itself.
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 function scratch(): string {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-mount-swap-')))
   roots.push(root)
