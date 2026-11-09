@@ -20,7 +20,7 @@ node's applies again:
 | `name` | the workspace's name: what the node shows, and `--workspace` takes | the folder's name |
 | `env.<NAME>` | a variable its shell commands see | none |
 | `mount` | where the agent sees the folder, such as `/workspace` | its real path |
-| `approvalWaitMs` | milliseconds a gated call waits for an answer; `0` until answered or its [session ends](approvals-07.md) | `15000` |
+| `approvalWaitMs` | milliseconds a gated call waits for an answer; `0` until answered or the [server stops](approvals.md#timeouts) | `15000` |
 | `packs.enabled` | the packs offered, comma separated, which leaves plugins out | every built-in pack, and plugins |
 | `packs.shell` | `on` or `off`: the shell pack | on |
 | `packs.code` | `on` or `off`: [code mode](code-mode.md) | on |

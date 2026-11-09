@@ -69,10 +69,10 @@
 - An ask at `approvalWaitMs` `0` from an MCP call or a copy still states no deadline in its
   `expiresAt`, since a person's device signs that field in its challenge; the lapse is kept
   beside it. A decision on a lapsed ask is refused as unknown or expired. `/v1/invoke` asks do
-  not lapse at wait `0`: the ask stays until it is answered or its [session
-  ends](../how-to/approvals-07.md).
-- An ask held until answered keeps no lapse when its node process is killed rather than stopped:
-  it waits, as before, until it is answered or withdrawn.
+  not lapse at wait `0`: it stays until answered, keeping its
+  [session](../how-to/approvals-07.md) from ending at idle.
+- An ask held until answered keeps no lapse when the last node process holding it is killed
+  rather than stopped: it waits, as before, until answered or withdrawn.
 - A copy approved late in its hold has what is left of node:http's 300 seconds for the checkpoint
   and the upload. A run cut there may answer its re-send that its effects are unknown
   (`REQUEST_ALREADY_EXECUTED`), and `buckle cp` then stops; run it again. A node that resets the

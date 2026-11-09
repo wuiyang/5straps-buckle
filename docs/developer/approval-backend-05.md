@@ -37,6 +37,11 @@ is the `forms` row with `sameCaller`, so an HTTP form approves `once`, `session`
 the ask offers them, floor asks included, and the guard still checks each answer: a destructive
 command never takes `always`, and only the terminal and `buckle approve` widen. A credential
 file's form offers its lasting denials; an ask kept without its whole call gets the denial form.
+Each form is one `action` field whose enum lists the terminal's choices for its ask,
+`allow_<scope>` per offered scope, then `deny`, and for a credential file `deny_session` and
+`always_deny`, so no answer it admits is one the guard refuses (`approvalForm` in
+`mcp/forms-backend.ts`). An answer in the earlier `approve` and `scope` shape still reads; its
+denial denies once, as the terminal's does.
 
 - **`host.reach`:** `{ sameCaller }`, which core sets on each host it opens with
   `reachOf(rightsOf(source.kind))`, so the forms and the guard read one row: where it holds, the
@@ -81,9 +86,10 @@ A specifier assembled at run time from pieces is beyond that scan.
 - `test/http/mcp-http.test.ts`: the same round on the real `/mcp` route, under the agent token.
 - `test/approval-choice-parity.test.ts`: a plain write, a floor command, a file floor delete in
   and outside the workspace, a secret reference file, and a script file run, each made by its
-  rule and kept in a real ledger, draw the same choices at the serve terminal, in a stdio form,
-  and in an HTTP form, and the guard takes each from the HTTP form's own caller. The terminal's
-  folder and subfolders choices are its own.
+  rule and kept in a real ledger. Each route is driven for all it can send: every key the serve
+  terminal and `--watch` take, every answer a stdio and an HTTP form's schema admits, and every
+  `--scope` and `--deny` from a device, which the guard holds to the same set. The guard takes each
+  form choice from its own caller. Folder and subfolders are the node's alone.
 - `test/forms-backend.test.ts`: the same forms for either face, the answers read and the cap, the
   reach core hands, and the save form's answers, a skip without its question included.
 - `test/mcp-save-form.test.ts` and `test/mcp-http-save-form.test.ts`: the save form over stdio,

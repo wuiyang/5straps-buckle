@@ -70,17 +70,19 @@ anything is asked or run.
 ## Asks nobody holds
 
 - A client that closes its connection while its call waits leaves the call unrun, audited
-  `CALLER_LEFT`. Its ask is marked abandoned: it stays answerable for ten minutes, the time a
-  call sent again can join it, then lapses. An explicit cancel over stdio withdraws the asks,
-  audited `CALLER_CANCELLED`.
+  `CALLER_LEFT`. Its ask, once no other Buckle process holds it, is marked abandoned: it stays
+  answerable for ten minutes, the time a call sent again can join it, then lapses. An explicit
+  cancel over stdio withdraws the asks, audited `CALLER_CANCELLED`.
 - At `approvalWaitMs` `0` an ask from an MCP call or a copy states no deadline, and lapses ten
-  minutes after its hold ended. The same call sent again joins it and starts the ten minutes
-  over. An ask on `/v1/invoke` waits until it is answered or its session ends.
-- When a session ends ([session end](approvals-07.md)), at its own idle, as its `buckle mcp`
-  process exits, or as `buckle serve` stops or first opens the workspace after it starts, each
-  ask of it still waiting is withdrawn, and the same call sent again asks anew. A call held on
-  one keeps its session from ending at idle, so only an exit or a stop cuts it, answering
-  `APPROVAL_UNANSWERED`.
+  minutes after the last hold on it, in any Buckle process, ended. The same call sent again joins
+  it and starts the ten minutes over. An ask on `/v1/invoke` waits until it is answered, across a
+  server stop.
+- An ask still waiting, held or not, keeps its session from ending at idle. As a `buckle mcp`
+  process exits, or as `buckle serve` stops or first opens the workspace after it starts, the
+  session of that MCP server ends ([session end](approvals-07.md)): each ask of it still waiting
+  is withdrawn, a call held on one answers `APPROVAL_UNANSWERED`, and the same call sent again
+  asks anew. A stop leaves other sessions' asks waiting; a call held on one answers
+  `approval_required`.
 - When a session's 50 waiting asks, or the workspace's 500, are full, the oldest abandoned asks
   are withdrawn first to make room, and told cancelled. A cap full of asks someone still holds,
   or re-sent, refuses as before.

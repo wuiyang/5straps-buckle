@@ -2,7 +2,8 @@
 
 Buckle, the local permission node that runs an AI agent's tool calls, ends a session's approvals
 once the session goes quiet, or once the MCP server they were given through closes. This page
-covers when that happens, what ends, and how to change the window. [Approvals](approvals.md)
+covers when that happens, what ends, and how to change the window; [when Buckle cannot
+tell](approvals-08.md) covers a store it cannot read, and the limits. [Approvals](approvals.md)
 covers the scopes.
 
 ## When a session ends
@@ -29,16 +30,22 @@ session.
 A session's activity is:
 
 - one of its tools running, in any Buckle process on the workspace, however long it runs;
-- one of its calls held for your answer, in any Buckle process, however long it waits;
-- one of its calls starting or ending;
+- one of its asks waiting for your answer, whether or not a call waits on it, until it is
+  answered, withdrawn, or lapses;
+- one of its calls starting or ending, and a call's wait for your answer ending;
 - an ask of its calls being recorded, and a decision on one being applied.
 
-So a question you are still reading stays answerable: with the approval wait at `0`, which you
-set on purpose, its call waits until you answer. Once it is answered, or its wait ends, the window
-starts again. An ask no call waits on is not activity, so one left unanswered past the window ends
-with its session. Neither is a setup read (`buckle workspace show`, `buckle grants list`, the setup routes),
-a call refused before it reaches the workspace's rules, such as one with a bad token or to an
-offline workspace, nor an audit log record.
+So a question you are still reading stays answerable, however long you take: the idle end never
+withdraws it. With the approval wait at `0`, which you set on purpose, its call waits until you
+answer. Over HTTP MCP once its call's 30 seconds are up, and with [forms](approvals-06.md) on, no
+call waits on it, and it lapses ten minutes after its call returned ([asks nobody
+holds](approvals-03.md#asks-nobody-holds)). An answer starts the window again. Once none of its
+asks waits and none of its tools runs, a session whose last activity is older than the window can
+end at the next check.
+
+Not activity: a setup read (`buckle workspace show`, `buckle grants list`, the setup routes), a
+call refused before it reaches the workspace's rules, such as one with a bad token or to an
+offline workspace, and an audit log record.
 
 Buckle checks a call's own session before the call, so a call after the window finds its
 session ended and asks again; every session before each decision; and every session once a minute
@@ -51,10 +58,10 @@ activity itself within the window reads nothing of it.
 - `once` approvals no call has spent yet.
 - Session grants decided but not yet saved ([when a grant cannot be saved](approvals-05.md)):
   none is written later.
-- Asks still waiting, each withdrawn. A call held on one answers `APPROVAL_UNANSWERED`, the serve
-  terminal drops its question, and the approval webhook is told it was `cancelled`. The same call
-  sent again asks anew. An answer given after the window, from any process, finds its ask
-  withdrawn and grants nothing.
+- Asks still waiting, where the session ends with its MCP server; at idle none waits. Each is
+  withdrawn: a call held on one answers `APPROVAL_UNANSWERED`, the serve terminal drops its
+  question, and the approval webhook is told it was `cancelled`. The same call sent again asks
+  anew.
 
 Each session that ends writes one `approval_session_ended` entry in the workspace's audit log,
 naming its cause ([decision records](audit-log-03.md)). A session that held none of these writes
@@ -74,32 +81,3 @@ unset approval.sessionIdleMs` takes it out, so the node's `BUCKLE_APPROVAL_SESSI
 when the node or `buckle mcp` starts. Each running `buckle serve` and `buckle mcp` process ends
 sessions at the window it started with, so after you turn the node's value off or make it longer,
 restart each of them.
-
-## When Buckle cannot tell
-
-Buckle reads a session's activity from `activity.sqlite` in the workspace's `history/` folder and
-from the marks in its `active-work/` folder, which name the sessions whose tools run or whose calls
-wait for you. Where either cannot be read, as on a disk error, the session does not end and
-nothing is deleted. Until it can
-be read again, none of the session's approvals clears a call: each asks you again, and one you
-give meanwhile does too, so answer `once` to let the call run. A remembered denial still binds.
-The node log warns once, naming what it could not read. A store
-another Buckle process holds busy past its wait only skips that check: `activity.sqlite` for more
-than a second, or the approvals files as the check ends the sessions.
-
-Where `activity.sqlite` holds nothing of a session, as after it was lost, or a day after its last
-activity, or once its agent token opened 4,096 newer sessions, the making of that session's newest
-session grant in `grants.json` counts as its last activity, so an old grant still ends. Where `grants.json` cannot be read then, Buckle cannot tell, as above.
-
-## Limits
-
-- A process killed while its tool runs records no end: its tool stops counting as activity 10
-  seconds later, so its session can end soon after.
-- A `buckle mcp` process killed outright ends no session: its approvals clear no other process's
-  calls, and end when its session idles. A serve killed outright leaves the HTTP MCP sessions
-  until a serve first opens the workspace again, or each idles.
-- With no call coming, an idle session can outlast its window by up to the minute between checks.
-- A session end in one process can meet a call another process is clearing at that moment: the
-  call may run on the grant it read just before, or ask again.
-- A tool whose process stalls for more than 10 seconds, as on a very large copy on a slow disk,
-  can read as idle to another process meanwhile, so its sessions can end sooner, never later.

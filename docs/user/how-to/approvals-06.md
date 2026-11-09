@@ -31,7 +31,8 @@ granted at the node.
 
 - **Over stdio and HTTP alike:** the choices the serve terminal offers for the same ask, approve
   or deny, `once`, `session`, or `always` as the ask offers them, floor asks included: `sudo`,
-  the destructive list, and the file floor. A destructive command never offers `always`, at the
+  the destructive list, and the file floor. They come as one list, so a form sends nothing the
+  terminal does not offer. A destructive command never offers `always`, at the
   terminal or in a form. Over HTTP, a client of an earlier revision gets the text instead.
 - **A grant that cannot be saved:** where a `session` or `always` answer's grant cannot be
   saved, a save form asks to retry or skip it before the call runs ([when a grant cannot be
