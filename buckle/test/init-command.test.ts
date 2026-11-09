@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { parseEnv } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runInitCommand } from '../cli/main.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // buckle init as the command line runs it: the node's config is loaded first, only for where the audit log lives.
 // Every workspace default is read from the node's file alone, so a shell that sets one wrongly is no reason to refuse
@@ -23,7 +24,7 @@ beforeEach(() => {
   vi.stubEnv('BUCKLE_STATE_DIR', join(root, 'state'))
   vi.spyOn(process.stdout, 'write').mockImplementation(chunk => { printed += String(chunk); return true })
 })
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); await settleAuditLogs(); rmSync(root, { recursive: true, force: true }) })
 
 const argv = () => ['--out', out, '--port', '4399', '--yes', '--dir', workspace, '--name', 'Fixture']
 

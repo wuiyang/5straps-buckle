@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createBuckleHttp, mintedToken, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
 import { actionsPath } from '../../common/runtime/config.js'
-import { auditEntries } from '../support/action-log-writer.js'
+import { auditEntries, settleAuditLogs } from '../support/action-log-writer.js'
 import { PLAIN_MARKS } from '../../common/domain/permission/decision.js'
 
 // B19: an audit log that will not take writes refuses the agent's calls it would have to record, with a 503 an
@@ -27,6 +27,7 @@ async function brokenAudit(): Promise<{ buckle: BuckleHttp; state: string; works
   writeFileSync(join(workspace, 'note.md'), 'audited read')
   // The log file becomes a directory: every append fails, as on a full or read-only disk.
   const log = actionsPath(buckle.config)
+  await settleAuditLogs()
   rmSync(log, { force: true })
   mkdirSync(log)
   return { buckle, state, workspace, repair: () => rmSync(log, { recursive: true }) }
@@ -78,6 +79,7 @@ describe('an audit log that will not take writes', () => {
     const childRead = (requestId: string) => buckle.request('/workspaces/child/v1/invoke', { method: 'POST', headers: headers(childToken), body: JSON.stringify({ requestId, tool: 'fs_read', args: { path: '/workspace/note.md' } }) })
     expect(await (await childRead('child-opens')).json()).toMatchObject({ outcome: 'ok' })
     const childLog = join(state, 'workspaces', await buckle.idOf('child'), 'actions.jsonl')
+    await settleAuditLogs()
     rmSync(childLog, { force: true })
     mkdirSync(childLog)
 
@@ -108,6 +110,7 @@ describe('an audit log that will not take writes', () => {
     const childRead = (requestId: string) => buckle.request('/workspaces/child/v1/invoke', { method: 'POST', headers: headers(childToken), body: JSON.stringify({ requestId, tool: 'fs_list', args: { path: '/workspace' } }) })
     expect((await childRead('opens')).status).toBe(200)
     const childLog = join(state, 'workspaces', await buckle.idOf('child'), 'actions.jsonl')
+    await settleAuditLogs()
     rmSync(childLog, { force: true })
     mkdirSync(childLog)
     expect((await childRead('refused')).status).toBe(503)
@@ -156,6 +159,7 @@ describe('an audit log that will not take writes', () => {
     nodes.push(buckle)
     mkdirSync(join(root, 'child'))
     const nodeLog = join(state, 'actions.jsonl')
+    await settleAuditLogs()
     rmSync(nodeLog, { force: true })
     mkdirSync(nodeLog)
     const register = (query: string) => buckle.request(`/setup/workspaces${query}`, { method: 'POST', headers: headers(ADMIN), body: JSON.stringify({ id: 'child', name: 'child', dir: join(root, 'child') }) })

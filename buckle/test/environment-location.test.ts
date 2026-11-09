@@ -9,6 +9,7 @@ import { settingsCommand } from '../cli/settings.js'
 import { defaultEnvironmentFile, environmentFilePath } from '../common/runtime/config.js'
 import { loadEnvironmentFile, nodeLocation } from '../common/runtime/environment.js'
 import { recordedEnvironmentFiles } from '../common/runtime/environment-files.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
 // Owner ruling (2026-09-28): the node's settings live under ~/.5straps, in buckle.env in its state
@@ -34,11 +35,12 @@ beforeEach(() => {
   vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { printed += String(chunk); return true })
   vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => { printed += String(chunk); return true })
 })
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks()
   vi.unstubAllEnvs()
   for (const name of Object.keys(process.env)) if (!(name in savedEnvironment)) delete process.env[name]
   Object.assign(process.env, savedEnvironment)
+  await settleAuditLogs()
   rmSync(base, { recursive: true, force: true })
 })
 
