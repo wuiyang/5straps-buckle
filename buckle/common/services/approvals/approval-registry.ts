@@ -21,6 +21,7 @@ import { isPlainName } from '../../domain/paths.js'
 import { dropOnces, liveOnces, onceSchema, spendOnces, unspentOnces, type OnceEntry, type OnceSpend, type UnspentOnce } from './once-store.js'
 import { ActionTooLargeError, ApprovalConflictError, ApprovalLimitError, RequestIdReusedError } from './approval-errors.js'
 import { saveFailure } from './grant-save.js'
+import { heldAskName } from './full-ask.js'
 
 export const APPROVAL_OUTBOX_COUNT_MAX = 4096
 export const APPROVAL_OUTBOX_BYTES_MAX = 4 * 1024 * 1024
@@ -434,9 +435,11 @@ export interface ApprovalRegistry {
   /** Withdraws the asks still waiting among `tokens`, returning those it withdrew. */
   cancel(tokens: string[]): Promise<string[]>
   /**
-   * The last hold on these asks ended with them unanswered (the MCP asks brief, item 5). `abandoned`: its caller left
-   * before the hold ended, so each stays answerable for ten minutes at most and is marked abandoned; otherwise an ask that
-   * states no deadline and was held until answered lapses ten minutes from now. Returns the earliest lapse it set, in ms.
+   * The last hold in this process on these asks ended with them unanswered (the MCP asks brief, item 5). `abandoned`: its
+   * caller left before the hold ended, so each stays answerable for ten minutes at most and is marked abandoned; otherwise
+   * an ask that states no deadline and was held until answered lapses ten minutes from now. An ask a call in another
+   * process still holds (`heldElsewhere`, read under the lock) is left as it is: that process's own hold end marks it.
+   * Returns the earliest lapse it set, in ms.
    */
   holdEnded(input: { tokens: string[]; abandoned: boolean }): Promise<number | undefined>
   /**
@@ -515,6 +518,11 @@ export interface ApprovalRegistryOptions {
   live?: () => LiveSettings
   /** Told of each ask recorded and each decision applied, which count as the activity of the session it asked in for its idle check. */
   onActivity?: (session: GrantHolder) => void
+  /**
+   * The asks a call in another process holds for a person's answer now, by heldAskName, read under the approvals lock as a
+   * hold here ends; throws where they cannot be read. Absent, none.
+   */
+  heldElsewhere?: () => ReadonlySet<string>
 }
 
 const UNREAD_SETTINGS: LiveSettings = Object.freeze({ forms: false })
@@ -1444,9 +1452,11 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       return update((state) => {
         const now = Date.now()
         const lapse = now + PENDING_TTL_MS
+        const elsewhere = options.heldElsewhere?.() ?? new Set<string>()
         let earliest: number | undefined
         state.pending = state.pending.map((entry) => {
           if (entry.workspace !== workspace || !tokens.includes(entry.request.token)) return entry
+          if (entry.requestId !== undefined && elsewhere.has(heldAskName({ sessionId: entry.sessionId, requestId: entry.requestId, ...(entry.actor === undefined ? {} : { actor: entry.actor }) }))) return entry
           const noDeadline = entry.request.expiresAt === APPROVAL_NO_DEADLINE
           // Held until answered, it starts its ten minutes now; a lapse already set by a finite hold stands.
           if (!abandoned && (!noDeadline || entry.lapsesAt !== undefined)) return entry

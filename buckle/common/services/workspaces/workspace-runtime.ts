@@ -96,7 +96,7 @@ import { workspaceUntrusted, type NodeRoots } from './node-roots.js'
 import { mountRows, openSettingsFile, ownMount, policySources, resolveSettings, settingsPath, scopeOf, withMount, withPolicy, WorkspaceSettingsSchema, type PolicySources, type ResolvedSettings, type WorkspaceSettings } from './workspace-settings.js'
 import type { MountRow } from '../../domain/mount-table.js'
 import { WorkspaceError } from './registry.js'
-import { activeWorkDirectory, createActiveWorkMark, createExecutingMark, executingSessions } from './active-work.js'
+import { activeWorkDirectory, asksHeldElsewhere, createActiveWorkMark, createExecutingMark, executingSessions } from './active-work.js'
 import type { SecretSettings } from '../secrets/places.js'
 import { logCallFeedback } from '../invocation/call-feedback.js'
 import { unavailableToolReason } from '../invocation/owner-remediation.js'
@@ -405,6 +405,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
     onNoticeQueued: () => { void notices?.flush() },
     live: () => ({ forms: formsInForce() }),
     onActivity: (session) => { history.touchActivity(session); sessionIdle.saw(session) },
+    heldElsewhere: () => asksHeldElsewhere({ directory: marks, instance }),
   })
   // Every revoke goes through the ledger, so a decision's owed mark never writes a revoked grant again.
   const { grants } = approvals
@@ -432,8 +433,19 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
     // Every route's decisions, in this workspace's own log through the log service, which never holds up an answer.
     decisionAudit: createLoggedDecisionAudit({ actions, workspaceId }),
     idleCheck: session => sessionIdle.check(session),
-    // A call held for a person's answer holds its session in the executing mark, as a running tool does (APPROVAL-31).
-    holding: session => executing.begin(session),
+    // A call held for a person's answer holds its session and its ask in the executing mark, as a running tool holds its
+    // session. The hold's end is the session's activity, recorded before the mark lets go of it, so no other process
+    // reads the session idle before the invoker records the call's own end.
+    holding: ({ session, ask }) => {
+      const run = executing.begin(session, ask)
+      return {
+        end() {
+          history.touchActivity(session)
+          sessionIdle.saw(session)
+          run.end()
+        },
+      }
+    },
   })
   input.onApprovalCleanup(() => approvalService.close())
   // Before any call is served: a face session an earlier process left cannot clear one. A failure fails the open. A later

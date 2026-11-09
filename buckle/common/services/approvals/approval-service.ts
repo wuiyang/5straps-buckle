@@ -19,7 +19,7 @@ import { openApprovalDecision } from './approval-envelope.js'
 import { listedApprovals } from './approval-listing.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
 import { backendDecisionOf, backendReceipt, decisionOf, decisionRecord, INVALID_BACKEND_DECISION, readInput, receiptOf, skipReceiptOf, type ChallengeListing, type CoreApprovalApi } from './core-approval-api.js'
-import { fullAskOf, joinKey, ledgerAskOf, type AskSetting } from './full-ask.js'
+import { fullAskOf, heldAskName, joinKey, ledgerAskOf, type AskSetting } from './full-ask.js'
 import type { AskedCall } from '../../domain/approval/asked-call.js'
 import type { ApprovalRegistry, Departure, EndedSession, PendingAsk, Resolution, SessionEndRequest, SkipResolution } from './approval-registry.js'
 import { maskHeld, maskHeldJson, masksHeld } from '../secrets/mask.js'
@@ -192,11 +192,12 @@ export interface ApprovalServiceOptions {
    */
   idleCheck?: (session?: GrantHolder) => Promise<void>
   /**
-   * Holds the session active while one of its calls is held for a person's answer, as a running tool holds it, until the
-   * hold that `end` lets go of: a call left waiting on purpose stays answerable however long it waits, and the idle end
-   * never withdraws its ask (APPROVAL-31, the owner's ruling of 2026-11-09).
+   * Holds the session active, as a running tool holds it, and names the asks its call makes or joins (`ask`, heldAskName)
+   * for every process to read, from before they are recorded to the end of the call's wait for a person, which `end` lets
+   * go of whichever way the call goes. A call left waiting on purpose stays answerable however long it waits, and no other
+   * process starts the lapse of an ask this one still holds.
    */
-  holding?: (session: GrantHolder) => { end(): void }
+  holding?: (hold: { session: GrantHolder; ask: string }) => { end(): void }
   pollMs?: number
 }
 
@@ -302,64 +303,71 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const actor = scope?.context.actor
       const session: GrantHolder = actor === undefined ? { sessionId: input.sessionId } : { sessionId: input.sessionId, actor }
       await options.idleCheck?.(session)
-      const hold = (await options.hold()) ?? UNBOUND_HOLD
-      const key = joinKey({ ...input, actor })
-      const ownHold = holdFor({ hold, graceMs: options.graceMs, hint: input.wait })
-      // The hold the asks are recorded with: an ask that states no deadline lapses ten minutes after it where the face sends the call again (the MCP asks brief, item 5).
-      const issued = await options.registry.ask({ tool: input.tool, sessionId: input.sessionId, asks: input.asks, requestId: input.requestId, waitMs: askLifetime(options.graceMs, input.wait), ...(input.resends ? { holdMs: ownHold } : {}), ...(actor === undefined ? {} : { actor }), ...(input.fingerprint === undefined ? {} : { fingerprint: input.fingerprint }), ...(input.call === undefined ? {} : { call: input.call }), ...(input.attempt === undefined ? {} : { attempt: input.attempt }) })
-      const { requests: approvals, answered } = issued
-      if (issued.evicted?.length) notices.cancelled(issued.evicted)
-      if (issued.lapsesAt !== undefined) scheduleSweepAt(issued.lapsesAt)
-      // Joined to asks all answered, one of them denied: nothing to wait for, and the caller refuses.
-      if (issued.joined && approvals.length === 0) return { settled: true, approvals, answered }
-      const tokens = approvals.map(approval => approval.token)
-      if (!issued.joined) {
-        const announcing = announce(options.announce, approvals, input.call)
-        // A slow webhook never holds a script's call past its deadline: the post goes on in the background, and close
-        // still waits for it.
-        if (input.holdUntil === undefined) await announcing
-        else {
-          track(announcing)
-          await settledOrAt(announcing, input.holdUntil)
+      // Held from before its asks are recorded, so a process that ends its own hold on them meanwhile reads this one and
+      // starts no lapse, to the end of the wait, whichever way the call goes; the wait itself lets go of it as it ends.
+      const holding = options.holding?.({ session, ask: heldAskName({ ...input, actor }) })
+      let handedOff = false
+      try {
+        const hold = (await options.hold()) ?? UNBOUND_HOLD
+        const key = joinKey({ ...input, actor })
+        const ownHold = holdFor({ hold, graceMs: options.graceMs, hint: input.wait })
+        // The hold the asks are recorded with: an ask that states no deadline lapses ten minutes after it where the face sends the call again (the MCP asks brief, item 5).
+        const issued = await options.registry.ask({ tool: input.tool, sessionId: input.sessionId, asks: input.asks, requestId: input.requestId, waitMs: askLifetime(options.graceMs, input.wait), ...(input.resends ? { holdMs: ownHold } : {}), ...(actor === undefined ? {} : { actor }), ...(input.fingerprint === undefined ? {} : { fingerprint: input.fingerprint }), ...(input.call === undefined ? {} : { call: input.call }), ...(input.attempt === undefined ? {} : { attempt: input.attempt }) })
+        const { requests: approvals, answered } = issued
+        if (issued.evicted?.length) notices.cancelled(issued.evicted)
+        if (issued.lapsesAt !== undefined) scheduleSweepAt(issued.lapsesAt)
+        // Joined to asks all answered, one of them denied: nothing to wait for, and the caller refuses.
+        if (issued.joined && approvals.length === 0) return { settled: true, approvals, answered }
+        const tokens = approvals.map(approval => approval.token)
+        if (!issued.joined) {
+          const announcing = announce(options.announce, approvals, input.call)
+          // A slow webhook never holds a script's call past its deadline: the post goes on in the background, and close
+          // still waits for it.
+          if (input.holdUntil === undefined) await announcing
+          else {
+            track(announcing)
+            await settledOrAt(announcing, input.holdUntil)
+          }
+          scheduleSweep(approvals)
         }
-        scheduleSweep(approvals)
-      }
-      // Checked before any question is drawn: a caller that cancelled during the announce is asked about no more (review L5).
-      await cancelIfCancelled({ key, tokens, signal: input.signal, isCancel: input.isCancel })
-      // A hold until answered that ends before it starts still starts its asks' ten minutes (the MCP asks brief, item 5).
-      const unheld = async (reason: ApprovalSkipReason) => {
-        if (input.resends && ownHold === null) await holdEnded({ tokens, abandoned: false })
-        return skip({ approvals, answered, reason })
-      }
-      if (closing.signal.aborted) return unheld('shutdown')
-      const holdMs = atMost(ownHold, input.holdUntil === undefined ? undefined : Math.max(0, Math.floor(input.holdUntil - performance.now())))
-      // No hold left for a script's call is a wait that elapsed, not one the caller declined.
-      const zeroHold: ApprovalSkipReason = ownHold === 0 ? 'caller_declined_wait' : 'wait_elapsed'
-      // The hint sets how long the caller is held and never who is asked: a `grace` entry point asks
-      // its terminal whatever the hint says, and keeps asking after the caller returns (owner ruling).
-      const keepAsking = hold === 'grace'
-      // A hold of 0 comes only from the caller's hint `none`: the node's own is positive or null (D3).
-      if (holdMs === 0 && !keepAsking) return unheld(zeroHold)
+        // Checked before any question is drawn: a caller that cancelled during the announce is asked about no more (review L5).
+        await cancelIfCancelled({ key, tokens, signal: input.signal, isCancel: input.isCancel })
+        // A hold until answered that ends before it starts still starts its asks' ten minutes (the MCP asks brief, item 5).
+        const unheld = async (reason: ApprovalSkipReason) => {
+          if (input.resends && ownHold === null) await holdEnded({ tokens, abandoned: false })
+          return skip({ approvals, answered, reason })
+        }
+        if (closing.signal.aborted) return unheld('shutdown')
+        const holdMs = atMost(ownHold, input.holdUntil === undefined ? undefined : Math.max(0, Math.floor(input.holdUntil - performance.now())))
+        // No hold left for a script's call is a wait that elapsed, not one the caller declined.
+        const zeroHold: ApprovalSkipReason = ownHold === 0 ? 'caller_declined_wait' : 'wait_elapsed'
+        // The hint sets how long the caller is held and never who is asked: a `grace` entry point asks
+        // its terminal whatever the hint says, and keeps asking after the caller returns (owner ruling).
+        const keepAsking = hold === 'grace'
+        // A hold of 0 comes only from the caller's hint `none`: the node's own is positive or null (D3).
+        if (holdMs === 0 && !keepAsking) return unheld(zeroHold)
 
-      const ask = openAsk({ key, approvals, answered, joined: issued.joined })
-      const setting: AskSetting = { workspace, group: ask.group, correlationId: scope?.context.correlationId ?? input.requestId, requestId: input.requestId, actor: actor ?? null, sessionId: input.sessionId, idempotencyKey: callKeyOf(key), hold, ...(input.call === undefined ? {} : { call: input.call }) }
-      if (!ask.prompting) track(ask.prompting = startQuestions({ ask, asks: ask.approvals.map(approval => fullAskOf(approval, setting)), resend: issued.joined }))
-      // The newest joined caller carries the wait; every earlier one ends without running (review M1).
-      // A re-send whose own transport already dropped carries nothing on, so the earlier one keeps it.
-      if (!input.signal?.aborted) for (const earlier of ask.participants) earlier.abort()
-      if (holdMs === 0) {
-        if (ask.participants.size === 0) release({ ask, keepAsking: true })
-        return unheld(zeroHold)
+        const ask = openAsk({ key, approvals, answered, joined: issued.joined })
+        const setting: AskSetting = { workspace, group: ask.group, correlationId: scope?.context.correlationId ?? input.requestId, requestId: input.requestId, actor: actor ?? null, sessionId: input.sessionId, idempotencyKey: callKeyOf(key), hold, ...(input.call === undefined ? {} : { call: input.call }) }
+        if (!ask.prompting) track(ask.prompting = startQuestions({ ask, asks: ask.approvals.map(approval => fullAskOf(approval, setting)), resend: issued.joined }))
+        // The newest joined caller carries the wait; every earlier one ends without running (review M1).
+        // A re-send whose own transport already dropped carries nothing on, so the earlier one keeps it.
+        if (!input.signal?.aborted) for (const earlier of ask.participants) earlier.abort()
+        if (holdMs === 0) {
+          if (ask.participants.size === 0) release({ ask, keepAsking: true })
+          return unheld(zeroHold)
+        }
+        const participant = new AbortController()
+        ask.participants.add(participant)
+        const result = waitFor({ ask, participant, hold, holdMs, signal: input.signal })
+          .then(ending => finish({ ask, participant, ending, hold, held: ownHold, resends: input.resends === true, signal: input.signal, isCancel: input.isCancel, own: { approvals, answered } }))
+          .finally(() => holding?.end())
+        handedOff = true
+        track(result)
+        return result
+      } finally {
+        if (!handedOff) holding?.end()
       }
-      const participant = new AbortController()
-      ask.participants.add(participant)
-      // The call is held for a person from here, so its session counts as active until its wait ends (APPROVAL-31).
-      const active = options.holding?.(session)
-      const result = waitFor({ ask, participant, hold, holdMs, signal: input.signal })
-        .then(ending => finish({ ask, participant, ending, hold, held: ownHold, resends: input.resends === true, signal: input.signal, isCancel: input.isCancel, own: { approvals, answered } }))
-        .finally(() => active?.end())
-      track(result)
-      return result
     },
 
     async answer(input) {

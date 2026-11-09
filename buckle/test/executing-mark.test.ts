@@ -270,6 +270,23 @@ describe('a workspace runtime', () => {
     await runtime.history.close()
   }, 30_000)
 
+  it('records its session\'s activity as a call\'s hold ends, while the mark still names it, so no other process meets the gap before the call\'s end is recorded', async () => {
+    const { runtime, directory } = await workspace()
+    const touches: Array<{ at: number; marked: boolean }> = []
+    const touch = runtime.history.touchActivity.bind(runtime.history)
+    vi.spyOn(runtime.history, 'touchActivity').mockImplementation((session) => {
+      touches.push({ at: Date.now(), marked: executingMarks({ directory }).some(mark => mark.sessions.some(named => named.sessionId === session.sessionId)) })
+      touch(session)
+    })
+    const asked = Date.now()
+    expect(await write(runtime, { mode: 'finite', ms: 300 })).toMatchObject({ outcome: 'approval_required' })
+
+    expect(touches.at(-1)).toEqual({ at: expect.any(Number), marked: true })
+    expect(touches.at(-1)!.at).toBeGreaterThanOrEqual(asked + 300)
+    expect(executingFiles(directory)).toEqual([])
+    await runtime.history.close()
+  }, 30_000)
+
   it('holds the mark until the checkpoint after the tool is taken, not only while the tool runs', async () => {
     const { runtime, directory } = await workspace()
     const run = runtime.history.run.bind(runtime.history)

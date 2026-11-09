@@ -9,6 +9,7 @@ import { APPROVAL_OUTBOX_COUNT_MAX, APPROVAL_OUTBOX_RETENTION_MS, createApproval
 
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { activeWorkDirectory, executingMarks } from '../common/services/workspaces/active-work.js'
 import { fixedInteraction, approvalServiceWithTerminal } from './support/interaction.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
@@ -257,6 +258,36 @@ describe('an ask at wait 0', () => {
     clockAt(start + 41 * MINUTE)
     expect(runtime.approvalService.pending()).toEqual([])
     await runtime.history.close()
+  })
+
+  // Two processes can hold one caller's call, as a re-send that reached a second node process joins the first one's ask.
+  it('starts no lapse while a call in another process still holds it, and starts it as the last hold anywhere ends', async () => {
+    const start = Date.now()
+    const { config, runtime: first } = await node('0')
+    const second = await createRuntime({ config, interaction: fixedInteraction() })
+    const leaving = [new AbortController(), new AbortController()]
+    const firstHeld = first.invoke({ sessionId: 'mcp', request: write('shared-1'), signal: leaving[0]!.signal, resends: true })
+    await vi.waitFor(() => expect(first.approvalService.pending()).toHaveLength(1))
+    const secondHeld = second.invoke({ sessionId: 'mcp', request: write('shared-1'), signal: leaving[1]!.signal, resends: true })
+    await vi.waitFor(() => expect(executingMarks({ directory: activeWorkDirectory(config.nodeStateDirectory ?? config.stateDirectory, first.workspaceId) })).toHaveLength(2))
+
+    leaving[0]!.abort()
+    expect(await firstHeld).toMatchObject({ outcome: 'error', error: { code: 'CALLER_LEFT' } })
+    const [kept] = second.approvalService.waiting()
+    expect(kept).not.toHaveProperty('lapsesAt')
+    expect(kept).not.toHaveProperty('abandonedAt')
+    clockAt(start + 11 * MINUTE)
+    expect(second.approvalService.pending()).toHaveLength(1)
+
+    leaving[1]!.abort()
+    expect(await secondHeld).toMatchObject({ outcome: 'error', error: { code: 'CALLER_LEFT' } })
+    expect(second.approvalService.waiting()[0]).toMatchObject({ abandonedAt: expect.any(String), lapsesAt: expect.any(String) })
+    clockAt(start + 20 * MINUTE)
+    expect(second.approvalService.pending()).toHaveLength(1)
+    clockAt(start + 22 * MINUTE)
+    expect(second.approvalService.pending()).toEqual([])
+    await first.history.close()
+    await second.history.close()
   })
 
   // A script's call (owner decision D82) waits no later than its script's deadline: held until answered by the node, its

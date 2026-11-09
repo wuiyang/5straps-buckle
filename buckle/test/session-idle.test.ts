@@ -288,7 +288,7 @@ function setUp(options: { grants?: (store: GrantStore) => GrantStore; lockDeadli
   const marks = join(root, 'active-work')
   // A call held for a person's answer holds its session in this process's executing mark, as a runtime wires it.
   const executing = createExecutingMark({ directory: marks, workspaceId: WORKSPACE, instance: 'serving' })
-  const service = createApprovalService({ registry, workspaceId: WORKSPACE, serverId: 'node-1', graceMs: options.graceMs === undefined ? 200 : options.graceMs, hold: async () => 'grace', terminal, nonces: createMemoryNonceClaims(), decisionAudit: audit.audit, holding: session => executing.begin(session) })
+  const service = createApprovalService({ registry, workspaceId: WORKSPACE, serverId: 'node-1', graceMs: options.graceMs === undefined ? 200 : options.graceMs, hold: async () => 'grace', terminal, nonces: createMemoryNonceClaims(), decisionAudit: audit.audit, holding: ({ session, ask }) => executing.begin(session, ask) })
   return { root, store, registry, service, events, audit, approvals, marks }
 }
 
