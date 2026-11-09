@@ -75,8 +75,8 @@ anything is asked or run.
   cancel over stdio withdraws the asks, audited `CALLER_CANCELLED`.
 - At `approvalWaitMs` `0` an ask from an MCP call or a copy states no deadline, and lapses ten
   minutes after the last hold on it, in any Buckle process, ended. The same call sent again joins
-  it and starts the ten minutes over. An ask on `/v1/invoke` waits until it is answered, across a
-  server stop.
+  it and can only push the ten minutes back. An ask on `/v1/invoke` waits until it is answered,
+  across a server stop.
 - An ask still waiting, held or not, keeps its session from ending at idle. As a `buckle mcp`
   process exits, or as `buckle serve` stops or first opens the workspace after it starts, the
   session of that MCP server ends ([session end](approvals-07.md)): each ask of it still waiting

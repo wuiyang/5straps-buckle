@@ -49,7 +49,9 @@ that reads it. Paths are in `buckle/`.
   where its pid answers to nothing, or names none, as a mark from before this build.
 - **A clock set back:** a mark dated more than 2 s ahead of the reader's clock is as old as that
   process has seen it unchanged (`markStat`), so a dead writer's mark from before the change goes
-  after the usual limits, not once the clock catches up. A refresh dates it by the clock again.
+  after the usual limits, not once the clock catches up. A refresh dates it by the clock again. A
+  one-shot reader, such as a CLI process reading once, has seen the mark for no time, so it still
+  reads one dated ahead as fresh.
 - **The reader:** `executingMarks` lists the fresh and stalled marks with their sessions and asks,
   and removes the dead ones and stale `.tmp` files only as judged (`removedAsJudged`): each is
   moved aside, then removed, or put back where its identity (inode, mtime, and size) changed since,
