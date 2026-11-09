@@ -29,11 +29,14 @@ session.
 A session's activity is:
 
 - one of its tools running, in any Buckle process on the workspace, however long it runs;
+- one of its calls held for your answer, in any Buckle process, however long it waits;
 - one of its calls starting or ending;
 - an ask of its calls being recorded, and a decision on one being applied.
 
-A call waiting for you is not activity, so an ask left unanswered past the window ends with its
-session. Neither is a setup read (`buckle workspace show`, `buckle grants list`, the setup routes),
+So a question you are still reading stays answerable: with the approval wait at `0`, which you
+set on purpose, its call waits until you answer. Once it is answered, or its wait ends, the window
+starts again. An ask no call waits on is not activity, so one left unanswered past the window ends
+with its session. Neither is a setup read (`buckle workspace show`, `buckle grants list`, the setup routes),
 a call refused before it reaches the workspace's rules, such as one with a bad token or to an
 offline workspace, nor an audit log record.
 
@@ -75,8 +78,9 @@ restart each of them.
 ## When Buckle cannot tell
 
 Buckle reads a session's activity from `activity.sqlite` in the workspace's `history/` folder and
-from the marks in its `active-work/` folder, which name the sessions whose tools run. Where either
-cannot be read, as on a disk error, the session does not end and nothing is deleted. Until it can
+from the marks in its `active-work/` folder, which name the sessions whose tools run or whose calls
+wait for you. Where either cannot be read, as on a disk error, the session does not end and
+nothing is deleted. Until it can
 be read again, none of the session's approvals clears a call: each asks you again, and one you
 give meanwhile does too, so answer `once` to let the call run. A remembered denial still binds.
 The node log warns once, naming what it could not read. A store

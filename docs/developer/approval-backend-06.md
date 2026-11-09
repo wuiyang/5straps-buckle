@@ -15,15 +15,20 @@ settings, and the tests. Paths are in `buckle/`.
 - **The file:** `executing-<instance>`, named by the runtime's own instance id, a UUID minted as it
   opens, which also names the browser sessions it writes. Never by its pid, so a new process under
   a dead one's pid never refreshes the dead one's mark. It holds `{ sessions }`, the sessions whose
-  tools run, written to a `.tmp` beside it and renamed as that set changes, so no reader meets it
-  half written.
+  tools run or whose calls are held for an answer, written to a `.tmp` beside it and renamed as that
+  set changes, so no reader meets it half written.
 - **When it is held:** from the moment a tool begins to run (`beginRun` in
   `common/services/invocation/invoker.ts`) to a `finally` around the history wrapper, so through
-  the checkpoint after the tool, and before the result entry is written or dropped. One file per
-  runtime, refreshed every 2 s (`ACTIVE_WORK_REFRESH_MS`); `begin(session)` counts runs per
-  session, and `running(session)` says whether this runtime runs one of its tools.
-- **When it is not:** a call waiting for a person holds none, and neither does a script while one
-  of its calls waits (`ExecutingRun.paused`, in `clearPermissions`).
+  the checkpoint after the tool, and before the result entry is written or dropped. A script holds
+  it the whole time, its calls' waits included. One file per runtime, refreshed every 2 s
+  (`ACTIVE_WORK_REFRESH_MS`); `begin(session)` counts runs and holds per session, and
+  `running(session)` says whether this runtime runs one of its tools or holds one of its calls.
+- **A call held for an answer:** holds it from the start of its wait to its end, whatever the
+  wait, through `holding` in `ApprovalServiceOptions`, which `createRuntime` wires to `begin`. The
+  owner ruled (APPROVAL-31) that a wait of 0 is set on purpose, so such a call stays answerable
+  however long it waits, and the idle end never withdraws its ask.
+- **When it is not:** a call that asks with the wait `none`, and an ask no call waits on, as
+  after its hold ended, hold none.
 - **A write that fails:** warned once until a refresh lands, never thrown. The refresh timer starts
   before the first write, so a mark whose first write failed is written at a later refresh. A
   missing mark can only end sessions early.

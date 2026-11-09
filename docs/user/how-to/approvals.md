@@ -101,9 +101,9 @@ logged, never failing the call. It never decides.
 
 `buckle serve` and `buckle mcp` hold a gated call for the workspace's `approvalWaitMs`, 15000
 by default, `0` until answered; `/mcp` over HTTP holds 30 seconds at most. Unanswered, it
-returns `approval_required`, and the agent sends the same call again once decided
-([over MCP](approvals-03.md)). A hold, `0` included, also ends with [its
-session](approvals-07.md): the call then answers `APPROVAL_UNANSWERED`. An HTTP caller's
+returns `approval_required`, and the agent sends the call again once decided
+([over MCP](approvals-03.md)). A held call keeps [its session](approvals-07.md) from ending at
+idle; a server stop cuts it, answering `APPROVAL_UNANSWERED`. An HTTP caller's
 `context.approvalWait` overrides it:
 `{"mode":"none"}` returns at once, `{"mode":"finite","ms":60000}` holds a minute.
 `buckle workspace set approvalWaitMs 60000` sets it.

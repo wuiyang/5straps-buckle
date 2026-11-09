@@ -68,7 +68,8 @@ at its own window until it restarts.
 ## Tests
 
 - **`test/executing-mark.test.ts`:** the mark and the sessions it names, a half-written mark, a
-  first write that fails, and the hold through the checkpoint after the tool.
+  first write that fails, the hold through the checkpoint after the tool, and a call held for an
+  answer, a script's call too.
 - **`test/face-sessions.test.ts`:** a stdio process's own id on each call, two stdio processes each
   ending its own alone, the CLI ending none, serve ending every caller's `mcp` at its start after a
   crash and at its stop, and none on a workspace brought back online; an end at open that fails
@@ -78,10 +79,12 @@ at its own window until it restarts.
   grants, onces, owed marks, withdrawn asks and their webhook notices and ledger reason, the
   record and its actor, a caller under the same id kept, a session whose tool runs kept, one
   session checked alone, a tool that starts between the first read and the lock, a second
-  process's long tool, activity seen after a gap, and unknown or busy activity, one session's alone.
+  process's long tool, a call held for an answer as a second process reads it, activity seen after
+  a gap, and unknown or busy activity, one session's alone.
 - **`test/session-idle-runtime.test.ts`:** a faked clock through a runtime: two HTTP MCP callers on
   their own windows, a CLI call after idle, a late decision from another process, the sweep, of
-  idle sessions alone, a held ask, a dropped result, a decision read by another process, what is
+  idle sessions alone, a call held with the wait at 0 past the window and its session's end a
+  window after the answer, a dropped result, a decision read by another process, what is
   not activity, the grant fallback, window 0, and an unreadable store in one process and in a
   second.
 - **`test/approval-ledger-split.test.ts`:** a session ended while `approvals.json` was unreadable,
