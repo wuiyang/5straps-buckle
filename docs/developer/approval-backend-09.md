@@ -30,6 +30,13 @@ that reads it. Paths are in `buckle/`.
   (`touchActivity`) before the mark lets go, so no process meets a gap before the invoker records
   the call's end. An ask no call holds is read from the ledger instead ([the
   check](approval-backend-06.md#the-check)).
+- **A hold's end:** the last hold in a process on an ask, a call superseded by a re-send that
+  would not wait included, lets go inside `holdEnded`, under the approvals lock, before it reads
+  the holds left, so of two holds that end at once the second to take the lock reads the first
+  gone. A call that fails before its wait, a failed join included, ends its hold the same way,
+  naming its ask by `heldAskName`. Any other hold in the process lets go as it leaves the call's
+  participants. A re-send with a set wait never brings a lapse nearer, and sets none on an ask
+  without one, which another call may hold until answered: the last hold's end starts it.
 - **A write that fails:** warned once until a refresh lands, never thrown. The refresh timer starts
   before the first write, so a mark whose first write failed is written at a later refresh. A
   refresh writes the mark whole wherever what it holds now differs from its last write that landed,
@@ -40,10 +47,15 @@ that reads it. Paths are in `buckle/`.
   given to a new process answers too, and that process never refreshes another runtime's mark.
 - **A crash:** its mark reads stale 10 s after its last refresh (`ACTIVE_WORK_FRESH_MS`), and dead
   where its pid answers to nothing, or names none, as a mark from before this build.
+- **A clock set back:** a mark dated more than 2 s ahead of the reader's clock is as old as that
+  process has seen it unchanged (`markStat`), so a dead writer's mark from before the change goes
+  after the usual limits, not once the clock catches up. A refresh dates it by the clock again.
 - **The reader:** `executingMarks` lists the fresh and stalled marks with their sessions and asks,
-  and removes the dead ones and stale `.tmp` files. `executingSessions` splits the sessions into
-  `running` and `stalled`. `asksHeldElsewhere` gives the asks other runtimes hold, which the
-  registry's `heldElsewhere` reads under the approvals lock in `holdEnded`: an ask's lapse starts
-  only once no hold on it remains anywhere. A folder not made yet reads as none; any other read
-  error, or a fresh mark that does not parse, throws.
+  and removes the dead ones and stale `.tmp` files only as judged (`removedAsJudged`): each is
+  moved aside, then removed, or put back where its identity (inode, mtime, and size) changed since,
+  as when its writer resumed, and read as fresh. `executingSessions` splits the sessions into
+  `running` and `stalled`. `asksHeldElsewhere` gives the asks other runtimes hold; with this
+  runtime's own (`heldAsks`), the registry's `held` reads them in `holdEnded`: an ask's lapse
+  starts only once no hold on it remains anywhere. A folder not made yet reads as none; any other
+  read error, or a fresh mark that does not parse, throws.
 - **Kept apart:** `activeElsewhere`, which `disable`, `remove`, and `prune` read, skips them.
