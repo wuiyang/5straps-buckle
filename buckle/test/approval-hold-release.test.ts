@@ -9,7 +9,7 @@ import { createApprovalRegistry } from '../common/services/approvals/approval-re
 import { createApprovalService, type ApprovalAskInput, type ApprovalService } from '../common/services/approvals/approval-service.js'
 import { heldAskName } from '../common/services/approvals/full-ask.js'
 import { createExecutingMark, executingMarks } from '../common/services/workspaces/active-work.js'
-import type { ApprovalBackend } from '../common/types/ports/approval-backend.js'
+import type { ApprovalBackend, ApprovalHold } from '../common/types/ports/approval-backend.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 import { UNHEARD_DECISIONS } from './support/decision-audit.js'
 
@@ -26,7 +26,7 @@ afterEach(async () => {
 })
 
 /** A ledger and its service, with a terminal that keeps asking until core stops it, and each hold counted. */
-function setUp(graceMs: number | null = null) {
+function setUp(graceMs: number | null = null, hold: ApprovalHold = 'grace') {
   const root = mkdtempSync(join(tmpdir(), 'buckle-hold-release-'))
   roots.push(root)
   const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w' }), join(root, 'approvals.json'), 15_000)
@@ -39,8 +39,11 @@ function setUp(graceMs: number | null = null) {
   const marks = join(root, 'active-work')
   const executing = createExecutingMark({ directory: marks, workspaceId: 'w', instance: 'here' })
   const holds = { begun: 0, ended: 0 }
+  /** The holds that had ended as each hold-end step let go under the approvals lock. */
+  const endedAtLock: number[] = []
+  const ledger: typeof registry = { ...registry, holdEnded: input => registry.holdEnded({ ...input, letGo: () => { endedAtLock.push(holds.ended); input.letGo?.() } }) }
   const service = createApprovalService({
-    registry, workspaceId: 'w', serverId: 'node-1', graceMs, hold: async () => 'grace', terminal, nonces: createMemoryNonceClaims(), decisionAudit: UNHEARD_DECISIONS,
+    registry: ledger, workspaceId: 'w', serverId: 'node-1', graceMs, hold: async () => hold, terminal, nonces: createMemoryNonceClaims(), decisionAudit: UNHEARD_DECISIONS,
     holding: ({ session, ask }) => {
       holds.begun++
       const run = executing.begin(session, ask)
@@ -54,7 +57,7 @@ function setUp(graceMs: number | null = null) {
     expect(holds.ended).toBe(holds.begun)
     expect(executingMarks({ directory: marks })).toEqual([])
   }
-  return { registry, service, holds, marks, released }
+  return { registry, service, holds, marks, released, endedAtLock }
 }
 
 const ASK = { kind: 'ask' as const, ...PLAIN_MARKS, rule: 'write_scope' as const, subject: '/outside/a', reason: 'outside the workspace', offeredScopes: ['once' as const] }
@@ -141,6 +144,29 @@ describe('the hold a call takes while it waits for a person', () => {
     const [token] = registry.pending().map(request => request.token)
     expect(await service.answer({ decision: { token: token!, approved: false, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: true })
     expect(await service.request(call())).toMatchObject({ settled: true, approvals: [] })
+    released()
+  })
+})
+
+// A hold's end records its ask's lapse under the approvals lock, and lets go of the hold there, so the process that ends
+// the last other hold reads this one gone or this one reads that one gone, never both held. A way out that lets go before
+// the step has the lock would read the hold as held there.
+describe('where a call that sends again lets go of its hold as it ends before its wait starts', () => {
+  it.each([
+    ['would not wait, where its face keeps asking', 'grace'],
+    ['would not wait, where its face does not', 'prompt'],
+  ] as const)('does so under the approvals lock, as a call that %s', async (_, hold) => {
+    const { service, released, endedAtLock } = setUp(null, hold)
+    expect(await service.request(call({ resends: true, wait: { mode: 'none' } }))).toMatchObject({ settled: false })
+    expect(endedAtLock).toEqual([0])
+    released()
+  })
+
+  it('does so under the approvals lock, as a call that meets a service already closing', async () => {
+    const { service, released, endedAtLock } = setUp()
+    await service.close()
+    expect(await service.request(call({ resends: true }))).toMatchObject({ settled: false })
+    expect(endedAtLock).toEqual([0])
     released()
   })
 })
