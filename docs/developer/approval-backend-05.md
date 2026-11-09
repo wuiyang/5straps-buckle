@@ -30,20 +30,17 @@ routes](approval-backend-03.md#each-route)), over HTTP as over stdio.
 
 ## What a form offers
 
-A form offers the scopes its ask offers, whichever face draws it: the owner ruled that where an
-ask is answered changes no scope it offers. The `http-forms` row in
-`common/domain/approval/assurance.ts` is the `forms` row with `sameCaller` and `approvesFloor:
-false`, so an HTTP form approves `once`, `session`, or `always` as the ask offers them, and the
-guard still checks each answer: a destructive command never takes `always`, only the terminal and
-`buckle approve` widen, and a floor ask's approval from it is `assurance_too_low`, since anything
-holding the agent token sends it. A credential file's form offers its lasting denials; an ask
-kept without its whole call gets the denial form.
+A form offers what its ask offers, whichever face draws it: the owner ruled (APPROVAL-17, and
+APPROVAL-33 of 2026-11-09) that where an ask is answered changes nothing it offers. The
+`http-forms` row in `common/domain/approval/assurance.ts`
+is the `forms` row with `sameCaller`, so an HTTP form approves `once`, `session`, or `always` as
+the ask offers them, floor asks included, and the guard still checks each answer: a destructive
+command never takes `always`, and only the terminal and `buckle approve` widen. A credential
+file's form offers its lasting denials; an ask kept without its whole call gets the denial form.
 
-- **`host.reach`:** `{ floor, sameCaller }`, which core sets on each host it opens with
-  `reachOf(rightsOf(source.kind))`, so the forms and the guard read one row. Where `sameCaller`
-  holds, the forms read answers only to the asks their own caller raised. Where `floor` does not,
-  a floor ask (the `policy.floor` of its `FullAsk`, from the ledger's mark) gets the denial form,
-  whose message names where a person approves it.
+- **`host.reach`:** `{ sameCaller }`, which core sets on each host it opens with
+  `reachOf(rightsOf(source.kind))`, so the forms and the guard read one row: where it holds, the
+  forms read answers only to the asks their own caller raised.
 
 ## The answers read
 
@@ -53,9 +50,7 @@ goes to `host.decide` only for one of them, and where `reach.sameCaller` holds, 
 sender raised; any other key costs no record and no lock. A `save:` key settles the question the
 backend drew for its sender ([grant save routes](approval-backend-03.md#each-route)). A form that
 comes back declined or cancelled decides nothing, and the call sent again draws the forms again
-at once, except a floor ask's denial form drawn where `reach.floor` does not hold: its dismissal
-sets `holds`, and `mcp/server.ts` then waits the call as with forms off, so a person's approval
-at the node runs it.
+at once.
 
 ## The caller
 
@@ -84,6 +79,11 @@ A specifier assembled at run time from pieces is beyond that scan.
   the approvals file untouched, a dismissed form drawn again at once, the forms closed with the
   runtime's approvals, a 2025-era client's relay text, and the setting off.
 - `test/http/mcp-http.test.ts`: the same round on the real `/mcp` route, under the agent token.
+- `test/approval-choice-parity.test.ts`: a plain write, a floor command, a file floor delete in
+  and outside the workspace, a secret reference file, and a script file run, each made by its
+  rule and kept in a real ledger, draw the same choices at the serve terminal, in a stdio form,
+  and in an HTTP form, and the guard takes each from the HTTP form's own caller. The terminal's
+  folder and subfolders choices are its own.
 - `test/forms-backend.test.ts`: the same forms for either face, the answers read and the cap, the
   reach core hands, and the save form's answers, a skip without its question included.
 - `test/mcp-save-form.test.ts` and `test/mcp-http-save-form.test.ts`: the save form over stdio,
