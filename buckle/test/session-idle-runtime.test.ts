@@ -127,8 +127,8 @@ describe('a workspace runtime', () => {
     expect((await sessionEnds(cli)).map(entry => [entry.sessionId, entry.args])).toEqual([['cli', expect.objectContaining({ cause: 'idle', grants: 1 })]])
   }, 30_000)
 
-  // APPROVAL-31, the owner's ruling of 2026-11-09: a wait of 0 is set on purpose, so a call held for a person stays
-  // answerable for as long as it waits, and keeps its own session from ending at idle meanwhile.
+  // A wait of 0 is set on purpose, so a call held for a person stays answerable for as long as it waits, and keeps its own
+  // session from ending at idle meanwhile.
   it('keeps the session of a call held for an answer with the wait at 0 past the window, and ends it a window after the answer', async () => {
     clock()
     const runtime = await open(configOf())
@@ -170,7 +170,9 @@ describe('a workspace runtime', () => {
     expect(runtime.grants.list()).toEqual([])
   }, 30_000)
 
-  it('ends a session idle past the window before a late decision from another process applies, so it grants nothing and the next call asks', async () => {
+  // A question a person still reads stays answerable, whether or not a call is held on it: over HTTP MCP past its hold,
+  // with MCP forms on, or with the wait `none`, no call waits on the ask.
+  it('keeps a session whose ask waits with no call held on it past the window, so a late decision from another process applies, and ends it a window after', async () => {
     clock()
     const config = configOf({ BUCKLE_APPROVAL_SESSION_IDLE_MS: String(MINUTE) })
     const serving = await open(config)
@@ -178,11 +180,36 @@ describe('a workspace runtime', () => {
     const asking = await write(serving, 'cli', 'two.md')
     const token = asking.outcome === 'approval_required' ? asking.approvals[0]!.token : ''
     past(MINUTE)
+    await serving.sessionIdle.check()
+    expect(serving.approvalService.pending().map(request => request.token)).toEqual([token])
 
     const approving = await open(config)
-    expect(await approving.approvalApi.decide({ source: 'cli', decision: { token, outcome: 'approve', scope: 'session' } })).toMatchObject({ status: 'refused' })
-    expect(approving.grants.list()).toEqual([])
+    expect(await approving.approvalApi.decide({ source: 'cli', decision: { token, outcome: 'approve', scope: 'session' } })).toMatchObject({ status: 'applied' })
+    expect(approving.grants.list()).toHaveLength(2)
+    expect(await write(serving, 'cli', 'one/a.md')).toMatchObject({ outcome: 'ok' })
+    expect(await sessionEnds(serving)).toEqual([])
+
+    past(MINUTE)
     expect(await write(serving, 'cli', 'one/a.md')).toMatchObject({ outcome: 'approval_required' })
+    expect((await sessionEnds(serving)).map(entry => entry.sessionId)).toEqual(['cli'])
+  }, 30_000)
+
+  it('ends a session whose only ask lapsed unanswered, as one no call holds over HTTP MCP lapses ten minutes after its hold', async () => {
+    clock()
+    const runtime = await open(configOf({ BUCKLE_APPROVAL_SESSION_IDLE_MS: String(MINUTE) }))
+    await approvedForSession(runtime, 'mcp', 'one/a.md')
+    const asking = await runtime.invoke({ sessionId: 'mcp', approvalWait: { mode: 'none' }, resends: true, request: { requestId: `write-${++sequence}`, tool: 'fs_write', args: { path: 'two.md', content: 'x' }, approvalTokens: [] } })
+    expect(asking).toMatchObject({ outcome: 'approval_required' })
+    past(5 * MINUTE)
+    await runtime.sessionIdle.check()
+    expect(runtime.grants.list()).toHaveLength(1)
+    expect(runtime.approvalService.pending()).toHaveLength(1)
+
+    past(5 * MINUTE)
+    expect(runtime.approvalService.pending()).toEqual([])
+    await runtime.sessionIdle.check()
+    expect(runtime.grants.list()).toEqual([])
+    expect((await sessionEnds(runtime)).map(entry => entry.sessionId)).toEqual(['mcp'])
   }, 30_000)
 
   it('ends the sessions of a workspace idle past the window at its once-a-minute sweep, with no call to check first', async () => {

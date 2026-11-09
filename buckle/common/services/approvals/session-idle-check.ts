@@ -22,8 +22,9 @@ const STORES = Object.freeze({ activity: ACTIVITY_STORE, grants: 'grants.json', 
 
 /**
  * One workspace's idle check: each of its sessions, its id under its actor, ends once it has had no activity of its own for
- * longer than the window, while the others keep theirs. Where a session's activity cannot be read, it does not end, and its
- * session approvals clear no call until it can (SESSION_APPROVALS_CLEAR_WHILE_UNKNOWN).
+ * longer than the window, while the others keep theirs; an ask of it still waiting for a person is activity until it is
+ * answered, withdrawn, or lapses. Where a session's activity cannot be read, it does not end, and its session approvals
+ * clear no call until it can (SESSION_APPROVALS_CLEAR_WHILE_UNKNOWN).
  */
 export interface SessionIdleCheck {
   /**
@@ -49,10 +50,13 @@ export interface SessionIdleInput {
    */
   sessionGrantMade?: (session: GrantHolder) => number | undefined
   /**
-   * The sessions whose tools run, or whose calls are held for an answer, in the workspace now, in any process; throws where
-   * the marks cannot be read.
+   * The sessions whose tools run, or whose calls are held for an answer, in the workspace now, in any process (`running`),
+   * and those a mark names that went stale while the process that wrote it still runs (`stalled`), which skip this check;
+   * throws where the marks cannot be read.
    */
-  executing: () => readonly GrantHolder[]
+  executing: () => { running: readonly GrantHolder[]; stalled: readonly GrantHolder[] }
+  /** The sessions with an ask still waiting for a person, held by a call or not; throws where the ledger cannot be read. */
+  asking: () => readonly GrantHolder[]
   /** Whether a tool of the session runs, or a call of it is held for an answer, in this runtime now. */
   runningHere: (session: GrantHolder) => boolean
   /** The sessions that hold anything an end removes; throws where neither the ledger nor the grants can be read. */
@@ -81,17 +85,29 @@ export function createSessionIdleCheck(input: SessionIdleInput): SessionIdleChec
     return input.runningHere(session) ? now : seenAt.get(key)
   }
 
-  // The marks are read once per check, whatever number of sessions it reads.
+  // The marks and the asks are read once per check, whatever number of sessions it reads.
   const readerOf = (): ((session: GrantHolder) => ActivityReading) => {
-    let running: ReadonlySet<string> | undefined
+    let marked: { running: ReadonlySet<string>; stalled: ReadonlySet<string> } | undefined
+    let asking: ReadonlySet<string> | undefined
     return (session) => {
       let lastAt: number | undefined
       try { lastAt = input.lastActivity(session) } catch (error) { return error instanceof ActivityBusyError ? { busy: STORES.activity } : { unreadable: STORES.activity } }
       if (lastAt === undefined) {
         try { lastAt = input.sessionGrantMade?.(session) } catch (error) { return isStateBusy(error) ? { busy: STORES.grants } : { unreadable: STORES.grants } }
       }
-      try { running ??= new Set(input.executing().map(holderKey)) } catch { return { unreadable: STORES.marks } }
-      return { lastAt, executing: running.has(holderKey(session)) ? 1 : 0 }
+      try {
+        if (marked === undefined) {
+          const { running, stalled } = input.executing()
+          marked = { running: new Set(running.map(holderKey)), stalled: new Set(stalled.map(holderKey)) }
+        }
+      } catch { return { unreadable: STORES.marks } }
+      try { asking ??= new Set(input.asking().map(holderKey)) } catch (error) { return isStateBusy(error) ? { busy: STORES.ledger } : { unreadable: STORES.ledger } }
+      const key = holderKey(session)
+      const executing = marked.running.has(key) ? 1 : 0
+      const waiting = asking.has(key)
+      // A mark whose process stalled says nothing either way of its sessions, so the check skips them this time.
+      if (executing === 0 && !waiting && marked.stalled.has(key)) return { busy: STORES.marks }
+      return { lastAt, executing, ...(waiting ? { waiting: true as const } : {}) }
     }
   }
 

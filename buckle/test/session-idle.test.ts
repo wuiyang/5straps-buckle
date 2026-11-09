@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { PermissionRuleId } from '@5straps/protocol'
@@ -17,7 +17,7 @@ import { createApprovalRegistry, type ApprovalRegistry } from '../common/service
 import { createApprovalService, type ApprovalAskInput, type ApprovalService } from '../common/services/approvals/approval-service.js'
 import { createSessionIdleCheck } from '../common/services/approvals/session-idle-check.js'
 import { ActivityBusyError, openHistoryActivity } from '../common/services/history/activity.js'
-import { ACTIVE_WORK_FRESH_MS, ACTIVE_WORK_REFRESH_MS, createExecutingMark, executingMarks } from '../common/services/workspaces/active-work.js'
+import { ACTIVE_WORK_FRESH_MS, ACTIVE_WORK_REFRESH_MS, ACTIVE_WORK_STALLED_MS, createExecutingMark, executingMarks, executingSessions } from '../common/services/workspaces/active-work.js'
 import { openSettingsFile, resolveSettings, settingsPath, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
 import type { ApprovalBackend, LifecycleEvent } from '../common/types/ports/approval-backend.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
@@ -30,9 +30,9 @@ import { idOf, workspacesOf } from './support/workspaces.js'
 
 // Session end at idle: each session, its id under the actor that asked in it, ends once it has had no activity of its own
 // for longer than its window, 15 minutes unless set, while the workspace's other sessions keep theirs. Activity is one of
-// its tools running, one of its calls held for a person's answer (APPROVAL-31), one of its calls starting or ending, an
-// ask, and a decision. Where a session's activity cannot be read, it does not end, and none of its session approvals
-// clears a call.
+// its tools running, one of its asks still waiting for a person, held by a call or not, one of its calls starting or
+// ending, an ask, and a decision. Where a session's activity cannot be read, it does not end, and none of its session
+// approvals clears a call.
 
 const roots: string[] = []
 afterEach(async () => {
@@ -76,6 +76,10 @@ describe('the idle verdict', () => {
 
   it('is active while a tool runs anywhere, however long ago the last call started', () => {
     expect(idleVerdict({ now: NOW, idleMs: DEFAULT_SESSION_IDLE_MS, read: read({ lastAt: NOW - 60 * MINUTE, executing: 1 }) })).toEqual({ kind: 'active', at: NOW })
+  })
+
+  it('is active while an ask of the session waits for a person, however long ago it was made', () => {
+    expect(idleVerdict({ now: NOW, idleMs: DEFAULT_SESSION_IDLE_MS, read: read({ lastAt: NOW - 60 * MINUTE, executing: 0, waiting: true }) })).toEqual({ kind: 'active', at: NOW })
   })
 
   it('is unknown, naming the store, where the activity or the marks cannot be read', () => {
@@ -288,6 +292,8 @@ function setUp(options: { grants?: (store: GrantStore) => GrantStore; lockDeadli
   return { root, store, registry, service, events, audit, approvals, marks }
 }
 
+const NOTHING_RUNS = Object.freeze({ running: [], stalled: [] })
+
 const ask = (subject: string, rule: PermissionRuleId = 'write_scope') => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule, subject, reason: 'outside the workspace', offeredScopes: ['once' as const, 'session' as const, 'always' as const] })
 const CALL = { arguments: {}, cwd: '/', description: null, complete: true as const }
 
@@ -309,7 +315,8 @@ function idleCheck(input: { registry: ApprovalRegistry; service: ApprovalService
     workspaceId: WORKSPACE,
     idleMs: () => DEFAULT_SESSION_IDLE_MS,
     lastActivity: (session) => { reads.activity++; return input.lastAt(session) },
-    executing: () => { reads.executing++; return executingMarks({ directory: input.marks, now: now() }).flatMap(mark => mark.sessions) },
+    executing: () => { reads.executing++; return executingSessions({ directory: input.marks, now: now() }) },
+    asking: () => input.registry.askingSessions(),
     runningHere: () => false,
     held: () => input.registry.heldSessions(),
     sessions: input.service,
@@ -343,8 +350,8 @@ describe('an idle end', () => {
     for (const caller of [ONE, TWO]) {
       await decided(service, await asked(registry, caller, `/outside/${caller.actor}`), 'session')
       await decided(service, await asked(registry, caller, `/outside/${caller.actor}/once`), 'once')
-      await asked(registry, caller, `/outside/${caller.actor}/held`)
     }
+    await asked(registry, TWO, `/outside/${TWO.actor}/held`)
     const lastAt = (session: GrantHolder) => session.actor === TWO.actor ? Date.now() - 14 * MINUTE : Date.now() - 16 * MINUTE
 
     await idleCheck({ registry, service, marks, lastAt }).check.check()
@@ -396,13 +403,37 @@ describe('an idle end', () => {
     await service.close()
   })
 
-  it('withdraws the asks still waiting, which the terminal hears ended with the session', async () => {
-    const { registry, service, events, marks } = setUp()
+  it('keeps a session while an ask of it waits for a person with no call held on it, as another process reads the ledger, and ends it once the ask is withdrawn', async () => {
+    const { store, registry, service, marks } = setUp()
+    await decided(service, await asked(registry, { sessionId: 'chat-1' }, '/outside/a'), 'session')
+    await decided(service, await asked(registry, { sessionId: 'chat-2' }, '/outside/b'), 'session')
+    // Its hold of 200 ms ends with the ask still waiting, as an HTTP MCP call's 30 s do.
+    const call: ApprovalAskInput = { sessionId: 'chat-1', requestId: 'request-held', tool: 'fs_write', call: CALL, asks: [ask('/outside/held')] }
+    const [held] = (await service.request(call)).approvals
+    expect(executingMarks({ directory: marks })).toEqual([])
+    let clock = Date.now()
+    const { check } = idleCheck({ registry, service, marks, lastAt: () => clock - 60 * MINUTE, now: () => clock })
+
+    await check.check()
+    expect(store.list().map(grant => grant.sessionId)).toEqual(['chat-1'])
+    expect(registry.pending().map(request => request.token)).toEqual([held!.token])
+
+    await service.withdrawCall({ token: held!.token })
+    await check.check()
+    expect(store.list().map(grant => grant.sessionId)).toEqual(['chat-1'])
+    clock += DEFAULT_SESSION_IDLE_MS + 1
+    await check.check()
+    expect(store.list()).toEqual([])
+    await service.close()
+  })
+
+  it('withdraws the asks still waiting as its face ends the session, which the terminal hears ended with it', async () => {
+    const { registry, service, events } = setUp()
     const call: ApprovalAskInput = { sessionId: 'chat-1', requestId: 'request-held', tool: 'fs_write', call: CALL, asks: [ask('/outside/held')] }
     const [held] = (await service.request(call)).approvals
     expect(registry.pending()).toHaveLength(1)
 
-    await idleCheck({ registry, service, marks, lastAt: sixteenMinutesAgo }).check.check()
+    await service.endSessions({ ending: { sessionId: 'chat-1' }, cause: 'stdio_closed' })
     expect(registry.pending()).toEqual([])
     expect(registry.departures([held!.token]).get(held!.token)).toEqual({ type: 'cancelled', reason: 'session_ended' })
     await vi.waitFor(() => expect(events.map(event => ({ type: event.type, reason: event.reason }))).toEqual([{ type: 'cancelled', reason: 'session_ended' }]))
@@ -454,16 +485,16 @@ describe('an idle end', () => {
     const { registry, service, audit, marks } = setUp()
     await decided(service, await asked(registry, { sessionId: 'chat-1' }, '/outside/a'), 'session')
     await decided(service, await asked(registry, { sessionId: 'chat-1' }, '/outside/b'), 'once')
-    await asked(registry, ONE, '/outside/c')
+    await decided(service, await asked(registry, ONE, '/outside/c'), 'once')
     const { check } = idleCheck({ registry, service, marks, lastAt: sixteenMinutesAgo })
 
     await check.check()
     const ended = audit.entries.filter(entry => entry.step === 'session_ended').map(entry => entry.fields)
     expect(ended).toEqual([
       { sessionId: 'chat-1', cause: 'idle', withdrawn: 0, onces: 1, owed: 0, grants: 1, denials: 0 },
-      { sessionId: 'mcp', actor: 'agent:one', cause: 'idle', withdrawn: 1, onces: 0, owed: 0, grants: 0, denials: 0 },
+      { sessionId: 'mcp', actor: 'agent:one', cause: 'idle', withdrawn: 0, onces: 1, owed: 0, grants: 0, denials: 0 },
     ])
-    await createSessionIdleCheck({ workspaceId: WORKSPACE, idleMs: () => DEFAULT_SESSION_IDLE_MS, lastActivity: sixteenMinutesAgo, executing: () => [], runningHere: () => false, held: () => registry.heldSessions(), sessions: service }).check()
+    await createSessionIdleCheck({ workspaceId: WORKSPACE, idleMs: () => DEFAULT_SESSION_IDLE_MS, lastActivity: sixteenMinutesAgo, executing: () => NOTHING_RUNS, asking: () => registry.askingSessions(), runningHere: () => false, held: () => registry.heldSessions(), sessions: service }).check()
     expect(audit.entries.filter(entry => entry.step === 'session_ended')).toHaveLength(2)
     await service.close()
   })
@@ -510,6 +541,30 @@ describe('an idle end', () => {
     await service.close()
   }, 30_000)
 
+  // A process whose main thread stalls past ACTIVE_WORK_FRESH_MS, as on sync disk work under heavy I/O, refreshes nothing
+  // meanwhile; its pid still answers, so its mark says nothing either way until the stall limit.
+  it('ends nothing of a session whose mark went stale while the process that wrote it still runs, until that mark is past the stall limit', async () => {
+    const { store, registry, service, marks } = setUp()
+    await decided(service, await asked(registry, { sessionId: 'chat-1' }, '/outside/a'), 'session')
+    await decided(service, await asked(registry, { sessionId: 'chat-2' }, '/outside/b'), 'session')
+    mkdirSync(marks, { recursive: true, mode: 0o700 })
+    const stalled = join(marks, 'executing-stalled')
+    writeFileSync(stalled, JSON.stringify({ pid: process.pid, sessions: [{ sessionId: 'chat-1' }] }))
+    let clock = Date.now() + ACTIVE_WORK_FRESH_MS + 1_000
+    const { check } = idleCheck({ registry, service, marks, lastAt: () => clock - 60 * MINUTE, now: () => clock })
+
+    await check.check()
+    expect(store.list().map(grant => grant.sessionId)).toEqual(['chat-1'])
+    expect(check.sessionApprovalsSuspended({ sessionId: 'chat-1' })).toBe(false)
+    expect(existsSync(stalled)).toBe(true)
+
+    clock += ACTIVE_WORK_STALLED_MS
+    await check.check()
+    expect(store.list()).toEqual([])
+    expect(existsSync(stalled)).toBe(false)
+    await service.close()
+  })
+
   it('keeps a session while one of its calls is held for an answer, as another process reads the marks, and ends it a window after the answer', async () => {
     const { store, registry, service, marks } = setUp({ graceMs: null })
     await decided(service, await asked(registry, { sessionId: 'chat-1' }, '/outside/a'), 'session')
@@ -545,7 +600,7 @@ describe('an idle end', () => {
     let clock = Date.now()
     let failing = true
     const check = createSessionIdleCheck({
-      workspaceId: WORKSPACE, idleMs: () => DEFAULT_SESSION_IDLE_MS, executing: () => executingMarks({ directory: marks }).flatMap(mark => mark.sessions), runningHere: () => false, held: () => registry.heldSessions(), sessions: service, now: () => clock,
+      workspaceId: WORKSPACE, idleMs: () => DEFAULT_SESSION_IDLE_MS, executing: () => executingSessions({ directory: marks }), asking: () => registry.askingSessions(), runningHere: () => false, held: () => registry.heldSessions(), sessions: service, now: () => clock,
       lastActivity: () => { if (failing) throw new Error('SQLITE_IOERR'); return clock },
     })
     expect(check.sessionApprovalsSuspended({ sessionId: 'chat-1' })).toBe(false)
@@ -582,7 +637,7 @@ describe('an idle end', () => {
     await decided(service, await asked(registry, { sessionId: 'chat-1' }, '/outside/a'), 'session')
     const warned = vi.spyOn(logger, 'warn').mockImplementation(() => {})
     const check = createSessionIdleCheck({
-      workspaceId: WORKSPACE, idleMs: () => DEFAULT_SESSION_IDLE_MS, executing: () => executingMarks({ directory: marks }).flatMap(mark => mark.sessions), runningHere: () => false, held: () => registry.heldSessions(), sessions: service,
+      workspaceId: WORKSPACE, idleMs: () => DEFAULT_SESSION_IDLE_MS, executing: () => executingSessions({ directory: marks }), asking: () => registry.askingSessions(), runningHere: () => false, held: () => registry.heldSessions(), sessions: service,
       lastActivity: () => { throw new ActivityBusyError() },
     })
 
@@ -630,7 +685,7 @@ describe('an idle end', () => {
     const { store, registry, service } = setUp()
     await decided(service, await asked(registry, { sessionId: 'chat-1' }, '/outside/a'), 'session')
     const lastActivity = vi.fn(sixteenMinutesAgo)
-    await createSessionIdleCheck({ workspaceId: WORKSPACE, idleMs: () => 0, lastActivity, executing: () => [], runningHere: () => false, held: () => registry.heldSessions(), sessions: service }).check()
+    await createSessionIdleCheck({ workspaceId: WORKSPACE, idleMs: () => 0, lastActivity, executing: () => NOTHING_RUNS, asking: () => registry.askingSessions(), runningHere: () => false, held: () => registry.heldSessions(), sessions: service }).check()
     expect(store.list()).toHaveLength(1)
     expect(lastActivity).not.toHaveBeenCalled()
     await service.close()

@@ -96,7 +96,7 @@ import { workspaceUntrusted, type NodeRoots } from './node-roots.js'
 import { mountRows, openSettingsFile, ownMount, policySources, resolveSettings, settingsPath, scopeOf, withMount, withPolicy, WorkspaceSettingsSchema, type PolicySources, type ResolvedSettings, type WorkspaceSettings } from './workspace-settings.js'
 import type { MountRow } from '../../domain/mount-table.js'
 import { WorkspaceError } from './registry.js'
-import { activeWorkDirectory, createActiveWorkMark, createExecutingMark, executingMarks } from './active-work.js'
+import { activeWorkDirectory, createActiveWorkMark, createExecutingMark, executingSessions } from './active-work.js'
 import type { SecretSettings } from '../secrets/places.js'
 import { logCallFeedback } from '../invocation/call-feedback.js'
 import { unavailableToolReason } from '../invocation/owner-remediation.js'
@@ -393,7 +393,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
     idleMs: () => config.approvalSessionIdleMs,
     lastActivity: session => history.lastActivity(session),
     sessionGrantMade: session => newestSessionGrant(grantFile.list(), session),
-    executing: () => executingMarks({ directory: marks }).flatMap(mark => mark.sessions),
+    executing: () => executingSessions({ directory: marks }),
+    asking: () => approvals.askingSessions(),
     runningHere: session => executing.running(session),
     held: () => approvals.heldSessions(),
     sessions: { endSessions: end => approvalService.endSessions(end) },

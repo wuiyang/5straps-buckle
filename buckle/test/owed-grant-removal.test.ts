@@ -74,7 +74,7 @@ describe('a session end whose grant removal fails', () => {
     const terminal: ApprovalBackend = { open: async () => ({ contractVersion: 1, decides: true, scopes: ['once'], cancels: true, revokes: false }), submit: async () => ({ kind: 'accepted', refs: [] }), async notify() {}, close: async () => undefined }
     const service = createApprovalService({ registry, workspaceId: WORKSPACE, serverId: 'node-1', graceMs: 200, hold: async () => 'grace', terminal, nonces: createMemoryNonceClaims(), decisionAudit: UNHEARD_DECISIONS })
     let lastAt = Date.now() - 16 * MINUTE
-    const check = createSessionIdleCheck({ workspaceId: WORKSPACE, idleMs: () => DEFAULT_SESSION_IDLE_MS, lastActivity: () => lastAt, executing: () => [], runningHere: () => false, held: () => registry.heldSessions(), sessions: service })
+    const check = createSessionIdleCheck({ workspaceId: WORKSPACE, idleMs: () => DEFAULT_SESSION_IDLE_MS, lastActivity: () => lastAt, executing: () => ({ running: [], stalled: [] }), asking: () => registry.askingSessions(), runningHere: () => false, held: () => registry.heldSessions(), sessions: service })
     broken.removals = true
 
     await check.check()

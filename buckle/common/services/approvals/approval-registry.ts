@@ -460,6 +460,11 @@ export interface ApprovalRegistry {
    * or a session grant; read without the lock. Throws where neither approvals.json nor the grants can be read.
    */
   heldSessions(): GrantHolder[]
+  /**
+   * The sessions with an ask still waiting for a person: not answered, withdrawn, or lapsed, whether or not a call holds it;
+   * read without the lock. Throws where approvals.json cannot be read.
+   */
+  askingSessions(): GrantHolder[]
   /** Drops the asks that expired unanswered, telling `onExpired` about them. Every update does this too. */
   sweep(): Promise<void>
   /**
@@ -1056,6 +1061,12 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     return [...held.values()]
   }
 
+  function askingSessions(): GrantHolder[] {
+    const now = Date.now()
+    const asking = read().pending.filter(entry => entry.workspace === workspace && lapseOf(entry) > now).map(sessionOf)
+    return [...new Map(asking.map(session => [holderKey(session), session])).values()]
+  }
+
   /**
    * One decision under the approvals lock: the guard's verdict, then the resolved entry, its notice and its once, which
    * `progress` holds. A decision that makes a grant, or meets one owed, commits before any grant is written.
@@ -1300,6 +1311,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
 
     endSessions,
     heldSessions,
+    askingSessions,
 
     async ask({ tool, sessionId, asks, requestId, actor, fingerprint: callFingerprint, call, attempt: asking, waitMs: lifetime = waitMs, holdMs }) {
       const evicted: PendingEntry[] = []

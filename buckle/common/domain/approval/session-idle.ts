@@ -29,11 +29,11 @@ export function newestSessionGrant(grants: ReadonlyArray<{ scope: string; sessio
 }
 
 /**
- * One session's activity as read now: its newest call start, call end, ask, or decision, and how many instances run one of
- * its tools or hold one of its calls for an answer; or the store that could not be read, or that another process held busy
- * past its wait.
+ * One session's activity as read now: its newest call start, call end, ask, or decision, how many instances run one of its
+ * tools or hold one of its calls for an answer, and `waiting` where an ask of it still waits for a person, held by a call
+ * or not; or the store that could not be read, or that another process held busy past its wait.
  */
-export type ActivityReading = { lastAt: number | undefined; executing: number } | { unreadable: string } | { busy: string }
+export type ActivityReading = { lastAt: number | undefined; executing: number; waiting?: true } | { unreadable: string } | { busy: string }
 
 /**
  * `active` as of `at`, the latest time the workspace is known active, so a later check within the window need not read.
@@ -44,7 +44,8 @@ export type IdleVerdict = { kind: 'off' } | { kind: 'active'; at: number } | { k
 /**
  * Whether a session ends now. Off at a window of 0. Active, reading nothing, where this process itself saw the session's
  * activity within the window (`seenAt`); otherwise read: one of its tools running anywhere, one of its calls held anywhere
- * for an answer, or its activity within the window, is active, and anything older, or none ever recorded, is idle.
+ * for an answer, one of its asks still waiting for a person, or its activity within the window, is active, and anything
+ * older, or none ever recorded, is idle.
  */
 export function idleVerdict(input: { now: number; idleMs: number; seenAt?: number; read: () => ActivityReading }): IdleVerdict {
   const { now, idleMs, seenAt } = input
@@ -53,7 +54,7 @@ export function idleVerdict(input: { now: number; idleMs: number; seenAt?: numbe
   const reading = input.read()
   if ('unreadable' in reading) return { kind: 'unknown', store: reading.unreadable }
   if ('busy' in reading) return { kind: 'busy', store: reading.busy }
-  if (reading.executing > 0) return { kind: 'active', at: now }
+  if (reading.executing > 0 || reading.waiting) return { kind: 'active', at: now }
   if (reading.lastAt !== undefined && now - reading.lastAt <= idleMs) return { kind: 'active', at: reading.lastAt }
   return { kind: 'idle' }
 }
