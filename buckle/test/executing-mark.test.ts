@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -200,6 +200,76 @@ describe('the executing mark', () => {
 
     expect(executingMarks({ directory, now: Date.now() + ACTIVE_WORK_FRESH_MS + 1_000 })).toEqual([])
     expect(executingFiles(directory)).toEqual([])
+  })
+
+  // The reader judges a mark from a look at it, then removes it: a writer whose stall ends in between refreshes it then.
+  it.each([
+    ['touched', (file: string) => { const now = new Date(); utimesSync(file, now, now) }, ['ask-1']],
+    ['written again whole', (file: string) => { writeFileSync(`${file}.tmp`, JSON.stringify({ pid: process.pid, sessions: [CHAT], asks: ['ask-2'] })); renameSync(`${file}.tmp`, file) }, ['ask-2']],
+  ] as const)('keeps a stale mark its writer refreshed, %s, between the reader judging it dead and removing it, and reads it as running', (_, refresh, asks) => {
+    const directory = marks()
+    const file = join(directory, 'executing-resumed')
+    writeFileSync(file, JSON.stringify({ pid: process.pid, sessions: [CHAT], asks: ['ask-1'] }))
+    const stalled = new Date(Date.now() - ACTIVE_WORK_FRESH_MS - 1_000)
+    utimesSync(file, stalled, stalled)
+    // Its pid reads as gone, and its writer refreshes it just as the reader asks.
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+      refresh(file)
+      throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' })
+    })
+    try {
+      expect(executingMarks({ directory })).toEqual([{ instance: 'resumed', sessions: [CHAT], asks }])
+    } finally { kill.mockRestore() }
+    expect(executingFiles(directory)).toEqual(['executing-resumed'])
+    expect(executingMarks({ directory })).toEqual([{ instance: 'resumed', sessions: [CHAT], asks }])
+  })
+
+  // A clock set back dates each mark written before then ahead of the reader's clock, a dead writer's as well.
+  it('reads a mark dated ahead of the clock as old as the reader has seen it unchanged, so one whose pid answers nothing goes after the fresh limit', () => {
+    const directory = marks()
+    const { pid } = spawnSync(process.execPath, ['-e', ''])
+    const file = join(directory, 'executing-ahead')
+    writeFileSync(file, JSON.stringify({ pid, sessions: [CHAT], asks: ['ask-1'] }))
+    const now = Date.now()
+    const ahead = new Date(now + 60 * 60_000)
+    utimesSync(file, ahead, ahead)
+
+    expect(executingInstances({ directory, now })).toEqual(['ahead'])
+    expect(executingInstances({ directory, now: now + ACTIVE_WORK_FRESH_MS - 1_000 })).toEqual(['ahead'])
+    expect(executingInstances({ directory, now: now + ACTIVE_WORK_FRESH_MS })).toEqual([])
+    expect(existsSync(file)).toBe(false)
+  })
+
+  it('reads a mark dated ahead of the clock whose pid still answers, as a reused one would, as stalled after the fresh limit and dead past the stall limit', () => {
+    const directory = marks()
+    const file = join(directory, 'executing-ahead')
+    writeFileSync(file, JSON.stringify({ pid: process.pid, sessions: [CHAT], asks: ['ask-1'] }))
+    const now = Date.now()
+    const ahead = new Date(now + 60 * 60_000)
+    utimesSync(file, ahead, ahead)
+
+    expect(executingMarks({ directory, now })).toEqual([{ instance: 'ahead', sessions: [CHAT], asks: ['ask-1'] }])
+    expect(executingMarks({ directory, now: now + ACTIVE_WORK_FRESH_MS })).toEqual([{ instance: 'ahead', sessions: [CHAT], asks: ['ask-1'], stalled: true }])
+    expect(executingMarks({ directory, now: now + ACTIVE_WORK_STALLED_MS })).toEqual([])
+    expect(existsSync(file)).toBe(false)
+  })
+
+  it('reads a mark dated ahead of the clock by its date again once its writer refreshes it, and an active-work mark so dated as an executing one', () => {
+    const directory = marks()
+    const file = join(directory, 'executing-live')
+    writeFileSync(file, JSON.stringify({ pid: process.pid, sessions: [CHAT], asks: [] }))
+    const other = join(directory, String(process.pid + 1))
+    writeFileSync(other, '')
+    const now = Date.now()
+    const ahead = new Date(now + 60 * 60_000)
+    for (const each of [file, other]) utimesSync(each, ahead, ahead)
+
+    expect(executingMarks({ directory, now })).toEqual([{ instance: 'live', sessions: [CHAT], asks: [] }])
+    expect(activeElsewhere({ directory, now })).toBe(true)
+    const later = now + ACTIVE_WORK_FRESH_MS
+    utimesSync(file, new Date(later), new Date(later))
+    expect(executingMarks({ directory, now: later })).toEqual([{ instance: 'live', sessions: [CHAT], asks: [] }])
+    expect(activeElsewhere({ directory, now: later })).toBe(false)
   })
 
   it('stops holding the workspace within 10 s of its process being killed while a run holds it', async () => {

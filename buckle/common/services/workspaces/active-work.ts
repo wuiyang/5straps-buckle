@@ -1,4 +1,5 @@
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, type Stats } from 'node:fs'
 import { join } from 'pathe'
 import { z } from 'zod'
 import { holderKey, type GrantHolder } from '../../domain/permission/grant-holder.js'
@@ -18,6 +19,14 @@ export const ACTIVE_WORK_STALLED_MS = 300_000
 const EXECUTING = 'executing-'
 /** An executing mark is written beside itself under this suffix, then renamed, so no reader meets one half written. */
 const WRITING = '.tmp'
+/** A mark a reader removes is moved aside under this suffix first, where no writer reaches it (removedAsJudged). */
+const REMOVING = '.removing'
+/**
+ * How far ahead of the reader's clock a mark may be dated and still be aged by its date, as a refresh that lands while the
+ * reader reads. One dated further ahead, as after the clock was set back, is aged by how long this process has seen it
+ * unchanged (markStat).
+ */
+const DATED_AHEAD_MS = ACTIVE_WORK_REFRESH_MS
 /**
  * What an executing mark holds: the sessions whose tools run in its runtime or whose calls it holds for an answer, the asks
  * those calls hold (heldAskName), and the pid of the process that wrote it. A mark written before the asks and the pid were
@@ -55,7 +64,7 @@ export function createActiveWorkMark(input: { directory: string; workspaceId: st
 export function activeElsewhere(input: { directory: string; pid?: number; now?: number }): boolean {
   const own = String(input.pid ?? process.pid)
   const now = input.now ?? Date.now()
-  return markNames(input.directory).some(mark => !mark.startsWith(EXECUTING) && mark !== own && markIsFresh(join(input.directory, mark), now))
+  return markNames(input.directory).some(mark => !mark.startsWith(EXECUTING) && mark !== own && markIsFresh(input.directory, mark, now))
 }
 
 /**
@@ -151,30 +160,41 @@ export function createExecutingMark(input: { directory: string; workspaceId: str
 /**
  * The instances running a tool or holding a call in the workspace now, each with its sessions and the asks it holds: each
  * mark refreshed within ACTIVE_WORK_FRESH_MS, and each stale one whose writer still runs, read as stalled for up to
- * ACTIVE_WORK_STALLED_MS. Any other stale mark, which a process that died left, is removed, as is one it left half
- * written. Throws where the marks cannot be read, a fresh one included, which the idle check takes as activity unknown.
+ * ACTIVE_WORK_STALLED_MS. Any other stale mark, which a process that died left, is removed unless its writer refreshed it
+ * meanwhile, as is one it left half written. Throws where the marks cannot be read, a fresh one included, which the idle
+ * check takes as activity unknown.
  */
 export function executingMarks(input: { directory: string; now?: number }): ExecutingMarkReading[] {
   const now = input.now ?? Date.now()
-  return markNames(input.directory).filter(mark => mark.startsWith(EXECUTING)).flatMap((mark) => {
-    const file = join(input.directory, mark)
-    const age = markAge(file, now)
-    // Removed since the listing: a process gone idle.
-    if (age === undefined) return []
-    const fresh = age < ACTIVE_WORK_FRESH_MS
-    if (mark.endsWith(WRITING)) {
-      if (!fresh) rmSync(file, { force: true })
-      return []
-    }
-    const read = fresh ? readMark(file) : stalledMark(file, age)
-    if (read === undefined) {
-      if (!fresh) rmSync(file, { force: true })
-      return []
-    }
-    if (read.sessions.length === 0) return []
-    const sessions = read.sessions.map(({ sessionId, actor }) => actor === undefined ? { sessionId } : { sessionId, actor })
-    return [{ instance: mark.slice(EXECUTING.length), sessions, asks: read.asks ?? [], ...(fresh ? {} : { stalled: true as const }) }]
-  })
+  return markNames(input.directory).filter(mark => mark.startsWith(EXECUTING)).flatMap(mark => readingOf({ directory: input.directory, mark, now }))
+}
+
+/** One executing mark as read now; none where it went since the listing, is being written or moved aside, or is dead. */
+function readingOf(input: { directory: string; mark: string; now: number }): ExecutingMarkReading[] {
+  const { directory, mark, now } = input
+  const file = join(directory, mark)
+  const stat = markStat(directory, mark, now)
+  // Removed since the listing: a process gone idle.
+  if (stat === undefined) return []
+  let fresh = stat.age < ACTIVE_WORK_FRESH_MS
+  // Left aside by a reader that stopped while removing a mark: no writer reaches it.
+  if (mark.endsWith(REMOVING)) {
+    if (!fresh) rmSync(file, { force: true })
+    return []
+  }
+  if (mark.endsWith(WRITING)) {
+    if (!fresh) removedAsJudged(file, stat.identity)
+    return []
+  }
+  let read = fresh ? readMark(file) : stalledMark(file, stat.age)
+  // Judged dead, it goes only as it was judged: one its writer refreshed meanwhile is kept, and reads as fresh.
+  if (read === undefined && !fresh && !removedAsJudged(file, stat.identity)) {
+    read = readMark(file)
+    fresh = true
+  }
+  if (read === undefined || read.sessions.length === 0) return []
+  const sessions = read.sessions.map(({ sessionId, actor }) => actor === undefined ? { sessionId } : { sessionId, actor })
+  return [{ instance: mark.slice(EXECUTING.length), sessions, asks: read.asks ?? [], ...(fresh ? {} : { stalled: true as const }) }]
 }
 
 /** The sessions the executing marks name, apart by whether their mark is fresh or stalled; throws as executingMarks does. */
@@ -210,6 +230,30 @@ function stalledMark(file: string, age: number): MarkContent | undefined {
   let read: MarkContent | undefined
   try { read = readMark(file) } catch { return undefined }
   return read?.pid !== undefined && processRuns(read.pid) ? read : undefined
+}
+
+/**
+ * Removes a mark judged dead, only as it was when judged (`identity`): it is moved aside, where no writer reaches it, and
+ * removed there, or put back where its writer refreshed it in between, unless that writer already wrote it again. False
+ * where it was refreshed, so its writer runs.
+ */
+function removedAsJudged(file: string, identity: string): boolean {
+  const aside = `${file}.${randomUUID()}${REMOVING}`
+  try { renameSync(file, aside) } catch (error) {
+    // Gone already: another reader removed it, or its writer did as its work ended.
+    if (isMissing(error)) return true
+    throw error
+  }
+  try {
+    if (identityOf(statSync(aside)) === identity) return true
+    try { linkSync(aside, file) } catch (error) {
+      // A writer that wrote it again meanwhile keeps its own; where the system makes no link, moved back unless one did.
+      if (!isExisting(error) && !existsSync(file)) renameSync(aside, file)
+    }
+    return false
+  } finally {
+    rmSync(aside, { force: true })
+  }
 }
 
 /** Whether a process runs under the pid: one another user runs answers EPERM, which still runs. */
@@ -281,26 +325,62 @@ function markLease(input: { directory: string; file: string; workspaceId: string
   }
 }
 
+/** The marks this process saw dated ahead of its clock past DATED_AHEAD_MS, by folder and name: each as first seen so, and when. */
+const datedAhead = new Map<string, Map<string, { identity: string; since: number }>>()
+
+/** The marks in the folder, none where it is not made yet; those dated ahead that went since are forgotten. */
 function markNames(directory: string): string[] {
-  try { return readdirSync(directory) } catch (error) {
-    if (isMissing(error)) return []
-    throw error
+  let names: string[]
+  try { names = readdirSync(directory) } catch (error) {
+    if (!isMissing(error)) throw error
+    names = []
   }
+  const ahead = datedAhead.get(directory)
+  if (ahead !== undefined) {
+    for (const name of ahead.keys()) if (!names.includes(name)) ahead.delete(name)
+    if (ahead.size === 0) datedAhead.delete(directory)
+  }
+  return names
 }
 
-function markIsFresh(file: string, now: number): boolean {
-  const age = markAge(file, now)
-  return age !== undefined && age < ACTIVE_WORK_FRESH_MS
+function markIsFresh(directory: string, name: string, now: number): boolean {
+  const stat = markStat(directory, name, now)
+  return stat !== undefined && stat.age < ACTIVE_WORK_FRESH_MS
 }
 
-/** How long ago the mark was last written or refreshed; undefined where it was removed since the listing. */
-function markAge(file: string, now: number): number | undefined {
-  try { return now - statSync(file).mtimeMs } catch (error) {
+/**
+ * How long ago the mark was last written or refreshed, and what it was then (its identity), which its removal checks;
+ * undefined where it was removed since the listing. A mark dated ahead of the clock past DATED_AHEAD_MS, as after the clock
+ * was set back, is as old as this process has seen it unchanged, so a writer that died before then does not read as
+ * running until the clock catches up; a refresh dates it by the clock again.
+ */
+function markStat(directory: string, name: string, now: number): { age: number; identity: string } | undefined {
+  let stats: Stats
+  try { stats = statSync(join(directory, name)) } catch (error) {
     if (isMissing(error)) return undefined
     throw error
   }
+  const identity = identityOf(stats)
+  const ahead = datedAhead.get(directory)
+  if (stats.mtimeMs - now <= DATED_AHEAD_MS) {
+    ahead?.delete(name)
+    return { age: now - stats.mtimeMs, identity }
+  }
+  const seen = ahead?.get(name)
+  if (seen !== undefined && seen.identity === identity && now >= seen.since) return { age: now - seen.since, identity }
+  datedAhead.set(directory, (ahead ?? new Map<string, { identity: string; since: number }>()).set(name, { identity, since: now }))
+  return { age: 0, identity }
+}
+
+/** A mark's file as it stands: a refresh dates it again, and a whole write replaces it. */
+function identityOf(stats: Stats): string {
+  return `${stats.ino}:${stats.mtimeMs}:${stats.size}`
 }
 
 function isMissing(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT'
+}
+
+function isExisting(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && error.code === 'EEXIST'
 }
