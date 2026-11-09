@@ -53,7 +53,7 @@ describe('the forms backend', () => {
     await backend.open(fakeHost({ routed: [askFor('a'), askFor('b', { action: undefined })] }))
     const drawn = backend.forms([request('a'), request('b')])
     expect(formOf(drawn, 'a').message).toContain('"path": "a"')
-    expect(formOf(drawn, 'a').requestedSchema.properties['approve']).toBeDefined()
+    expect(formOf(drawn, 'a').requestedSchema.properties['action']?.enum).toEqual(['allow_once', 'allow_session', 'allow_always', 'deny'])
     expect(formOf(drawn, 'b').message).toContain('recorded before this build')
     expect(formOf(drawn, 'b').requestedSchema.properties['action']?.enum).toEqual(['deny'])
   })
@@ -68,6 +68,19 @@ describe('the forms backend', () => {
       { kind: 'plain', decision: { token: 'a', outcome: 'approve', scope: 'session' } },
       { kind: 'plain', decision: { token: 'b', outcome: 'deny', scope: 'once' } },
       { kind: 'plain', decision: { token: 'c', outcome: 'approve', scope: 'once' } },
+    ])
+  })
+
+  // Forms drawn before one choice field listed the terminal's choices offered approve and scope apart, so a denial could
+  // name a scope; such an answer, still in a host's hands across an upgrade, denies the call once, as the terminal's deny.
+  it('reads a denial in an earlier form\'s shape as a denial of the call alone, whatever scope it names', async () => {
+    const backend = forms()
+    const host = fakeHost({ routed: [askFor('a'), askFor('b')] })
+    await backend.open(host)
+    await backend.answer({ a: accepted({ approve: false, scope: 'session' }), b: accepted({ approve: false, scope: 'always' }) })
+    expect(host.decided.map(input => input.decision)).toEqual([
+      { token: 'a', outcome: 'deny', scope: 'once' },
+      { token: 'b', outcome: 'deny', scope: 'once' },
     ])
   })
 
@@ -294,8 +307,7 @@ describe('the forms every face draws', () => {
     const backend = forms()
     await backend.open(fakeHost({ routed: [askFor('f'), secretAsk('s'), askFor('n', { action: undefined })], ...(reach ? { reach } : {}) }))
     const drawn = backend.forms([request('f'), sensitive('s'), sensitive('n')])
-    expect(formOf(drawn, 'f').requestedSchema.properties['approve']).toBeDefined()
-    expect(formOf(drawn, 'f').requestedSchema.properties['scope']?.enum).toEqual(['once', 'session', 'always'])
+    expect(formOf(drawn, 'f').requestedSchema.properties).toEqual({ action: expect.objectContaining({ enum: ['allow_once', 'allow_session', 'allow_always', 'deny'] }) })
     expect(formOf(drawn, 'f').message).not.toContain('this form')
     expect(formOf(drawn, 's').requestedSchema.properties['action']?.enum).toEqual(['allow_once', 'allow_session', 'allow_always', 'deny', 'deny_session', 'always_deny'])
     expect(formOf(drawn, 'n').requestedSchema.properties['action']?.enum).toEqual(['deny', 'deny_session', 'always_deny'])
@@ -304,7 +316,7 @@ describe('the forms every face draws', () => {
   it('offers no more than the ask does', async () => {
     const backend = forms()
     await backend.open(fakeHost({ routed: [askFor('o', { policy: { ...askFor('o').policy, offeredScopes: ['once', 'session'] } })], reach: OWN_CALLER }))
-    expect(formOf(backend.forms([{ ...request('o'), offeredScopes: ['once', 'session'] }]), 'o').requestedSchema.properties['scope']?.enum).toEqual(['once', 'session'])
+    expect(formOf(backend.forms([{ ...request('o'), offeredScopes: ['once', 'session'] }]), 'o').requestedSchema.properties['action']?.enum).toEqual(['allow_once', 'allow_session', 'deny'])
   })
 
   it('answers a dismissed form with nothing to send and nothing for the face to hold', async () => {

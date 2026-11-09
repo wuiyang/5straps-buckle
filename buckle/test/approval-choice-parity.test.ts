@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import type { ApprovalDecision, ApprovalRequest } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { watchApprovals, type WatchSource } from '../cli/approvals-watch.js'
 import { setupCli } from '../cli/setup.js'
 import { createTerminalBackend } from '../common/adapters/approval/terminal-backend.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
@@ -17,23 +18,26 @@ import { createDestructiveCommandRule } from '../common/domain/permission/rules/
 import { createDestructivePathRule } from '../common/domain/permission/rules/destructive-path-rule.js'
 import { createSensitivePathRule } from '../common/domain/permission/rules/sensitive-path-rule.js'
 import { createWriteScopeRule } from '../common/domain/permission/rules/write-scope-rule.js'
-import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
+import { createApprovalRegistry, type ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import type { ApprovalService } from '../common/services/approvals/approval-service.js'
-import type { ApprovalHost, FullAsk } from '../common/types/ports/approval-backend.js'
+import type { CoreDecisionReceipt } from '../common/services/approvals/core-approval-api.js'
+import type { ApprovalHost, DecisionBody, FullAsk } from '../common/types/ports/approval-backend.js'
 import { SOURCES, type ApprovalSource } from '../common/types/ports/approval-source.js'
-import { createFormsBackend, type FormsBackend } from '../mcp/forms-backend.js'
+import { createFormsBackend } from '../mcp/forms-backend.js'
 import { fakeHost } from './support/approval-backend-kit.js'
 import { approvalServiceWithTerminal, fixedInteraction } from './support/interaction.js'
 
-// APPROVAL-33, the owner's ruling of 2026-11-09: wherever an ask is answered, it offers the same choices, approve or deny,
-// once, session, or always as the ask offers them. Each ask here is made by the rule that makes it in a workspace, kept
-// in a real ledger, and drawn as the serve terminal draws it and as an MCP form over HTTP and over stdio draws it; every
-// choice the HTTP form offers is then held to the decision guard as its own caller's answer, as a stdio form's, and as
-// the terminal's. The terminal alone grants a delete's folder and its subfolders (the delete policy brief), which only the
-// node's terminal and buckle approve widen to, so those two choices are read apart.
+// Wherever an ask is answered, it offers the same choices, approve or deny, once, session, or always as the ask offers
+// them, a floor ask's included. Each ask here is made by the rule that makes it in a workspace and kept in a real ledger.
+// Each route is then driven for everything it can send: every key the serve terminal and `buckle approvals --watch` take,
+// every answer an MCP form's schema admits over stdio and over HTTP, and every `--scope` and `--deny` the device route
+// takes; each set is held to the choices the ask offers, and to the decision guard. The serve terminal and --watch alone
+// grant a delete's folder and its subfolders (the delete policy brief), a widening only a person at the node makes, so
+// those two choices are read apart.
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
-type Form = { requestedSchema: { properties: Record<string, { enum?: string[] }> } }
+type Property = { type?: string; enum?: unknown[] }
+type Form = { requestedSchema: { properties: Record<string, Property>; required?: string[] } }
 
 const WORKSPACE = '/work/project'
 const CALLER = 'agent:a'
@@ -41,17 +45,7 @@ const NO_GRANTS = { subjectsFor: () => [] }
 const ASK_IN_WORKSPACE: DeletePolicy = { inWorkspace: 'ask', massLimit: 100 }
 const paths = createPathView({ root: WORKSPACE, mount: null })
 const CALL = { arguments: { path: 'a' }, cwd: WORKSPACE, description: null, effects: [], complete: true as const }
-
-/** A choice as `<outcome> <scope>`, and ` below` where it grants the ask's folder and its subfolders in place of its subject. */
-const TERMINAL_CHOICES: Readonly<Record<string, string>> = {
-  'approve once': 'approve once', 'approve this session': 'approve session', 'always approve': 'approve always',
-  'approve this session, folder and below': 'approve session below', 'always approve, folder and below': 'approve always below',
-  'deny': 'deny once', 'deny this session': 'deny session', 'always deny': 'deny always',
-}
-const FORM_ACTIONS: Readonly<Record<string, string>> = {
-  allow_once: 'approve once', allow_session: 'approve session', allow_always: 'approve always',
-  deny: 'deny once', deny_session: 'deny session', always_deny: 'deny always',
-}
+const SCOPES = ['once', 'session', 'always'] as const
 
 function made(rule: PermissionRule, tool: string, effect: ResolvedEffect): Ask {
   const decision = rule.evaluate({ tool, effect, effects: [effect], grants: NO_GRANTS })
@@ -64,6 +58,7 @@ const fileFloor = createDestructivePathRule({ paths, strict: false, deletes: ASK
 
 const EVERY_SCOPE = ['approve once', 'approve session', 'approve always']
 const NO_ALWAYS = ['approve once', 'approve session']
+const BELOW = ['approve session below', 'approve always below']
 
 /** Each ask, its tool, and the choices it offers for its own subject wherever it is answered. */
 const ASKS: Array<[string, string, () => Ask, string[]]> = [
@@ -82,48 +77,122 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-/** A ledger with both faces' forms open on it as core opens them, the forms setting on. */
+/** A ledger, and a service with the HTTP face's forms open on it as core opens them, the forms setting on. */
 function node() {
   const root = mkdtempSync(join(tmpdir(), 'buckle-choice-parity-'))
   roots.push(root)
   const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' }), join(root, 'approvals.json'), 600_000, { live: () => ({ forms: true }) })
   const service = approvalServiceWithTerminal({ registry, workspaceId: 'w-1', workspaceName: 'Site', serverId: 'node-1', graceMs: 200, interaction: fixedInteraction() })
   services.push(service)
-  const formsOf = (face: 'stdio' | 'http') => {
-    const backend = createFormsBackend({ workspace: () => ({ id: 'w-1', name: 'Site' }), node: 'node-1', approves: () => false })
-    let host: ApprovalHost | undefined
-    service.openFormsBackend({ ...backend, open: async (opener) => { host = opener; return backend.open(opener) } }, face)
-    return { backend, host: () => host! }
-  }
-  return { registry, http: formsOf('http'), stdio: formsOf('stdio') }
+  const http = createFormsBackend({ workspace: () => ({ id: 'w-1', name: 'Site' }), node: 'node-1', approves: () => false })
+  let host: ApprovalHost | undefined
+  service.openFormsBackend({ ...http, open: async (opener) => { host = opener; return http.open(opener) } }, 'http')
+  return { registry, http, host: () => host! }
 }
 
-function formChoices(drawn: unknown, token: string): string[] {
-  const shown = (drawn as { inputRequests: Record<string, { params?: Form } & Partial<Form>> }).inputRequests[token]!
-  const { properties } = (shown.params ?? shown as Form).requestedSchema
-  if (properties['action']) return properties['action'].enum!.map(action => FORM_ACTIONS[action]!)
-  return [...properties['scope']!.enum!.map(scope => `approve ${scope}`), 'deny once']
+/** A decision as `<outcome> <scope>`, and ` below` where it grants the ask's folder and its subfolders in place of its subject. */
+function choiceOf(decision: DecisionBody): string {
+  return `${decision.outcome} ${decision.scope}${decision.widen === 'below' ? ' below' : ''}`
 }
 
-/** The choices row the serve terminal prints for the ask, as `buckle serve` sets its terminal up, read off its output. */
-async function terminalChoices(ask: FullAsk): Promise<string[]> {
+const sorted = (choices: Iterable<string>) => [...new Set(choices)].sort()
+
+/** Every answer an elicitation schema admits: each enum value, both booleans, and an optional field left out. */
+function answersOf(form: Form): Array<Record<string, unknown>> {
+  const required = form.requestedSchema.required ?? []
+  return Object.entries(form.requestedSchema.properties).reduce<Array<Record<string, unknown>>>((answers, [name, property]) => {
+    const values = [...(property.enum ?? (property.type === 'boolean' ? [true, false] : [])), ...(required.includes(name) ? [] : [undefined])]
+    return answers.flatMap(answer => values.map(value => (value === undefined ? answer : { ...answer, [name]: value })))
+  }, [{}])
+}
+
+/** What an MCP form can send for the ask: each answer its schema admits, sent through the forms backend to a host that records it. */
+async function formSends(face: 'stdio' | 'http', ask: FullAsk, request: ApprovalRequest): Promise<string[]> {
+  const backend = createFormsBackend({ workspace: () => ({ id: 'w-1', name: 'Site' }), node: 'node-1', approves: () => false })
+  const host = fakeHost({ routed: [ask], reach: { sameCaller: face === 'http' } })
+  await backend.open(host)
+  const drawn = backend.forms([request]) as unknown as { inputRequests: Record<string, { params?: Form } & Partial<Form>> }
+  const shown = drawn.inputRequests[ask.token]!
+  for (const content of answersOf(shown.params ?? shown as Form)) await backend.answer({ [ask.token]: { action: 'accept', content } }, { caller: CALLER })
+  await backend.close()
+  return sorted(host.decided.map(sent => choiceOf(sent.decision)))
+}
+
+/** A serve terminal, as `buckle serve` sets it up, asking the ask; `answer` types a key once its choices row is shown. */
+async function atTerminal(ask: FullAsk, answer?: string): Promise<{ row: string; sent?: string }> {
   const input = new PassThrough()
   const output = new PassThrough()
   let shown = ''
   output.on('data', (chunk: Buffer) => { shown += chunk.toString('utf8') })
   const cli = setupCli({ terminal: { input, output, onInterrupt: () => {} } })
   const terminal = createTerminalBackend({ requester: async () => cli.requestCli })
-  await terminal.open(fakeHost({ routed: [ask] }))
+  const host = fakeHost({ routed: [ask] })
+  await terminal.open(host)
   const stop = new AbortController()
   const submitted = terminal.submit([ask], { signal: stop.signal, resend: false })
-  await vi.waitFor(() => expect(shown).toMatch(/Your choice: $/), { timeout: 3_000 })
+  await vi.waitFor(() => expect(shown).toMatch(/Your choice: $/), { timeout: 5_000 })
   const lines = shown.split('\n')
+  const row = lines[lines.length - 2]!.replace(/^\[[^\]]*\] /, '')
+  if (answer !== undefined) {
+    input.write(`${answer}\n`)
+    await vi.waitFor(() => expect(host.decided).toHaveLength(1), { timeout: 5_000 })
+  }
   stop.abort()
   await submitted.catch(() => undefined)
   await terminal.close()
   await cli.close()
-  const row = lines[lines.length - 2]!.replace(/^\[[^\]]*\] /, '')
-  return [...row.matchAll(/\((\w+)\) (.+?)(?= {2}\(|$)/g)].map(([, , label]) => TERMINAL_CHOICES[label!]!)
+  const [sent] = host.decided
+  return { row, ...(sent === undefined ? {} : { sent: choiceOf(sent.decision) }) }
+}
+
+/** What the serve terminal can send for the ask: each key its choices row shows, and one it does not. */
+async function terminalSends(ask: FullAsk): Promise<string[]> {
+  const { row } = await atTerminal(ask)
+  const keys = [...row.matchAll(/\((\w+)\)/g)].map(([, key]) => key!)
+  const answered = await Promise.all([...keys, 'x'].map(key => atTerminal(ask, key)))
+  return sorted(answered.map(({ sent }) => sent!))
+}
+
+const APPLIED = (decision: DecisionBody): CoreDecisionReceipt => ({ status: 'applied', state: decision.outcome === 'approve' ? 'approved' : 'denied', assurance: 'local', decision: { token: decision.token, approved: decision.outcome === 'approve', scope: decision.scope } })
+
+/** `buckle approvals --watch` asking the ask; `answer` types a key once its prompt is shown. */
+async function atWatch(registry: ApprovalRegistry, answer?: string): Promise<{ prompt: string; sent?: string }> {
+  const input = new PassThrough()
+  const output = new PassThrough()
+  Object.assign(output, { isTTY: true, columns: 400, rows: 24 })
+  let shown = ''
+  output.on('data', (chunk: Buffer) => { shown += chunk.toString('utf8') })
+  const sent: DecisionBody[] = []
+  const approvals: WatchSource['approvals'] = {
+    waiting: () => registry.waiting(),
+    pending: () => registry.pending(),
+    decide: async (input) => {
+      if (input.source !== 'cli') throw new Error(`--watch decided as ${input.source}`)
+      sent.push(input.decision)
+      return APPLIED(input.decision)
+    },
+    skipSave: async () => ({ status: 'skipped' }),
+  }
+  const stop = new AbortController()
+  const done = watchApprovals({ sources: async () => [{ approvals, workspaceId: 'w-1', workspaceName: 'Site' }], input, output, errors: new PassThrough(), signal: stop.signal, pollMs: { first: 20, idle: 50 } })
+  await vi.waitFor(() => expect(shown).toMatch(/n\) skip > /), { timeout: 5_000 })
+  const prompt = shown.slice(shown.lastIndexOf('\n') + 1)
+  if (answer !== undefined) {
+    input.write(`${answer}\r`)
+    await vi.waitFor(() => expect(sent).toHaveLength(1), { timeout: 5_000 })
+  }
+  stop.abort()
+  await done
+  const [decided] = sent
+  return { prompt, ...(decided === undefined ? {} : { sent: choiceOf(decided) }) }
+}
+
+/** What --watch can send for the ask: each key its prompt shows but the skip, which sends nothing. */
+async function watchSends(registry: ApprovalRegistry): Promise<string[]> {
+  const { prompt } = await atWatch(registry)
+  const keys = [...prompt.matchAll(/(?:^|\s)([\w-]+)\) /g)].map(([, key]) => key!).filter(key => key !== 'n')
+  const answered = await Promise.all(keys.map(key => atWatch(registry, key)))
+  return sorted(answered.map(({ sent }) => sent!))
 }
 
 /** Whether the guard takes the choice from `source`, as the asking caller's answer, with the forms setting on. */
@@ -134,27 +203,31 @@ function takes(input: { source: ApprovalSource; choice: string; request: Approva
   return guardDecision({ claim, ledger, now: Date.now(), live: { forms: true } }).ok
 }
 
-describe('the choices each route offers for one ask', () => {
-  it.each(ASKS)('are the same for %s at the serve terminal, in a stdio form, and in an HTTP form, which its own caller\'s answer decides', async (_name, tool, makeAsk, offered) => {
+describe('the choices each route can send for one ask', () => {
+  it.each(ASKS)('are the same for %s at the serve terminal, at --watch, in a stdio and an HTTP form, and from a device', async (_name, tool, makeAsk, offered) => {
     const ask = makeAsk()
-    const { registry, http, stdio } = node()
+    const { registry, http, host } = node()
     const [request] = (await registry.ask({ tool, sessionId: 'mcp', actor: CALLER, requestId: `r-${tool}`, asks: [ask], call: CALL })).requests
     const { token } = request!
-    const fullAsk = http.host().pending().find(waiting => waiting.token === token)!
+    const fullAsk = host().pending().find(waiting => waiting.token === token)!
+    const widened = ask.widerSubject === undefined ? [] : BELOW
 
-    const atTerminal = await terminalChoices(fullAsk)
-    expect(atTerminal.filter(choice => !choice.endsWith(' below'))).toEqual(offered)
-    expect(atTerminal.filter(choice => choice.endsWith(' below'))).toEqual(ask.widerSubject === undefined ? [] : ['approve session below', 'approve always below'])
-    const overHttp = formChoices(http.backend.forms([request!]), token)
-    expect(overHttp).toEqual(offered)
-    expect(formChoices(stdio.backend.forms([request!]), token)).toEqual(offered)
+    const terminal = await terminalSends(fullAsk)
+    expect(terminal).toEqual(sorted([...offered, ...widened]))
+    expect(await watchSends(registry)).toEqual(terminal)
+    expect(await formSends('stdio', fullAsk, request!)).toEqual(sorted(offered))
+    const overHttp = await formSends('http', fullAsk, request!)
+    expect(overHttp).toEqual(sorted(offered))
+    // `buckle client approve` takes --scope and --deny as typed and prints the scopes the ask offers; the guard takes from
+    // a device what the terminal offers.
+    const typed = SCOPES.flatMap(scope => [`approve ${scope}`, `deny ${scope}`])
+    expect(sorted(typed.filter(choice => takes({ source: SOURCES.devices, choice, request: request!, ask })))).toEqual(sorted(offered))
 
     for (const choice of overHttp) {
       const sources = [SOURCES['http-forms'], SOURCES.forms, SOURCES.terminal]
       expect(sources.map(source => takes({ source, choice, request: request!, ask })), choice).toEqual([true, true, true])
     }
-    const widest = overHttp.filter(choice => choice.startsWith('approve ')).at(-1)!.split(' ')[1]!
-    const answer = ask.rule === 'sensitive_path' ? { action: `allow_${widest}` } : { approve: true, scope: widest }
-    expect((await http.backend.answer({ [token]: { action: 'accept', content: answer } }, { caller: CALLER })).tokens).toEqual([token])
-  })
+    const widest = overHttp.filter(choice => choice.startsWith('approve ')).map(choice => choice.split(' ')[1]!).sort((left, right) => SCOPES.indexOf(left as typeof SCOPES[number]) - SCOPES.indexOf(right as typeof SCOPES[number])).at(-1)!
+    expect((await http.answer({ [token]: { action: 'accept', content: { action: `allow_${widest}` } } }, { caller: CALLER })).tokens).toEqual([token])
+  }, 60_000)
 })

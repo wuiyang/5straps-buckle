@@ -69,7 +69,7 @@ describe('the save form over HTTP', () => {
     const args = { path: join(node.root, 'outside', 'note.md'), content: 'saved' }
     const asked = await node.send(claudeCodeCall({ tool: 'fs_write', args }))
     const [token] = node.waitingTokens()
-    expect((formOf(asked, token!).requestedSchema.properties as Record<string, { enum?: string[] }>)['scope']?.enum).toEqual(['once', 'session', 'always'])
+    expect((formOf(asked, token!).requestedSchema.properties as Record<string, { enum?: string[] }>)['action']?.enum).toEqual(['allow_once', 'allow_session', 'allow_always', 'deny'])
 
     const saving = await node.send(claudeCodeCall({ tool: 'fs_write', args, responses: accept(token!, { approve: true, scope: 'session' }) }))
     expect(Object.keys(saving.inputRequests ?? {})).toEqual([`save:${token}`])

@@ -5,7 +5,9 @@ import { saveEndingLine, settleUnsaved, unsavedOf, type SaveAnswer, type SaveEnd
 import { describeAsk, describeAskOfShownCall, describeCallAsks, printable, type ShownCall } from '../common/domain/approval-instruction.js'
 import type { AnswerSender, ApprovalBackend, ApprovalHost, BackendCapabilities, DecisionBody, FullAsk, SkipReceipt, SubmitResult } from '../common/types/ports/approval-backend.js'
 
-// An approval form's answer names its approval or its action; one that names neither, a save answer among them, is none.
+// An approval form's answer names its action. `approve` and `scope` are the shape forms took before one choice field listed
+// the terminal's choices, which a host may still hold across an upgrade; one that names neither, a save answer among them,
+// is none.
 const FormAnswerSchema = z.object({
   approve: z.boolean().optional(),
   action: z.enum(['allow_once', 'allow_session', 'allow_always', 'deny', 'deny_session', 'always_deny']).optional(),
@@ -56,8 +58,10 @@ const IN_THE_ANSWER: SubmitResult = { kind: 'declined', reason: 'an MCP host\'s 
 const ALLOW_LABELS: Readonly<Record<GrantScope, string>> = { once: 'Allow once', session: 'Allow this session', always: 'Always allow' }
 type Denial = 'deny' | 'deny_session' | 'always_deny'
 const DENIAL_LABELS: Readonly<Record<Denial, string>> = { deny: 'Deny', deny_session: 'Deny this session', always_deny: 'Always deny' }
-// A credential file's ask may be denied for longer than the call; every other ask's denial is for the call alone.
+// A credential file's ask may be denied for longer than the call, as at the terminal; every other ask's denial is for the
+// call alone.
 const SENSITIVE_DENIALS: readonly Denial[] = ['deny', 'deny_session', 'always_deny']
+const CALL_DENIALS: readonly Denial[] = ['deny']
 /** A call makes at most as many asks as one session keeps waiting (50), so one round of its forms comes back under no more keys. */
 export const MOST_FORM_ANSWERS = 50
 /** The key a save form's answer comes under, before its decision's token, so it never reads as an approval form's. */
@@ -248,9 +252,10 @@ function askLine(ask: FullAsk): string {
   return `${printable(ask.tool)} asked ${printable(ask.policy.rule)}: ${printable(ask.policy.subject)} (${printable(ask.token)})`
 }
 
+/** An answer's decision; an earlier form's denial, which may name a scope, denies the call once, as the terminal's deny. */
 function decisionOf(token: string, answer: FormAnswer): DecisionBody {
   const approved = answer.action ? answer.action.startsWith('allow_') : answer.approve === true
-  const scope: GrantScope = answer.action === 'deny_session' || answer.action === 'allow_session' ? 'session' : answer.action === 'always_deny' || answer.action === 'allow_always' ? 'always' : answer.action ? 'once' : answer.scope ?? 'once'
+  const scope: GrantScope = answer.action === 'deny_session' || answer.action === 'allow_session' ? 'session' : answer.action === 'always_deny' || answer.action === 'allow_always' ? 'always' : answer.action || !approved ? 'once' : answer.scope ?? 'once'
   return { token, outcome: approved ? 'approve' : 'deny', scope }
 }
 
@@ -258,8 +263,8 @@ function decisionOf(token: string, answer: FormAnswer): DecisionBody {
  * One form per ask, whose message is the whole action as the node's terminal shows it (owner decision D17): the ask, then
  * every argument, the directory, the effects and the node's summary from the call the ask recorded. An ask whose whole
  * call was not kept has none: its form says so and offers denials only. A call that made several asks is shown whole
- * once, in the form of its first ask, which lists the others; each other form names that ask. Each form offers the
- * scopes its ask offers.
+ * once, in the form of its first ask, which lists the others; each other form names that ask. Each form offers what the
+ * node's terminal offers for its ask.
  */
 function formsFor(input: { approvals: ApprovalRequest[]; waiting: FullAsk[]; options: FormsBackendOptions; warnings: readonly string[] }) {
   const { options } = input
@@ -287,38 +292,36 @@ function shownCallOf(ask: FullAsk): ShownCall | undefined {
   return ask.action === undefined ? undefined : { ...ask.action, judge: ask.risk.notes }
 }
 
+/**
+ * One choice field listing exactly what the node's terminal offers for the ask, so a form can send nothing else: each
+ * scope the ask offers to allow (a credential file once alone, a secret file's use each scope its ask offers, as
+ * docs/user/how-to/secrets.md says), then the denials, which outlast the call for a credential file alone.
+ */
 function approvalForm(input: { approval: ApprovalRequest; message: string }) {
   const { approval } = input
   const scopes = approval.offeredScopes
+  const denials = approval.rule === 'sensitive_path' ? SENSITIVE_DENIALS : CALL_DENIALS
   return inputRequired.elicit({
     message: input.message,
     requestedSchema: {
       type: 'object',
-      // A credential file is allowed once; a secret file's use offers each scope its ask does (docs/user/how-to/secrets.md).
-      properties: approval.rule === 'sensitive_path' ? {
-        action: { type: 'string', enum: [...scopes.map(scope => `allow_${scope}`), ...SENSITIVE_DENIALS], description: [...scopes.map(scope => ALLOW_LABELS[scope]), ...SENSITIVE_DENIALS.map(denial => DENIAL_LABELS[denial])].join(', ') },
-      } : {
-        approve: { type: 'boolean', description: 'Allow this operation' },
-        scope: {
-          type: 'string',
-          enum: scopes,
-          description: scopes.length === 1 ? 'once, for this call alone' : 'once, this session, or always for this subject',
-        },
+      properties: {
+        action: { type: 'string', enum: [...scopes.map(scope => `allow_${scope}`), ...denials], description: [...scopes.map(scope => ALLOW_LABELS[scope]), ...denials.map(denial => DENIAL_LABELS[denial])].join(', ') },
       },
-      required: [approval.rule === 'sensitive_path' ? 'action' : 'approve'],
+      required: ['action'],
     },
   })
 }
 
 /** An ask nobody was shown whole: it may be denied here, never approved. */
 function denialForm(input: { approval: ApprovalRequest; message: string }) {
-  const denials: Denial[] = input.approval.rule === 'sensitive_path' ? [...SENSITIVE_DENIALS] : ['deny']
+  const denials = input.approval.rule === 'sensitive_path' ? SENSITIVE_DENIALS : CALL_DENIALS
   return inputRequired.elicit({
     message: input.message,
     requestedSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: denials, description: denials.map(denial => DENIAL_LABELS[denial]).join(', ') },
+        action: { type: 'string', enum: [...denials], description: denials.map(denial => DENIAL_LABELS[denial]).join(', ') },
       },
       required: ['action'],
     },

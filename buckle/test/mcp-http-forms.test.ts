@@ -105,7 +105,7 @@ describe('the HTTP MCP face, forms on', () => {
     const args = writeOutside(node)
     const asked = await send(node, claudeCodeCall({ tool: 'fs_write', args }))
     const [token] = node.waitingTokens()
-    expect(schemaOf(formOf(asked, token!))['scope']?.enum).toEqual(['once', 'session', 'always'])
+    expect(schemaOf(formOf(asked, token!))['action']?.enum).toEqual(['allow_once', 'allow_session', 'allow_always', 'deny'])
     expect(formOf(asked, token!).message).not.toContain('this form')
 
     const ran = await send(node, claudeCodeCall({ tool: 'fs_write', args, responses: accept(token!, { approve: true, scope: 'session' }) }))
@@ -129,8 +129,7 @@ describe('the HTTP MCP face, forms on', () => {
     const [token] = node.waitingTokens()
     expect(node.runtime.approvalService.waiting().map(ask => ask.floor)).toEqual([true])
     const form = formOf(asked, token!)
-    expect(schemaOf(form)['approve']).toBeDefined()
-    expect(schemaOf(form)['scope']?.enum).toEqual(['once', 'session', 'always'])
+    expect(schemaOf(form)['action']?.enum).toEqual(['allow_once', 'allow_session', 'allow_always', 'deny'])
     expect(form.message).not.toContain('this form only denies it')
 
     const ran = await send(node, claudeCodeCall({ tool: 'fs_delete', args, responses: accept(token!, { approve: true, scope: 'once' }) }))
