@@ -95,15 +95,6 @@ describe('the terminal backend port, core side', () => {
     expect(seen.closed).toBe(true)
   })
 
-  it('marks each ask at the floor as the ledger recorded it, though a joined re-send\'s own asks read otherwise', async () => {
-    const { backend, seen } = recordingBackend(async () => [])
-    const { service, root } = setUp(backend)
-    await otherProcess(root).ask({ tool: 'fs_write', sessionId: 'chat-1', requestId: 'request-1', asks: [{ ...ask('/outside/a.md'), floor: true }], call: CALL })
-    await service.request(call())
-    expect(seen.asks.map(asked => asked.policy.floor)).toEqual([true])
-    await service.close()
-  })
-
   it('names the call by a key that carries none of its session, actor, or requestId', async () => {
     const { backend, seen } = recordingBackend(async () => [])
     const { service } = setUp(backend)

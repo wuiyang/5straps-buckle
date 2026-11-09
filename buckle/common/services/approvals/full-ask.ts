@@ -18,19 +18,15 @@ export interface AskSetting {
   call?: AskedCall
 }
 
-/** One ask as a backend is handed it: its request, and whether it is at the floor, which the request does not carry. */
-export interface MarkedRequest { request: ApprovalRequest; floor: boolean }
-
-export function fullAskOf(asked: MarkedRequest, setting: AskSetting): FullAsk {
+export function fullAskOf(approval: ApprovalRequest, setting: AskSetting): FullAsk {
   const { call } = setting
-  const { request: approval } = asked
   return {
     egress: 'full', contractVersion: 1, token: approval.token, group: setting.group, idempotencyKey: setting.idempotencyKey,
     correlation: { correlationId: setting.correlationId, requestId: setting.requestId },
     workspace: setting.workspace,
     requester: { actor: setting.actor, sessionId: setting.sessionId },
     tool: approval.tool,
-    policy: { rule: approval.rule, subject: approval.subject, reason: approval.reason, offeredScopes: approval.offeredScopes, ...(approval.widerSubject === undefined ? {} : { widerSubject: approval.widerSubject }), floor: asked.floor },
+    policy: { rule: approval.rule, subject: approval.subject, reason: approval.reason, offeredScopes: approval.offeredScopes, ...(approval.widerSubject === undefined ? {} : { widerSubject: approval.widerSubject }) },
     risk: { ...(approval.severity === undefined ? {} : { severity: approval.severity }), notes: call?.judge ?? [] },
     deadline: { expiresAt: approval.expiresAt, hold: setting.hold },
     ...(call === undefined ? {} : { action: { arguments: call.arguments, cwd: call.cwd, description: call.description, ...(call.effects === undefined ? {} : { effects: call.effects }) } }),
@@ -44,7 +40,7 @@ export function fullAskOf(asked: MarkedRequest, setting: AskSetting): FullAsk {
 export function ledgerAskOf(ask: PendingAsk, setting: { workspace: FullAsk['workspace']; idempotencyKey: (joinKey: string) => string }): FullAsk {
   const { request } = ask
   const requestId = ask.requestId ?? request.token
-  return fullAskOf({ request, floor: ask.floor }, {
+  return fullAskOf(request, {
     workspace: setting.workspace, group: ask.callRef ?? request.token, idempotencyKey: setting.idempotencyKey(joinKey({ sessionId: ask.sessionId, actor: ask.actor, requestId })),
     correlationId: requestId, requestId, actor: ask.actor ?? null, sessionId: ask.sessionId, hold: null,
     ...(ask.call?.complete ? { call: ask.call } : {}),

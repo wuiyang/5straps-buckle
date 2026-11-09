@@ -155,7 +155,7 @@ describe('the forms backend', () => {
     const host = fakeHost({ routed: [askFor('a')] })
     await backend.open(host)
     await backend.close()
-    expect(await backend.answer({ a: accepted({ approve: true }) })).toEqual({ tokens: [], unsaved: [], holds: false })
+    expect(await backend.answer({ a: accepted({ approve: true }) })).toEqual({ tokens: [], unsaved: [] })
     expect(host.decided).toEqual([])
   })
 })
@@ -211,7 +211,7 @@ describe('the save form', () => {
     const answered = await backend.answer({ a: accepted({ approve: true, scope: 'session' }) }, SENDER)
     backend.saveForms(answered.unsaved, SENDER)
     const retried = await backend.answer({ 'save:a': accepted({ save: 'retry' }) }, SENDER)
-    expect(retried).toEqual({ tokens: ['a'], unsaved: [], holds: false, warnings: [
+    expect(retried).toEqual({ tokens: ['a'], unsaved: [], warnings: [
       'fs_write asked write_scope: /w/a (a)\nApproved for this call; saving it for the session failed: permission denied.\nLeft unsaved: it is written at the next decision, when the workspace opens again, or when the same decision is sent again.',
     ] })
     expect(host.decided.map(({ decision, sender }) => ({ decision, sender }))).toEqual([
@@ -251,8 +251,8 @@ describe('the save form', () => {
 
   it('tells save answers from approval answers: a retry it drew no save form for sends nothing, nor does an approval answer carrying a save answer', async () => {
     const { backend, host } = await savingBackend([OWED])
-    expect(await backend.answer({ 'save:a': accepted({ save: 'retry' }) }, SENDER)).toEqual({ tokens: [], unsaved: [], holds: false })
-    expect(await backend.answer({ a: accepted({ save: 'retry' }) }, SENDER)).toEqual({ tokens: [], unsaved: [], holds: false })
+    expect(await backend.answer({ 'save:a': accepted({ save: 'retry' }) }, SENDER)).toEqual({ tokens: [], unsaved: [] })
+    expect(await backend.answer({ a: accepted({ save: 'retry' }) }, SENDER)).toEqual({ tokens: [], unsaved: [] })
     expect(host.decided).toEqual([])
     expect(host.logged).toContainEqual({ level: 'warn', message: 'A save form\'s retry came for no save form drawn for its caller, as after a restart, so nothing was retried' })
   })
@@ -278,19 +278,19 @@ describe('the save form', () => {
     const skippedBy: Array<string | undefined> = []
     await backend.open({ ...host, skipSave: async (_token, sender) => { skippedBy.push(sender?.caller); return refusal } })
     backend.saveForms((await backend.answer({ a: accepted({ approve: true, scope: 'session' }) }, SENDER)).unsaved, SENDER)
-    expect(await backend.answer({ 'save:a': accepted({ save: 'skip' }) }, { caller: 'agent:b' })).toEqual({ tokens: [], unsaved: [], holds: false })
+    expect(await backend.answer({ 'save:a': accepted({ save: 'skip' }) }, { caller: 'agent:b' })).toEqual({ tokens: [], unsaved: [] })
     expect(skippedBy).toEqual(['agent:b'])
     expect((await backend.answer({ 'save:a': accepted({ save: 'retry' }) }, SENDER)).tokens).toEqual(['a'])
     expect(host.decided).toHaveLength(2)
   })
 })
 
-const OWN_CALLER = { floor: false, sameCaller: true }
+const OWN_CALLER = { sameCaller: true }
 const sensitive = (token: string): ApprovalRequest => ({ ...request(token), rule: 'sensitive_path', subject: '/w/.env' })
 const secretAsk = (token: string) => askFor(token, { policy: { ...askFor(token).policy, rule: 'sensitive_path', subject: '/w/.env' } })
 
 describe('the forms every face draws', () => {
-  it.each([['a stdio host', undefined], ['an HTTP host', OWN_CALLER]])('draws for %s what each non-floor ask offers: every offered scope and every denial, with no note sending it to the node', async (_name, reach) => {
+  it.each([['a stdio host', undefined], ['an HTTP host', OWN_CALLER]])('draws for %s what each ask offers: every offered scope and every denial, with no note sending it to the node', async (_name, reach) => {
     const backend = forms()
     await backend.open(fakeHost({ routed: [askFor('f'), secretAsk('s'), askFor('n', { action: undefined })], ...(reach ? { reach } : {}) }))
     const drawn = backend.forms([request('f'), sensitive('s'), sensitive('n')])
@@ -299,29 +299,6 @@ describe('the forms every face draws', () => {
     expect(formOf(drawn, 'f').message).not.toContain('this form')
     expect(formOf(drawn, 's').requestedSchema.properties['action']?.enum).toEqual(['allow_once', 'allow_session', 'allow_always', 'deny', 'deny_session', 'always_deny'])
     expect(formOf(drawn, 'n').requestedSchema.properties['action']?.enum).toEqual(['deny', 'deny_session', 'always_deny'])
-  })
-
-  it('draws a floor ask\'s approval for a stdio host, and for an HTTP host a denial alone naming where a person approves it', async () => {
-    const floorAsk = askFor('x', { policy: { ...askFor('x').policy, floor: true } })
-    const stdio = forms()
-    await stdio.open(fakeHost({ routed: [floorAsk] }))
-    expect(formOf(stdio.forms([request('x')]), 'x').requestedSchema.properties['scope']?.enum).toEqual(['once', 'session', 'always'])
-    const http = forms()
-    await http.open(fakeHost({ routed: [floorAsk], reach: OWN_CALLER }))
-    const drawn = formOf(http.forms([request('x')]), 'x')
-    expect(drawn.requestedSchema.properties['approve']).toBeUndefined()
-    expect(drawn.requestedSchema.properties['action']?.enum).toEqual(['deny'])
-    expect(drawn.message).toContain('a person approves this at the node, at the serve terminal or with buckle approve x')
-  })
-
-  it('holds the call for the node where an HTTP host\'s floor form comes back dismissed, and not a stdio host\'s', async () => {
-    const floorAsk = askFor('x', { policy: { ...askFor('x').policy, floor: true } })
-    const http = forms()
-    await http.open(fakeHost({ routed: [floorAsk], reach: OWN_CALLER }))
-    expect(await http.answer({ x: { action: 'decline' } }, SENDER)).toEqual({ tokens: [], unsaved: [], holds: true })
-    const stdio = forms()
-    await stdio.open(fakeHost({ routed: [floorAsk] }))
-    expect(await stdio.answer({ x: { action: 'decline' } }, SENDER)).toEqual({ tokens: [], unsaved: [], holds: false })
   })
 
   it('offers no more than the ask does', async () => {
@@ -334,7 +311,7 @@ describe('the forms every face draws', () => {
     const backend = forms()
     const host = fakeHost({ routed: [askFor('f'), askFor('a')], reach: OWN_CALLER })
     await backend.open(host)
-    expect(await backend.answer({ f: { action: 'decline' }, a: { action: 'cancel' } }, SENDER)).toEqual({ tokens: [], unsaved: [], holds: false })
+    expect(await backend.answer({ f: { action: 'decline' }, a: { action: 'cancel' } }, SENDER)).toEqual({ tokens: [], unsaved: [] })
     expect(host.decided).toEqual([])
   })
 
@@ -343,7 +320,7 @@ describe('the forms every face draws', () => {
     const host = fakeHost({ routed: [askFor('a')], receipt: (_decision, sent) => (sent === 1 ? OWED : SAVED), reach: OWN_CALLER })
     await backend.open(host)
     backend.saveForms((await backend.answer({ a: accepted({ approve: true, scope: 'session' }) }, SENDER)).unsaved, SENDER)
-    expect(await backend.answer({ 'save:a': accepted({ save: 'retry' }) }, SENDER)).toEqual({ tokens: ['a'], unsaved: [], holds: false })
+    expect(await backend.answer({ 'save:a': accepted({ save: 'retry' }) }, SENDER)).toEqual({ tokens: ['a'], unsaved: [] })
     expect(host.decided.map(({ decision, sender }) => ({ decision, sender }))).toEqual([
       { decision: { token: 'a', outcome: 'approve', scope: 'session' }, sender: SENDER },
       { decision: { token: 'a', outcome: 'approve', scope: 'session' }, sender: SENDER },
@@ -401,13 +378,13 @@ describe('the forms host core opens', () => {
     expect(grants.list()).toMatchObject([{ rule: 'write_scope', subject: '/outside', scope: 'session', sessionId: 's-1' }])
     expect(heard).toEqual([{ id: 'forms', kind: 'forms' }])
     expect(host().source).toEqual({ id: 'forms', kind: 'forms' })
-    expect(host().reach).toEqual({ floor: true, sameCaller: false })
+    expect(host().reach).toEqual({ sameCaller: false })
   })
 
-  it('tells the HTTP face\'s forms their answers decide only their own caller\'s asks, and approve no floor ask', async () => {
+  it('tells the HTTP face\'s forms their answers decide only their own caller\'s asks', async () => {
     const { host } = await opened('http')
     expect(host().source).toEqual(SOURCES['http-forms'])
-    expect(host().reach).toEqual({ floor: false, sameCaller: true })
+    expect(host().reach).toEqual({ sameCaller: true })
   })
 
   it('skips the save of a form approval as the forms source, and refuses to skip one buckle approve recorded', async () => {

@@ -17,8 +17,6 @@ export interface SourceRights {
   whileFormsOn?: true
   /** Its answers decide only the asks their own caller raised: the transport's actor, compared with the ask's. */
   sameCaller?: true
-  /** False: its approval of a floor ask is refused, though it approves as a person at `local`, and its denial kept. */
-  approvesFloor?: false
 }
 
 const AT_THE_NODE: SourceRights = { assurance: 'local', approves: true, person: true, widens: true, everyAsk: false }
@@ -30,10 +28,10 @@ const RIGHTS: Record<SourceKind, SourceRights> = {
   terminal: AT_THE_NODE,
   cli: { ...AT_THE_NODE, everyAsk: true },
   forms: FORMS,
-  // Where an ask is answered changes no scope it offers (the owner's ruling of 2026-11-09), so an HTTP form decides as a
-  // stdio one; anything holding an agent's token can send one, so it decides only the asks that token raised, and a floor
-  // ask still reaches a person.
-  'http-forms': { ...FORMS, sameCaller: true, approvesFloor: false },
+  // Where an ask is answered changes nothing it offers, a floor ask's approval included (APPROVAL-33, the owner's ruling of
+  // 2026-11-09), so an HTTP form decides as a stdio one; anything holding an agent's token can send one, so it decides only
+  // the asks that token raised, and forms stay off unless the owner turns them on.
+  'http-forms': { ...FORMS, sameCaller: true },
   devices: { assurance: 'key', approves: true, person: true, widens: false, everyAsk: false },
   judge: { assurance: 'relayed', approves: true, person: false, widens: false, everyAsk: true },
   // The setup route's envelope keeps today's lasting denials of a sensitive file.
@@ -45,14 +43,9 @@ export function rightsOf(kind: SourceKind): SourceRights {
   return RIGHTS[kind]
 }
 
-/** What a backend is told its source may decide, by the rules the decision guard holds these rights to. */
+/** Whose asks a backend is told its source may answer, by the rule the decision guard holds these rights to. */
 export function reachOf(rights: SourceRights): SourceReach {
-  return { floor: approvesFloor(rights), sameCaller: rights.sameCaller === true }
-}
-
-/** Whether the source's approval of a floor ask stands: a person's, at `local` or above, and not barred from the floor. */
-export function approvesFloor(rights: SourceRights): boolean {
-  return rights.approves && rights.person && rights.approvesFloor !== false && atLeast(rights.assurance, 'local')
+  return { sameCaller: rights.sameCaller === true }
 }
 
 export function atLeast(assurance: Assurance, least: Assurance): boolean {

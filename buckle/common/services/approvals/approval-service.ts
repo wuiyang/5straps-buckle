@@ -336,7 +336,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
       const ask = openAsk({ key, approvals, answered, joined: issued.joined })
       const setting: AskSetting = { workspace, group: ask.group, correlationId: scope?.context.correlationId ?? input.requestId, requestId: input.requestId, actor: actor ?? null, sessionId: input.sessionId, idempotencyKey: callKeyOf(key), hold, ...(input.call === undefined ? {} : { call: input.call }) }
-      if (!ask.prompting) track(ask.prompting = startQuestions({ ask, asks: ask.approvals.map(approval => fullAskOf({ request: approval, floor: issued.floor.includes(approval.token) }, setting)), resend: issued.joined }))
+      if (!ask.prompting) track(ask.prompting = startQuestions({ ask, asks: ask.approvals.map(approval => fullAskOf(approval, setting)), resend: issued.joined }))
       // The newest joined caller carries the wait; every earlier one ends without running (review M1).
       // A re-send whose own transport already dropped carries nothing on, so the earlier one keeps it.
       if (!input.signal?.aborted) for (const earlier of ask.participants) earlier.abort()

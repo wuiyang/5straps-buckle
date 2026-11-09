@@ -94,30 +94,21 @@ describe('the caller check in the decision guard', () => {
 })
 
 describe('the rights of an HTTP form answer', () => {
-  it('rates it local, as a stdio form answer, read while forms are on and bound to its own caller, approving no floor ask, and routes it to every ask today', () => {
-    expect(rightsOf('http-forms')).toMatchObject({ assurance: 'local', approves: true, person: true, whileFormsOn: true, sameCaller: true, approvesFloor: false })
+  it('rates it local, as a stdio form answer, read while forms are on and bound to its own caller, and routes it to every ask today', () => {
+    expect(rightsOf('http-forms')).toMatchObject({ assurance: 'local', approves: true, person: true, whileFormsOn: true, sameCaller: true })
     expect(rightsOf('forms')).not.toHaveProperty('sameCaller')
-    expect(rightsOf('forms')).not.toHaveProperty('approvesFloor')
     expect(TODAYS_ROUTES).toContainEqual({ id: 'http-forms', role: 'decide' })
   })
 
-  it('approves its own caller\'s non-floor ask for each scope the ask offers, as a stdio form answer does, and none of another caller\'s', () => {
+  it('approves its own caller\'s ask for each scope the ask offers, a floor ask included, as a stdio form answer does, and none of another caller\'s', () => {
     const scoped = (scope: 'session' | 'always'): ApprovalDecision => ({ token: 't-1', approved: true, scope })
     for (const scope of ['session', 'always'] as const) {
       expect(guard(claimOf(HTTP, { caller: 'agent:a', decision: scoped(scope) }), waitingFor('agent:a'))).toEqual({ ok: true, apply: {} })
       expect(guard(claimOf(HTTP, { caller: 'agent:b', decision: scoped(scope) }), waitingFor('agent:a'))).toEqual(ANOTHER_CALLER)
     }
+    expect(guard(claimOf(HTTP, { caller: 'agent:a' }), waitingFor('agent:a', FILE_FLOOR_MARKS))).toEqual({ ok: true, apply: {} })
+    expect(guard(claimOf(HTTP, { caller: 'agent:a', decision: scoped('session') }), waitingFor('agent:a', FILE_FLOOR_MARKS))).toEqual({ ok: true, apply: {} })
     expect(guard(claimOf(HTTP, { caller: 'agent:b' }), waitingFor('agent:a', FILE_FLOOR_MARKS))).toEqual(ANOTHER_CALLER)
-  })
-
-  it('refuses its approval of a floor ask at any scope, which a stdio form answer gives, and keeps its denial of one', () => {
-    const floor = { ok: false, code: 'assurance_too_low', reason: 'A person decides a floor ask: approve it at the node, or with an enrolled key' }
-    for (const scope of ['once', 'session'] as const) {
-      const decision: ApprovalDecision = { token: 't-1', approved: true, scope }
-      expect(guard(claimOf(HTTP, { caller: 'agent:a', decision }), waitingFor('agent:a', FILE_FLOOR_MARKS))).toEqual(floor)
-      expect(guard(claimOf(SOURCES.forms, { caller: 'mcp-stdio', decision }), waitingFor('agent:a', FILE_FLOOR_MARKS))).toEqual({ ok: true, apply: {} })
-    }
-    expect(guard(claimOf(HTTP, { caller: 'agent:a', decision: once(false) }), waitingFor('agent:a', FILE_FLOOR_MARKS))).toEqual({ ok: true, apply: {} })
   })
 })
 

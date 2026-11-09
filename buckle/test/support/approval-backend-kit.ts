@@ -42,7 +42,7 @@ export function askFor(token: string, overrides: Partial<FullAsk> = {}): FullAsk
     workspace: { id: 'w-1', node: 'node-1' },
     requester: { actor: 'agent:a', sessionId: 's-1' },
     tool: 'fs_write',
-    policy: { rule: 'write_scope', subject: `/w/${token}`, reason: 'A first write in this folder', offeredScopes: ['once', 'session', 'always'], floor: false },
+    policy: { rule: 'write_scope', subject: `/w/${token}`, reason: 'A first write in this folder', offeredScopes: ['once', 'session', 'always'] },
     risk: { notes: [] },
     deadline: { expiresAt: new Date(Date.now() + 600_000).toISOString(), hold: 'grace' },
     action: { arguments: { path: token }, cwd: '/w', description: null },
@@ -50,18 +50,18 @@ export function askFor(token: string, overrides: Partial<FullAsk> = {}): FullAsk
   }
 }
 
-/** Any caller's asks, a floor ask's approval included, as the terminal's source answers them. */
-const AT_THE_NODE: SourceReach = { floor: true, sameCaller: false }
+/** Any caller's asks, as the terminal's source answers them. */
+const ANY_CALLER: SourceReach = { sameCaller: false }
 
 /**
- * A host that routes `routed` alone and answers each decision with `receipt`, applied by default; `reach` is what its
- * source may decide, a person at the node's by default.
+ * A host that routes `routed` alone and answers each decision with `receipt`, applied by default; `reach` says whose asks
+ * its source may answer, any caller's by default.
  */
 export function fakeHost(input: { routed: FullAsk[]; receipt?: (decision: DecisionInput, sent: number) => DecisionReceipt; reach?: SourceReach }): FakeHost {
   const routed = new Map(input.routed.map(ask => [ask.token, ask]))
   const host: FakeHost = {
     source: SOURCES.terminal,
-    reach: input.reach ?? AT_THE_NODE,
+    reach: input.reach ?? ANY_CALLER,
     decided: [],
     skipped: [],
     skippedBy: [],
