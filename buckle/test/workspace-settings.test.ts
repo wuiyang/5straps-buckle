@@ -7,13 +7,14 @@ import { PolicyError } from '../common/domain/policy.js'
 import { credentialLikeName, defaultSettings, openSettingsFile, policySources, resolveSettings, variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsError, WorkspaceSettingsInvalidError, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
 import { loadConfig, unreadWorkspaceDefaults } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
 
 // The workspace-model brief, item 2: each workspace's settings in its own workspace.json, a strict document the
 // owner's CLI writes through the locked store, holding no credential.
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 function scratch(): string {
   const root = mkdtempSync(join(tmpdir(), 'buckle-settings-'))
   roots.push(root)
