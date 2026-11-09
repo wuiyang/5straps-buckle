@@ -5,6 +5,7 @@ import type { InvokeRequest } from '@5straps/protocol'
 import { APPROVAL_NO_DEADLINE } from '@5straps/protocol'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
+import { StateBusyError } from '../common/adapters/json-file-store.js'
 import { APPROVAL_OUTBOX_COUNT_MAX, APPROVAL_OUTBOX_RETENTION_MS, createApprovalRegistry, MAX_PENDING_BYTES_PER_ACTOR, MAX_PENDING_BYTES_PER_SESSION, MAX_PENDING_PER_SESSION, MAX_PENDING_PER_WORKSPACE } from '../common/services/approvals/approval-registry.js'
 
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -228,6 +229,20 @@ describe('an ask at wait 0', () => {
     await runtime.history.close()
   })
 
+  it('lapses ten minutes after a re-send that would not wait takes over a call held until answered in the same process', async () => {
+    const start = Date.now()
+    const { runtime } = await node('0')
+    const held = runtime.invoke({ sessionId: 'chat-1', request: write('zero-taken'), resends: true })
+    await vi.waitFor(() => expect(runtime.approvalService.pending()).toHaveLength(1))
+    expect(await runtime.invoke({ sessionId: 'chat-1', request: write('zero-taken'), approvalWait: { mode: 'none' }, resends: true })).toMatchObject({ outcome: 'approval_required' })
+    expect(await held).toMatchObject({ outcome: 'error', error: { code: 'REQUEST_SUPERSEDED' } })
+
+    await vi.waitFor(() => expect(runtime.approvalService.waiting()[0]).toMatchObject({ lapsesAt: expect.any(String) }))
+    clockAt(start + 11 * MINUTE)
+    expect(runtime.approvalService.pending()).toEqual([])
+    await runtime.history.close()
+  })
+
   it.each([['a finite hold', { mode: 'finite', ms: 50 }], ['a call that would not wait', { mode: 'none' }]] as const)('keeps living until answered on a face that does not send the call again (/v1/invoke), after %s', async (_, approvalWait) => {
     const start = Date.now()
     const { runtime } = await node('0')
@@ -329,6 +344,99 @@ describe('an ask at wait 0', () => {
     expect(registry.waiting()[0]).not.toHaveProperty('lapsesAt')
     clockAt(start + 3 * 60 * MINUTE)
     expect(registry.pending()).toHaveLength(1)
+  })
+})
+
+// Two node processes can hold one caller's call at once, as a re-send that reached a second process joins the first one's
+// ask. Its lapse starts once the last hold on it anywhere ends, however the holds' ends meet and whatever their waits.
+describe('an ask at wait 0 that calls in two processes hold', () => {
+  /** Two runtimes on one state folder, as two node processes, and how many executing marks they hold. */
+  async function twoProcesses() {
+    const { config, runtime: first } = await node('0')
+    const second = await createRuntime({ config, interaction: fixedInteraction() })
+    const markCount = () => executingMarks({ directory: activeWorkDirectory(config.nodeStateDirectory ?? config.stateDirectory, first.workspaceId) }).length
+    const close = async () => { await first.history.close(); await second.history.close() }
+    return { first, second, markCount, close }
+  }
+
+  it.each([['the first', 0], ['the second', 1]] as const)('starts its lapse where both holds end at once, and %s to take the approvals lock reads the other still held', async (_, leader) => {
+    const start = Date.now()
+    const { first, second, markCount, close } = await twoProcesses()
+    const leaving = [new AbortController(), new AbortController()]
+    const firstHeld = first.invoke({ sessionId: 'mcp', request: write('both-1'), signal: leaving[0]!.signal, resends: true })
+    await vi.waitFor(() => expect(first.approvalService.pending()).toHaveLength(1))
+    const secondHeld = second.invoke({ sessionId: 'mcp', request: write('both-1'), signal: leaving[1]!.signal, resends: true })
+    await vi.waitFor(() => expect(markCount()).toBe(2))
+    // Each process's hold end reads the holds left, then lets go only once both read them, as two ends that meet do.
+    const read = [Promise.withResolvers<void>(), Promise.withResolvers<void>()]
+    for (const [index, runtime] of [first, second].entries()) {
+      const holdEnded = runtime.approvals.holdEnded.bind(runtime.approvals)
+      vi.spyOn(runtime.approvals, 'holdEnded').mockImplementation(async (input) => {
+        if (index !== leader) await read[leader]!.promise
+        const lapse = await holdEnded(input)
+        read[index]!.resolve()
+        await Promise.all(read.map(each => each.promise))
+        return lapse
+      })
+    }
+
+    for (const each of leaving) each.abort()
+    expect(await firstHeld).toMatchObject({ outcome: 'error', error: { code: 'CALLER_LEFT' } })
+    expect(await secondHeld).toMatchObject({ outcome: 'error', error: { code: 'CALLER_LEFT' } })
+    expect(markCount()).toBe(0)
+    expect(second.approvalService.waiting()[0]).toMatchObject({ abandonedAt: expect.any(String), lapsesAt: expect.any(String) })
+    clockAt(start + 11 * MINUTE)
+    expect(second.approvalService.pending()).toEqual([])
+    await close()
+  })
+
+  it.each([
+    ['until answered, from a re-send held 50 ms', undefined, { mode: 'finite', ms: 50 }],
+    ['30 minutes, from a re-send that would not wait', { mode: 'finite', ms: 30 * MINUTE }, { mode: 'none' }],
+  ] as const)('starts no lapse while the first call holds it %s, and starts it as that hold ends', async (_, firstWait, secondWait) => {
+    const start = Date.now()
+    const { first, second, close } = await twoProcesses()
+    const leaving = new AbortController()
+    const firstHeld = first.invoke({ sessionId: 'mcp', request: write('shorter-1'), signal: leaving.signal, resends: true, ...(firstWait === undefined ? {} : { approvalWait: firstWait }) })
+    await vi.waitFor(() => expect(first.approvalService.pending()).toHaveLength(1))
+    expect(await second.invoke({ sessionId: 'mcp', request: write('shorter-1'), approvalWait: secondWait, resends: true })).toMatchObject({ outcome: 'approval_required' })
+
+    clockAt(start + 11 * MINUTE)
+    expect(second.approvalService.pending()).toHaveLength(1)
+    leaving.abort()
+    expect(await firstHeld).toMatchObject({ outcome: 'error', error: { code: 'CALLER_LEFT' } })
+    clockAt(start + 20 * MINUTE)
+    expect(second.approvalService.pending()).toHaveLength(1)
+    clockAt(start + 22 * MINUTE)
+    expect(second.approvalService.pending()).toEqual([])
+    await close()
+  })
+
+  it('starts its lapse where a re-send in another process held it as the first hold ended, then failed to join it', async () => {
+    const start = Date.now()
+    const { first, second, markCount, close } = await twoProcesses()
+    const leaving = new AbortController()
+    const firstHeld = first.invoke({ sessionId: 'mcp', request: write('failed-1'), signal: leaving.signal, resends: true })
+    await vi.waitFor(() => expect(first.approvalService.pending()).toHaveLength(1))
+    // The re-send's hold is marked; its join waits until the first hold ended, then meets the approvals lock busy.
+    const firstEnded = Promise.withResolvers<void>()
+    vi.spyOn(second.approvals, 'ask').mockImplementation(async () => {
+      await firstEnded.promise
+      throw new StateBusyError('approvals.json is busy in another Buckle process; retry shortly')
+    })
+    const secondHeld = second.invoke({ sessionId: 'mcp', request: write('failed-1'), resends: true })
+    await vi.waitFor(() => expect(markCount()).toBe(2))
+
+    leaving.abort()
+    expect(await firstHeld).toMatchObject({ outcome: 'error', error: { code: 'CALLER_LEFT' } })
+    expect(second.approvalService.waiting()[0]).not.toHaveProperty('lapsesAt')
+    firstEnded.resolve()
+    expect(await secondHeld).toMatchObject({ outcome: 'error', error: { code: 'STATE_BUSY' } })
+    expect(markCount()).toBe(0)
+    expect(second.approvalService.waiting()[0]).toMatchObject({ lapsesAt: expect.any(String) })
+    clockAt(start + 11 * MINUTE)
+    expect(second.approvalService.pending()).toEqual([])
+    await close()
   })
 })
 

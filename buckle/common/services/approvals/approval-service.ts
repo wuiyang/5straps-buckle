@@ -194,8 +194,9 @@ export interface ApprovalServiceOptions {
   /**
    * Holds the session active, as a running tool holds it, and names the asks its call makes or joins (`ask`, heldAskName)
    * for every process to read, from before they are recorded to the end of the call's wait for a person, which `end` lets
-   * go of whichever way the call goes. A call left waiting on purpose stays answerable however long it waits, and no other
-   * process starts the lapse of an ask this one still holds.
+   * go of whichever way the call goes, under the approvals lock where the hold's end decides the asks' lapse
+   * (ApprovalRegistry.holdEnded). A call left waiting on purpose stays answerable however long it waits, and no process
+   * starts the lapse of an ask another call still holds.
    */
   holding?: (hold: { session: GrantHolder; ask: string }) => { end(): void }
   pollMs?: number
@@ -305,7 +306,13 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       await options.idleCheck?.(session)
       // Held from before its asks are recorded, so a process that ends its own hold on them meanwhile reads this one and
       // starts no lapse, to the end of the wait, whichever way the call goes; the wait itself lets go of it as it ends.
-      const holding = options.holding?.({ session, ask: heldAskName({ ...input, actor }) })
+      const heldAs = heldAskName({ ...input, actor })
+      let holding = options.holding?.({ session, ask: heldAs })
+      // Once: under the approvals lock where the hold's end decides its asks' lapse, or as the call ends.
+      const letGo = () => {
+        holding?.end()
+        holding = undefined
+      }
       let handedOff = false
       try {
         const hold = (await options.hold()) ?? UNBOUND_HOLD
@@ -332,9 +339,10 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
         }
         // Checked before any question is drawn: a caller that cancelled during the announce is asked about no more (review L5).
         await cancelIfCancelled({ key, tokens, signal: input.signal, isCancel: input.isCancel })
-        // A hold until answered that ends before it starts still starts its asks' ten minutes (the MCP asks brief, item 5).
+        // A hold that ends before its wait starts still ends as a hold (the MCP asks brief, item 5): with none left, its
+        // asks start their ten minutes where they have no lapse.
         const unheld = async (reason: ApprovalSkipReason) => {
-          if (input.resends && ownHold === null) await holdEnded({ tokens, abandoned: false })
+          if (input.resends) await holdEnded({ tokens, abandoned: false, letGo })
           return skip({ approvals, answered, reason })
         }
         if (closing.signal.aborted) return unheld('shutdown')
@@ -360,13 +368,18 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
         const participant = new AbortController()
         ask.participants.add(participant)
         const result = waitFor({ ask, participant, hold, holdMs, signal: input.signal })
-          .then(ending => finish({ ask, participant, ending, hold, held: ownHold, resends: input.resends === true, signal: input.signal, isCancel: input.isCancel, own: { approvals, answered } }))
-          .finally(() => holding?.end())
+          .then(ending => finish({ ask, participant, ending, hold, resends: input.resends === true, letGo, signal: input.signal, isCancel: input.isCancel, own: { approvals, answered } }))
+          .finally(letGo)
         handedOff = true
         track(result)
         return result
+      } catch (error) {
+        // A call that fails before its wait, its join included, ends its hold as any hold ends: an ask whose other hold
+        // ended meanwhile, reading this one, starts its lapse where no hold on it is left.
+        if (input.resends) await holdEnded({ tokens: [], ask: heldAs, abandoned: false, letGo })
+        throw error
       } finally {
-        if (!handedOff) holding?.end()
+        if (!handedOff) letGo()
       }
     },
 
@@ -685,14 +698,17 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     return promise
   }
 
-  async function finish(input: { ask: OpenAsk; participant: AbortController; ending: Ending; hold: ApprovalHold; /** The hold the asks were recorded with (ownHold). */ held: number | null; resends: boolean; signal?: AbortSignal; isCancel?: (reason: unknown) => boolean; own: { approvals: ApprovalRequest[]; answered: string[] } }): Promise<ApprovalWaitResult> {
+  async function finish(input: { ask: OpenAsk; participant: AbortController; ending: Ending; hold: ApprovalHold; resends: boolean; /** Lets go of this call's hold. */ letGo: () => void; signal?: AbortSignal; isCancel?: (reason: unknown) => boolean; own: { approvals: ApprovalRequest[]; answered: string[] } }): Promise<ApprovalWaitResult> {
     const { ask, ending, own } = input
     ask.participants.delete(input.participant)
     const last = ask.participants.size === 0
-    // The last hold on the asks ended with them unanswered: a caller that left marks them abandoned, and one held until
-    // answered starts their ten minutes (the MCP asks brief, item 5). A finite hold set its lapse when it asked.
     const dropped = ending === 'aborted' && !cancels(input.signal, input.isCancel)
-    if (last && ending !== 'settled' && ending !== 'superseded' && (dropped || (input.resends && input.held === null))) await holdEnded({ tokens: stillPending(ask.tokens), abandoned: dropped })
+    // A hold another one here outlasts lets go as it leaves, so the last one's end never reads it. The last hold in this
+    // process on the asks ended with them unanswered, superseded by a re-send that would not wait included: with none left
+    // in any process, a caller that left marks them abandoned, and one that sends its call again starts their ten minutes
+    // where no finite hold set a lapse (the MCP asks brief, item 5).
+    if (!last) input.letGo()
+    else if (ending !== 'settled' && (dropped || input.resends)) await holdEnded({ tokens: stillPending(ask.tokens), abandoned: dropped, letGo: input.letGo })
     if (ending === 'superseded') {
       // The newer caller carries the ask on; this one reports back without running.
       if (last) release({ ask, keepAsking: input.hold === 'grace' })
@@ -718,9 +734,12 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     notices.cancelled(await options.registry.cancel(tokens))
   }
 
-  /** Records that the last hold on these asks ended; a failure to is logged, never the caller's (its asks keep their expiry). */
-  async function holdEnded(input: { tokens: string[]; abandoned: boolean }): Promise<void> {
-    if (input.tokens.length === 0) return
+  /**
+   * Records that a hold on these asks ended, letting go of it under the approvals lock (ApprovalRegistry.holdEnded); a
+   * failure to is logged, never the caller's (its asks keep their expiry), and the call lets go of its hold as it ends.
+   */
+  async function holdEnded(input: { tokens: string[]; ask?: string; abandoned: boolean; letGo: () => void }): Promise<void> {
+    if (input.tokens.length === 0 && input.ask === undefined) return
     try {
       const lapse = await options.registry.holdEnded(input)
       if (lapse !== undefined) scheduleSweepAt(lapse)

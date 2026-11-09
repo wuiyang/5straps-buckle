@@ -89,6 +89,8 @@ export interface ExecutingMark {
    * counts as activity without reading the marks.
    */
   running(session: GrantHolder): boolean
+  /** The asks the calls of this runtime hold now, by heldAskName, as its mark names them. */
+  heldAsks(): Set<string>
 }
 
 /**
@@ -143,6 +145,7 @@ export function createExecutingMark(input: { directory: string; workspaceId: str
   }
   return {
     running: session => holding.has(holderKey(session)),
+    heldAsks: () => new Set(asks.keys()),
     begin(session, ask) {
       let ended = false
       hold(session, ask)

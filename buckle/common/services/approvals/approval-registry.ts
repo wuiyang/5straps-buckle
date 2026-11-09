@@ -80,9 +80,9 @@ const fingerprint = { fingerprint: z.string().optional() }
 // decidedBy: key:<fingerprint> when a person's enrolled key signed the decision (review H4 of B23-B25).
 const decidedBy = { decidedBy: z.string().optional() }
 // lapsesAt: when an ask nobody holds lapses before its stated expiry, ten minutes after the last hold on it ended, and
-// again from a re-send that joins it (the MCP asks brief, item 5). An ask at wait 0 states no deadline, which its signed
-// challenge carries, so the lapse is kept beside the request rather than in it; none while a caller holds it until
-// answered. abandonedAt: when the caller that held it left before its hold ended; the oldest abandoned asks make room
+// again from a re-send that joins it, never nearer (the MCP asks brief, item 5). An ask at wait 0 states no deadline,
+// which its signed challenge carries, so the lapse is kept beside the request rather than in it; none while a caller
+// holds it until answered. abandonedAt: when the caller that held it left before its hold ended; the oldest abandoned asks make room
 // under the caps, so a session's or the workspace's cap is never reached through them alone.
 const lapse = { lapsesAt: z.iso.datetime().optional(), abandonedAt: z.iso.datetime().optional() }
 // callFile: the file beside approvals.json that holds the whole call of the ask's request group, once for every
@@ -311,8 +311,9 @@ export interface AskInput {
   attempt?: CallAttempt
   /**
    * How long the asking caller is held, in ms; null holds it until answered. An ask that states no deadline lapses this
-   * long and ten minutes more from now, and a re-send that joins restarts that clock (the MCP asks brief, item 5); one held
-   * until answered lapses only once its hold ends (holdEnded). Absent, from a face that does not send a call again
+   * long and ten minutes more from now, and a re-send that joins restarts that clock, never nearer (the MCP asks brief,
+   * item 5); one held until answered lapses only once its hold ends (holdEnded), so a re-send that joins one without a
+   * lapse, which another call may hold until answered, sets none. Absent, from a face that does not send a call again
    * (ApprovalRequestInput.resends): no lapse, as before the brief.
    */
   holdMs?: number | null
@@ -435,13 +436,15 @@ export interface ApprovalRegistry {
   /** Withdraws the asks still waiting among `tokens`, returning those it withdrew. */
   cancel(tokens: string[]): Promise<string[]>
   /**
-   * The last hold in this process on these asks ended with them unanswered (the MCP asks brief, item 5). `abandoned`: its
-   * caller left before the hold ended, so each stays answerable for ten minutes at most and is marked abandoned; otherwise
-   * an ask that states no deadline and was held until answered lapses ten minutes from now. An ask a call in another
-   * process still holds (`heldElsewhere`, read under the lock) is left as it is: that process's own hold end marks it.
+   * A hold on these asks ended with them unanswered (the MCP asks brief, item 5): those `tokens` names, and those of the
+   * call `ask` names (heldAskName), as a call that held them and failed to join them. `letGo` lets go of that hold, under
+   * the lock and before the holds left are read (`held`), so of two holds that end at once the second to take the lock
+   * reads the first gone. An ask another call still holds, in any process, is left as it is: that call's own hold end
+   * marks it. Otherwise, `abandoned`: its caller left before the hold ended, so each stays answerable for ten minutes at
+   * most and is marked abandoned; else an ask that states no deadline and has no lapse lapses ten minutes from now.
    * Returns the earliest lapse it set, in ms.
    */
-  holdEnded(input: { tokens: string[]; abandoned: boolean }): Promise<number | undefined>
+  holdEnded(input: { tokens: string[]; ask?: string; abandoned: boolean; letGo?: () => void }): Promise<number | undefined>
   /**
    * Withdraws one call: the group of the ask a token names (its requestId, session and actor), waiting
    * or answered, or the asks under a hashed requestId, session and actor. Its asks still waiting are
@@ -519,10 +522,10 @@ export interface ApprovalRegistryOptions {
   /** Told of each ask recorded and each decision applied, which count as the activity of the session it asked in for its idle check. */
   onActivity?: (session: GrantHolder) => void
   /**
-   * The asks a call in another process holds for a person's answer now, by heldAskName, read under the approvals lock as a
-   * hold here ends; throws where they cannot be read. Absent, none.
+   * The asks a call holds for a person's answer now, in any process, this one's included, by heldAskName: read under the
+   * approvals lock as a hold ends, once that hold let go of its own. Throws where they cannot be read. Absent, none.
    */
-  heldElsewhere?: () => ReadonlySet<string>
+  held?: () => ReadonlySet<string>
 }
 
 const UNREAD_SETTINGS: LiveSettings = Object.freeze({ forms: false })
@@ -1448,17 +1451,21 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       return withdrawn
     },
 
-    holdEnded({ tokens, abandoned }) {
+    holdEnded({ tokens, ask, abandoned, letGo }) {
       return update((state) => {
+        // The release and the reading of the holds left are one step under the lock.
+        letGo?.()
         const now = Date.now()
         const lapse = now + PENDING_TTL_MS
-        const elsewhere = options.heldElsewhere?.() ?? new Set<string>()
+        const held = options.held?.() ?? new Set<string>()
         let earliest: number | undefined
         state.pending = state.pending.map((entry) => {
-          if (entry.workspace !== workspace || !tokens.includes(entry.request.token)) return entry
-          if (entry.requestId !== undefined && elsewhere.has(heldAskName({ sessionId: entry.sessionId, requestId: entry.requestId, ...(entry.actor === undefined ? {} : { actor: entry.actor }) }))) return entry
+          if (entry.workspace !== workspace) return entry
+          const name = heldNameOf(entry)
+          if (!tokens.includes(entry.request.token) && (ask === undefined || name !== ask)) return entry
+          if (name !== undefined && held.has(name)) return entry
           const noDeadline = entry.request.expiresAt === APPROVAL_NO_DEADLINE
-          // Held until answered, it starts its ten minutes now; a lapse already set by a finite hold stands.
+          // With no hold left, it starts its ten minutes now; a lapse a finite hold set stands.
           if (!abandoned && (!noDeadline || entry.lapsesAt !== undefined)) return entry
           const at = Math.min(lapse, entry.lapsesAt === undefined ? Infinity : Date.parse(entry.lapsesAt))
           earliest = Math.min(earliest ?? Infinity, at)
@@ -1564,14 +1571,22 @@ function lapseAfter(holdMs: number | null | undefined, now: number): string | un
 }
 
 /**
- * A waiting ask a re-send joined: no longer abandoned, and its clock restarted from the re-send's hold (the MCP asks brief,
- * item 5). A re-send that gives no hold, from a face that does not send calls again, holds the ask until answered, as a
- * first call does: its lapse goes with the abandoned mark.
+ * A waiting ask a re-send joined: no longer abandoned, and its clock restarted from the re-send's hold, never nearer, since
+ * another call may still hold it longer (the MCP asks brief, item 5). A re-send held until answered, or one that gives no
+ * hold, from a face that does not send calls again, holds the ask until answered, as a first call does: its lapse goes
+ * with the abandoned mark. A finite one sets no lapse on an ask without one, which another call may hold until answered:
+ * the last hold's end starts it (holdEnded).
  */
 function renewed(entry: PendingEntry, holdMs: number | null | undefined, now: number): PendingEntry {
-  const { lapsesAt: _lapsesAt, abandonedAt: _abandonedAt, ...rest } = entry
-  const lapsesAt = entry.request.expiresAt === APPROVAL_NO_DEADLINE ? lapseAfter(holdMs, now) : undefined
-  return lapsesAt === undefined ? rest : { ...rest, lapsesAt }
+  const { lapsesAt, abandonedAt: _abandonedAt, ...rest } = entry
+  const own = entry.request.expiresAt === APPROVAL_NO_DEADLINE ? lapseAfter(holdMs, now) : undefined
+  if (own === undefined || lapsesAt === undefined) return rest
+  return { ...rest, lapsesAt: Date.parse(own) > Date.parse(lapsesAt) ? own : lapsesAt }
+}
+
+/** The name the holds of the ask's call give it in the executing marks (heldAskName); none for an ask without a requestId. */
+function heldNameOf(entry: PendingEntry): string | undefined {
+  return entry.requestId === undefined ? undefined : heldAskName({ sessionId: entry.sessionId, requestId: entry.requestId, ...(entry.actor === undefined ? {} : { actor: entry.actor }) })
 }
 
 /** The earliest lapse among a joined group's waiting asks, for the sweep that reports it. */

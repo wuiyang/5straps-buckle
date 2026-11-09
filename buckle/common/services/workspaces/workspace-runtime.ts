@@ -405,7 +405,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
     onNoticeQueued: () => { void notices?.flush() },
     live: () => ({ forms: formsInForce() }),
     onActivity: (session) => { history.touchActivity(session); sessionIdle.saw(session) },
-    heldElsewhere: () => asksHeldElsewhere({ directory: marks, instance }),
+    // Another process's holds from its mark, this one's own as it counts them.
+    held: () => new Set([...asksHeldElsewhere({ directory: marks, instance }), ...executing.heldAsks()]),
   })
   // Every revoke goes through the ledger, so a decision's owed mark never writes a revoked grant again.
   const { grants } = approvals
