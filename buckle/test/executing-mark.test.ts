@@ -1,12 +1,12 @@
-import { spawn } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { InvokeResponse } from '@5straps/protocol'
 import type { ToolContext } from '../common/domain/tool.js'
 import { logger } from '../common/runtime/log.js'
-import { ACTIVE_WORK_FRESH_MS, ACTIVE_WORK_REFRESH_MS, activeElsewhere, activeWorkDirectory, createExecutingMark, executingMarks } from '../common/services/workspaces/active-work.js'
+import { ACTIVE_WORK_FRESH_MS, ACTIVE_WORK_REFRESH_MS, ACTIVE_WORK_STALLED_MS, activeElsewhere, activeWorkDirectory, createExecutingMark, executingMarks } from '../common/services/workspaces/active-work.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 import { auditEntries, settleAuditLogs, startActionLogWriter } from './support/action-log-writer.js'
@@ -14,8 +14,8 @@ import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
 // The executing mark: a lease each runtime holds on disk only while a tool runs or a call is held for a person's answer,
-// naming those sessions, so the idle check of another process can tell a session's long tool, or its question still on
-// screen (APPROVAL-31), from a session nobody uses.
+// naming those sessions and the asks held, so the idle check of another process can tell a session's long tool, or its
+// question still on screen, from a session nobody uses, and no process starts the lapse of an ask another still holds.
 
 const roots: string[] = []
 // The writer's thread starts on its first write, which the first run's wait for its mark would otherwise include.
@@ -71,13 +71,13 @@ describe('the executing mark', () => {
     const first = mark.begin(one)
     const second = mark.begin(two)
     const again = mark.begin(one)
-    expect(executingMarks({ directory })).toEqual([{ instance: 'shared', sessions: [one, two] }])
+    expect(executingMarks({ directory })).toEqual([{ instance: 'shared', sessions: [one, two], asks: [] }])
     expect([mark.running(one), mark.running(two), mark.running(CHAT)]).toEqual([true, true, false])
 
     first.end()
-    expect(executingMarks({ directory })).toEqual([{ instance: 'shared', sessions: [one, two] }])
+    expect(executingMarks({ directory })).toEqual([{ instance: 'shared', sessions: [one, two], asks: [] }])
     second.end()
-    expect(executingMarks({ directory })).toEqual([{ instance: 'shared', sessions: [one] }])
+    expect(executingMarks({ directory })).toEqual([{ instance: 'shared', sessions: [one], asks: [] }])
     expect(mark.running(two)).toBe(false)
     again.end()
     expect(executingMarks({ directory })).toEqual([])
@@ -137,6 +137,69 @@ describe('the executing mark', () => {
     run.end()
     expect(executingFiles(directory)).toEqual([])
     warned.mockRestore()
+  })
+
+  it('writes what it holds whole at the next refresh where a write failed: a session whose run ended goes, and one whose run began comes', () => {
+    vi.useFakeTimers()
+    const directory = marks()
+    const warned = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const two = { sessionId: 'chat-2' }
+    const mark = createExecutingMark({ directory, workspaceId: 'w', instance: 'flaky' })
+    const first = mark.begin(CHAT)
+    // Each write goes to a .tmp beside the mark first, so a folder there fails it.
+    const writing = join(directory, 'executing-flaky.tmp')
+    mkdirSync(writing)
+    const second = mark.begin(two)
+    first.end()
+    expect(warned).toHaveBeenCalledTimes(2)
+    const sessions = () => executingMarks({ directory, now: Date.now() }).flatMap(reading => reading.sessions)
+    expect(sessions()).toEqual([CHAT])
+
+    rmSync(writing, { recursive: true })
+    vi.advanceTimersByTime(ACTIVE_WORK_REFRESH_MS)
+    expect(sessions()).toEqual([two])
+    second.end()
+    expect(executingFiles(directory)).toEqual([])
+    warned.mockRestore()
+  })
+
+  it('names the pid of the process that wrote it, and each ask its calls hold until the last hold of it ends', () => {
+    const directory = marks()
+    const mark = createExecutingMark({ directory, workspaceId: 'w', instance: 'asking' })
+    const content = () => JSON.parse(readFileSync(join(directory, 'executing-asking'), 'utf8')) as unknown
+    const held = mark.begin(CHAT, 'ask-1')
+    const again = mark.begin(CHAT, 'ask-1')
+    const running = mark.begin(CHAT)
+    expect(content()).toEqual({ pid: process.pid, sessions: [CHAT], asks: ['ask-1'] })
+    held.end()
+    expect(executingMarks({ directory })).toEqual([{ instance: 'asking', sessions: [CHAT], asks: ['ask-1'] }])
+    again.end()
+    expect(executingMarks({ directory })).toEqual([{ instance: 'asking', sessions: [CHAT], asks: [] }])
+    running.end()
+    expect(executingFiles(directory)).toEqual([])
+  })
+
+  // A main thread stalled past ACTIVE_WORK_FRESH_MS, as on sync disk work under heavy I/O, refreshes nothing meanwhile.
+  it('reads a stale mark whose writer still runs as stalled and keeps it, then takes it as dead past the stall limit, as a pid given to a new process would answer', () => {
+    const directory = marks()
+    const file = join(directory, 'executing-stalled')
+    writeFileSync(file, JSON.stringify({ pid: process.pid, sessions: [CHAT], asks: ['ask-1'] }))
+    const now = Date.now() + ACTIVE_WORK_FRESH_MS + 1_000
+
+    expect(executingMarks({ directory, now })).toEqual([{ instance: 'stalled', sessions: [CHAT], asks: ['ask-1'], stalled: true }])
+    expect(existsSync(file)).toBe(true)
+    expect(executingMarks({ directory, now: now + ACTIVE_WORK_STALLED_MS })).toEqual([])
+    expect(existsSync(file)).toBe(false)
+  })
+
+  it('removes a stale mark whose pid answers to no process, and one that names no pid', () => {
+    const directory = marks()
+    const { pid } = spawnSync(process.execPath, ['-e', ''])
+    writeFileSync(join(directory, 'executing-ended'), JSON.stringify({ pid, sessions: [CHAT] }))
+    writeFileSync(join(directory, 'executing-older'), markOf([CHAT]))
+
+    expect(executingMarks({ directory, now: Date.now() + ACTIVE_WORK_FRESH_MS + 1_000 })).toEqual([])
+    expect(executingFiles(directory)).toEqual([])
   })
 
   it('stops holding the workspace within 10 s of its process being killed while a run holds it', async () => {
