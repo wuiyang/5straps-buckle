@@ -248,7 +248,13 @@ function removedAsJudged(file: string, identity: string): boolean {
     throw error
   }
   try {
-    if (identityOf(statSync(aside)) === identity) return true
+    let moved: Stats
+    try { moved = statSync(aside) } catch (error) {
+      // Gone again: another reader found the aside stale and removed it, so the mark is gone.
+      if (isMissing(error)) return true
+      throw error
+    }
+    if (identityOf(moved) === identity) return true
     try { linkSync(aside, file) } catch (error) {
       // A writer that wrote it again meanwhile keeps its own; where the system makes no link, moved back unless one did.
       if (!isExisting(error) && !existsSync(file)) renameSync(aside, file)

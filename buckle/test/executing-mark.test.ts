@@ -17,11 +17,22 @@ import { configFromEnvironment } from './support/workspace-config.js'
 // naming those sessions and the asks held, so the idle check of another process can tell a session's long tool, or its
 // question still on screen, from a session nobody uses, and no process starts the lapse of an ask another still holds.
 
+/** Run just before a set-aside mark is stat'ed: another reader that lists it as a stale leftover removes it there. */
+const aside = vi.hoisted(() => ({ beforeStat: undefined as undefined | ((file: string) => void) }))
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return { ...actual, statSync: ((...args: Parameters<typeof actual.statSync>) => {
+    if (String(args[0]).endsWith('.removing')) aside.beforeStat?.(String(args[0]))
+    return actual.statSync(...args)
+  }) as typeof actual.statSync }
+})
+
 const roots: string[] = []
 // The writer's thread starts on its first write, which the first run's wait for its mark would otherwise include.
 beforeAll(startActionLogWriter)
 afterEach(async () => {
   vi.useRealTimers()
+  aside.beforeStat = undefined
   await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -222,6 +233,21 @@ describe('the executing mark', () => {
     } finally { kill.mockRestore() }
     expect(executingFiles(directory)).toEqual(['executing-resumed'])
     expect(executingMarks({ directory })).toEqual([{ instance: 'resumed', sessions: [CHAT], asks }])
+  })
+
+  // The reader moves a stale mark aside to remove it, and another reader may remove that aside first.
+  it('reads a stale mark as gone where another reader removed it, set aside, before this one looked at it', () => {
+    const directory = marks()
+    const { pid } = spawnSync(process.execPath, ['-e', ''])
+    const file = join(directory, 'executing-removed')
+    writeFileSync(file, JSON.stringify({ pid, sessions: [CHAT], asks: ['ask-1'] }))
+    const stalled = new Date(Date.now() - ACTIVE_WORK_FRESH_MS - 1_000)
+    utimesSync(file, stalled, stalled)
+    aside.beforeStat = vi.fn((removing: string) => rmSync(removing))
+
+    expect(executingMarks({ directory })).toEqual([])
+    expect(aside.beforeStat).toHaveBeenCalledOnce()
+    expect(readdirSync(directory)).toEqual([])
   })
 
   // A clock set back dates each mark written before then ahead of the reader's clock, a dead writer's as well.
