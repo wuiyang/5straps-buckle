@@ -48,9 +48,12 @@ export interface SessionIdleInput {
    * after it was lost; throws where the grants cannot be read. Absent, a session the store holds none of reads as idle.
    */
   sessionGrantMade?: (session: GrantHolder) => number | undefined
-  /** The sessions whose tools run in the workspace now, in any process; throws where the marks cannot be read. */
+  /**
+   * The sessions whose tools run, or whose calls are held for an answer, in the workspace now, in any process; throws where
+   * the marks cannot be read.
+   */
   executing: () => readonly GrantHolder[]
-  /** Whether a tool of the session runs in this runtime now. */
+  /** Whether a tool of the session runs, or a call of it is held for an answer, in this runtime now. */
   runningHere: (session: GrantHolder) => boolean
   /** The sessions that hold anything an end removes; throws where neither the ledger nor the grants can be read. */
   held: () => readonly GrantHolder[]

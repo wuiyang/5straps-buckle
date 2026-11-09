@@ -43,21 +43,25 @@ export function activeElsewhere(input: { directory: string; pid?: number; now?: 
   return markNames(input.directory).some(mark => !mark.startsWith(EXECUTING) && mark !== own && markIsFresh(join(input.directory, mark), now))
 }
 
-/** One tool's run, from its start to its end, whatever becomes of its result. */
+/**
+ * One tool's run, from its start to its end, whatever becomes of its result, or one call's hold for a person's answer, from
+ * the start of its wait to its end.
+ */
 export interface ExecutingRun {
-  /** While a call of the run's script waits for a person, the run does not hold the workspace. */
-  paused<T>(wait: () => Promise<T>): Promise<T>
   end(): void
 }
 
 /**
- * A runtime's executing mark: held on disk while any of its tools runs, never while a call only waits for an answer, and
- * naming the sessions whose tools run, so each session's idle check reads its own. Named by the runtime's own instance id,
- * not its pid, so a new process under a dead one's pid never refreshes its mark.
+ * A runtime's executing mark: held on disk while any of its tools runs or any of its calls is held for a person's answer
+ * (APPROVAL-31), and naming those sessions, so each session's idle check reads its own. Named by the runtime's own instance
+ * id, not its pid, so a new process under a dead one's pid never refreshes its mark.
  */
 export interface ExecutingMark {
   begin(session: GrantHolder): ExecutingRun
-  /** Whether a tool of the session runs in this runtime now, which its idle check counts as activity without reading the marks. */
+  /**
+   * Whether a tool of the session runs, or a call of it is held for an answer, in this runtime now, which its idle check
+   * counts as activity without reading the marks.
+   */
   running(session: GrantHolder): boolean
 }
 
@@ -65,7 +69,7 @@ export interface ExecutingMark {
 export interface ExecutingMarkReading { instance: string; sessions: GrantHolder[] }
 
 export function createExecutingMark(input: { directory: string; workspaceId: string; instance: string }): ExecutingMark {
-  // The sessions whose tools run, each with how many of its runs hold the mark.
+  // The sessions whose tools run or whose calls are held, each with how many of its runs and holds hold the mark.
   const holding = new Map<string, { session: GrantHolder; runs: number }>()
   const content = () => JSON.stringify({ sessions: [...holding.values()].map(held => held.session) })
   const lease = markLease({ directory: input.directory, file: join(input.directory, `${EXECUTING}${input.instance}`), workspaceId: input.workspaceId, content })
@@ -93,24 +97,13 @@ export function createExecutingMark(input: { directory: string; workspaceId: str
   return {
     running: session => holding.has(holderKey(session)),
     begin(session) {
-      let pauses = 0
       let ended = false
-      const holds = () => !ended && pauses === 0
       hold(session)
       return {
-        async paused(wait) {
-          if (holds()) release(session)
-          pauses++
-          try { return await wait() } finally {
-            pauses--
-            if (holds()) hold(session)
-          }
-        },
         end() {
           if (ended) return
-          const held = holds()
           ended = true
-          if (held) release(session)
+          release(session)
         },
       }
     },

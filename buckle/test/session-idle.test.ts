@@ -30,8 +30,9 @@ import { idOf, workspacesOf } from './support/workspaces.js'
 
 // Session end at idle: each session, its id under the actor that asked in it, ends once it has had no activity of its own
 // for longer than its window, 15 minutes unless set, while the workspace's other sessions keep theirs. Activity is one of
-// its tools running, one of its calls starting or ending, an ask, and a decision, never a call waiting for a person. Where
-// a session's activity cannot be read, it does not end, and none of its session approvals clears a call.
+// its tools running, one of its calls held for a person's answer (APPROVAL-31), one of its calls starting or ending, an
+// ask, and a decision. Where a session's activity cannot be read, it does not end, and none of its session approvals
+// clears a call.
 
 const roots: string[] = []
 afterEach(async () => {
@@ -266,7 +267,7 @@ describe('the activity store', () => {
 const WORKSPACE = 'w-1'
 
 /** One workspace's ledger and service, as a node composes them, with a terminal that keeps asking until core stops it. */
-function setUp(options: { grants?: (store: GrantStore) => GrantStore; lockDeadlineMs?: number } = {}) {
+function setUp(options: { grants?: (store: GrantStore) => GrantStore; lockDeadlineMs?: number; graceMs?: number | null } = {}) {
   const root = scratch()
   const store = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: WORKSPACE })
   const grants = options.grants ? options.grants(store) : store
@@ -280,8 +281,10 @@ function setUp(options: { grants?: (store: GrantStore) => GrantStore; lockDeadli
     close: async () => undefined,
   }
   const audit = recordingDecisionAudit()
-  const service = createApprovalService({ registry, workspaceId: WORKSPACE, serverId: 'node-1', graceMs: 200, hold: async () => 'grace', terminal, nonces: createMemoryNonceClaims(), decisionAudit: audit.audit })
   const marks = join(root, 'active-work')
+  // A call held for a person's answer holds its session in this process's executing mark, as a runtime wires it.
+  const executing = createExecutingMark({ directory: marks, workspaceId: WORKSPACE, instance: 'serving' })
+  const service = createApprovalService({ registry, workspaceId: WORKSPACE, serverId: 'node-1', graceMs: options.graceMs === undefined ? 200 : options.graceMs, hold: async () => 'grace', terminal, nonces: createMemoryNonceClaims(), decisionAudit: audit.audit, holding: session => executing.begin(session) })
   return { root, store, registry, service, events, audit, approvals, marks }
 }
 
@@ -502,6 +505,34 @@ describe('an idle end', () => {
     await check.check()
     expect(store.list()).toHaveLength(1)
     clock = stoppedAt + DEFAULT_SESSION_IDLE_MS + ACTIVE_WORK_FRESH_MS
+    await check.check()
+    expect(store.list()).toEqual([])
+    await service.close()
+  }, 30_000)
+
+  it('keeps a session while one of its calls is held for an answer, as another process reads the marks, and ends it a window after the answer', async () => {
+    const { store, registry, service, marks } = setUp({ graceMs: null })
+    await decided(service, await asked(registry, { sessionId: 'chat-1' }, '/outside/a'), 'session')
+    await decided(service, await asked(registry, { sessionId: 'chat-2' }, '/outside/b'), 'session')
+    const held = service.request({ sessionId: 'chat-1', requestId: 'request-held', tool: 'fs_write', call: CALL, asks: [ask('/outside/held')] })
+    await vi.waitFor(() => expect(executingMarks({ directory: marks }).flatMap(mark => mark.sessions)).toEqual([{ sessionId: 'chat-1' }]))
+    let clock = Date.now()
+    // Its last call started an hour ago, as the history's activity store would read it.
+    let lastAt = clock - 60 * MINUTE
+    const { check } = idleCheck({ registry, service, marks, lastAt: () => lastAt, now: () => clock })
+
+    await check.check()
+    expect(store.list().map(grant => grant.sessionId)).toEqual(['chat-1'])
+    const [waiting] = registry.pending()
+    expect(waiting?.subject).toBe('/outside/held')
+
+    await decided(service, waiting!.token, 'once')
+    expect(await held).toMatchObject({ settled: true })
+    expect(executingMarks({ directory: marks })).toEqual([])
+    lastAt = clock
+    await check.check()
+    expect(store.list().map(grant => grant.sessionId)).toEqual(['chat-1'])
+    clock += DEFAULT_SESSION_IDLE_MS + 1
     await check.check()
     expect(store.list()).toEqual([])
     await service.close()

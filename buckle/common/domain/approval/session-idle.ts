@@ -30,7 +30,8 @@ export function newestSessionGrant(grants: ReadonlyArray<{ scope: string; sessio
 
 /**
  * One session's activity as read now: its newest call start, call end, ask, or decision, and how many instances run one of
- * its tools; or the store that could not be read, or that another process held busy past its wait.
+ * its tools or hold one of its calls for an answer; or the store that could not be read, or that another process held busy
+ * past its wait.
  */
 export type ActivityReading = { lastAt: number | undefined; executing: number } | { unreadable: string } | { busy: string }
 
@@ -42,8 +43,8 @@ export type IdleVerdict = { kind: 'off' } | { kind: 'active'; at: number } | { k
 
 /**
  * Whether a session ends now. Off at a window of 0. Active, reading nothing, where this process itself saw the session's
- * activity within the window (`seenAt`); otherwise read: one of its tools running anywhere, or its activity within the
- * window, is active, and anything older, or none ever recorded, is idle.
+ * activity within the window (`seenAt`); otherwise read: one of its tools running anywhere, one of its calls held anywhere
+ * for an answer, or its activity within the window, is active, and anything older, or none ever recorded, is idle.
  */
 export function idleVerdict(input: { now: number; idleMs: number; seenAt?: number; read: () => ActivityReading }): IdleVerdict {
   const { now, idleMs, seenAt } = input

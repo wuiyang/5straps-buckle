@@ -127,18 +127,34 @@ describe('a workspace runtime', () => {
     expect((await sessionEnds(cli)).map(entry => [entry.sessionId, entry.args])).toEqual([['cli', expect.objectContaining({ cause: 'idle', grants: 1 })]])
   }, 30_000)
 
-  it('ends the session of a call held waiting for an answer past the window, as no tool runs while it waits', async () => {
+  // APPROVAL-31, the owner's ruling of 2026-11-09: a wait of 0 is set on purpose, so a call held for a person stays
+  // answerable for as long as it waits, and keeps its own session from ending at idle meanwhile.
+  it('keeps the session of a call held for an answer with the wait at 0 past the window, and ends it a window after the answer', async () => {
     clock()
     const runtime = await open(configOf())
     await approvedForSession(runtime, 'chat-1', 'one/a.md')
+    await approvedForSession(runtime, 'chat-2', 'one/a.md')
     const held = write(runtime, 'chat-1', 'held.md', 'held')
     await vi.waitFor(() => expect(runtime.approvalService.waiting()).toHaveLength(1))
     past()
 
     await runtime.sessionIdle.check()
-    expect(runtime.approvalService.waiting()).toEqual([])
-    expect(await held).toMatchObject({ outcome: 'error', error: { code: 'APPROVAL_UNANSWERED' } })
+    expect(runtime.approvalService.waiting()).toHaveLength(1)
+    const [waiting] = runtime.approvalService.waiting()
+    expect(runtime.grants.list().map(grant => grant.sessionId)).toEqual(['chat-1'])
+    expect((await sessionEnds(runtime)).map(entry => entry.sessionId)).toEqual(['chat-2'])
+    expect(await write(runtime, 'chat-1', 'one/a.md')).toMatchObject({ outcome: 'ok' })
+
+    expect(await runtime.approvalService.answer({ decision: { token: waiting!.request.token, approved: true, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: true })
+    expect(await held).toMatchObject({ outcome: 'ok' })
+    await runtime.sessionIdle.check()
+    expect(runtime.grants.list().map(grant => grant.sessionId)).toEqual(['chat-1'])
+
+    past()
+    await runtime.sessionIdle.check()
     expect(runtime.grants.list()).toEqual([])
+    expect((await sessionEnds(runtime)).map(entry => entry.sessionId)).toEqual(['chat-2', 'chat-1'])
+    expect(await write(runtime, 'chat-1', 'one/a.md')).toMatchObject({ outcome: 'approval_required' })
   }, 30_000)
 
   it('ends the session at idle though the log service dropped the result entry of its last call', async () => {

@@ -13,9 +13,9 @@ import { auditEntries, settleAuditLogs, startActionLogWriter } from './support/a
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
-// The executing mark: a lease each runtime holds on disk only while a tool runs, naming the sessions whose tools run, so
-// the idle check of another process can tell a session's long tool from a session nobody uses. A call waiting for a person
-// holds none.
+// The executing mark: a lease each runtime holds on disk only while a tool runs or a call is held for a person's answer,
+// naming those sessions, so the idle check of another process can tell a session's long tool, or its question still on
+// screen (APPROVAL-31), from a session nobody uses.
 
 const roots: string[] = []
 // The writer's thread starts on its first write, which the first run's wait for its mark would otherwise include.
@@ -81,37 +81,6 @@ describe('the executing mark', () => {
     expect(mark.running(two)).toBe(false)
     again.end()
     expect(executingMarks({ directory })).toEqual([])
-    expect(executingFiles(directory)).toEqual([])
-  })
-
-  it('is not held while a run waits for a person, unless another run of the instance holds it', async () => {
-    const directory = marks()
-    const mark = createExecutingMark({ directory, workspaceId: 'w', instance: 'script' })
-    const script = mark.begin(CHAT)
-    let answered!: () => void
-    const waiting = script.paused(() => new Promise<string>((resolve) => { answered = () => resolve('answer') }))
-    expect(executingInstances({ directory })).toEqual([])
-
-    const nested = mark.begin(CHAT)
-    expect(executingInstances({ directory })).toEqual(['script'])
-    nested.end()
-    expect(executingInstances({ directory })).toEqual([])
-
-    answered()
-    expect(await waiting).toBe('answer')
-    expect(executingInstances({ directory })).toEqual(['script'])
-    script.end()
-    expect(executingInstances({ directory })).toEqual([])
-  })
-
-  it('ends a run that waits without holding the mark again once the wait ends', async () => {
-    const directory = marks()
-    const script = createExecutingMark({ directory, workspaceId: 'w', instance: 'cut' }).begin(CHAT)
-    let answered!: () => void
-    const waiting = script.paused(() => new Promise<void>((resolve) => { answered = resolve }))
-    script.end()
-    answered()
-    await waiting
     expect(executingFiles(directory)).toEqual([])
   })
 
@@ -217,7 +186,7 @@ describe('the executing mark', () => {
 })
 
 describe('a workspace runtime', () => {
-  it('marks the workspace executing while a tool runs, and not while a call waits for an answer', async () => {
+  it('marks the workspace executing while a tool runs, and while a call is held for an answer, naming its session', async () => {
     const { runtime, directory } = await workspace()
     let release!: () => void
     slowRead(runtime, 'notes.md', new Promise<void>((resolve) => { release = resolve }))
@@ -231,7 +200,7 @@ describe('a workspace runtime', () => {
     const writing = write(runtime, { mode: 'finite', ms: 10_000 })
     await vi.waitFor(() => expect(runtime.approvalService.waiting()).toHaveLength(1))
     expect(existsSync(join(directory, String(process.pid)))).toBe(true)
-    expect(executingInstances({ directory })).toEqual([])
+    await vi.waitFor(() => expect(executingMarks({ directory }).flatMap(mark => mark.sessions)).toEqual([CHAT]))
     await answer(runtime, runtime.approvalService.waiting()[0]!.request.token)
     expect(await writing).toMatchObject({ outcome: 'ok' })
     expect(executingFiles(directory)).toEqual([])
@@ -274,7 +243,7 @@ describe('a workspace runtime', () => {
     await runtime.history.close()
   }, 30_000)
 
-  it('holds the mark while a script\'s calls run, and none while a call of the script waits for an answer', async () => {
+  it('holds the mark while a script\'s calls run, and while a call of the script is held for an answer', async () => {
     const { runtime, directory } = await workspace()
     let release!: () => void
     slowRead(runtime, 'notes.md', new Promise<void>((resolve) => { release = resolve }))
@@ -284,7 +253,7 @@ describe('a workspace runtime', () => {
     release()
 
     await vi.waitFor(() => expect(runtime.approvalService.waiting()).toHaveLength(1), { timeout: 10_000 })
-    expect(executingInstances({ directory })).toEqual([])
+    expect(executingMarks({ directory }).flatMap(mark => mark.sessions)).toEqual([CHAT])
     await answer(runtime, runtime.approvalService.waiting()[0]!.request.token)
     expect(await running).toMatchObject({ outcome: 'ok', output: { ok: true, value: 1 } })
     expect(executingFiles(directory)).toEqual([])

@@ -431,6 +431,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
     // Every route's decisions, in this workspace's own log through the log service, which never holds up an answer.
     decisionAudit: createLoggedDecisionAudit({ actions, workspaceId }),
     idleCheck: session => sessionIdle.check(session),
+    // A call held for a person's answer holds its session in the executing mark, as a running tool does (APPROVAL-31).
+    holding: session => executing.begin(session),
   })
   input.onApprovalCleanup(() => approvalService.close())
   // Before any call is served: a face session an earlier process left cannot clear one. A failure fails the open. A later

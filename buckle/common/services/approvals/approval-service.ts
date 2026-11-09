@@ -191,6 +191,12 @@ export interface ApprovalServiceOptions {
    * that brings it back. Never throws.
    */
   idleCheck?: (session?: GrantHolder) => Promise<void>
+  /**
+   * Holds the session active while one of its calls is held for a person's answer, as a running tool holds it, until the
+   * hold that `end` lets go of: a call left waiting on purpose stays answerable however long it waits, and the idle end
+   * never withdraws its ask (APPROVAL-31, the owner's ruling of 2026-11-09).
+   */
+  holding?: (session: GrantHolder) => { end(): void }
   pollMs?: number
 }
 
@@ -294,7 +300,8 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       input.signal?.throwIfAborted()
       const scope = useScopeSafe()
       const actor = scope?.context.actor
-      await options.idleCheck?.(actor === undefined ? { sessionId: input.sessionId } : { sessionId: input.sessionId, actor })
+      const session: GrantHolder = actor === undefined ? { sessionId: input.sessionId } : { sessionId: input.sessionId, actor }
+      await options.idleCheck?.(session)
       const hold = (await options.hold()) ?? UNBOUND_HOLD
       const key = joinKey({ ...input, actor })
       const ownHold = holdFor({ hold, graceMs: options.graceMs, hint: input.wait })
@@ -346,8 +353,11 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       }
       const participant = new AbortController()
       ask.participants.add(participant)
+      // The call is held for a person from here, so its session counts as active until its wait ends (APPROVAL-31).
+      const active = options.holding?.(session)
       const result = waitFor({ ask, participant, hold, holdMs, signal: input.signal })
         .then(ending => finish({ ask, participant, ending, hold, held: ownHold, resends: input.resends === true, signal: input.signal, isCancel: input.isCancel, own: { approvals, answered } }))
+        .finally(() => active?.end())
       track(result)
       return result
     },
