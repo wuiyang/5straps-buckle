@@ -3,9 +3,12 @@ import { SEALED_REPORT_PATHS, sealedReport, type ApprovalKey } from '@5straps/pr
 import { shownCall, type AskedCall } from '../../domain/approval/asked-call.js'
 import { approveCommand, judgeCommand, judgeNoteFor, reviewCommand, workspaceLabel } from '../../domain/approval-instruction.js'
 import type { RatingNote } from '../../types/ports/approval-backend.js'
+import { NoticeRefusedError } from '../../services/approvals/approval-errors.js'
 import { logger } from '../../runtime/log.js'
 
 const NOTIFY_TIMEOUT_MS = 5_000
+/** The answers that say the body is the trouble, not the link or the credential: bad request, too large, unprocessable. */
+const BODY_REFUSED = new Set([400, 413, 422])
 
 export interface WebhookNotifierOptions {
   url: string
@@ -46,7 +49,8 @@ export function createWebhookNotifier(options: WebhookNotifierOptions) {
 
 /**
  * Posts lifecycle notices for announced asks to the same URL, sealed for the same path. A Rings
- * that refuses them leaves the durable notice pending for another attempt.
+ * that refuses them leaves the durable notice pending for another attempt. An answer that refuses
+ * the body itself throws NoticeRefusedError, so the queue can find which notice it was.
  */
 export function createApprovalNoticeSender(options: WebhookNotifierOptions) {
   let refusalLogged = false
@@ -56,7 +60,7 @@ export function createApprovalNoticeSender(options: WebhookNotifierOptions) {
     if (refusalLogged) logger.debug('Approval webhook refused a lifecycle notice', { status: response.status })
     else logger.warn('Approval webhook refused a lifecycle notice; further refusals are logged at debug', { status: response.status })
     refusalLogged = true
-    throw new Error(`Approval lifecycle webhook returned HTTP ${response.status}`)
+    throw BODY_REFUSED.has(response.status) ? new NoticeRefusedError(response.status) : new Error(`Approval lifecycle webhook returned HTTP ${response.status}`)
   }
 }
 

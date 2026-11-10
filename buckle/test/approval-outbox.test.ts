@@ -12,6 +12,7 @@ import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-
 import { createApprovalNotices, type ApprovalNotices } from '../common/services/approvals/approval-notices.js'
 import { APPROVAL_OUTBOX_BYTES_MAX, APPROVAL_OUTBOX_COUNT_MAX, APPROVAL_OUTBOX_RETENTION_MS, createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { logger } from '../common/runtime/log.js'
+import { NoticeRefusedError } from '../common/services/approvals/approval-errors.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 
@@ -244,6 +245,23 @@ describe('durable approval outcome delivery', () => {
     await expect(send(notice)).resolves.toBeUndefined()
     expect(calls[0]).not.toEqual(calls[1])
   })
+
+  it.each([400, 413, 422])('names an HTTP %d answer a refusal of the notices themselves', async status => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status })))
+    const send = createApprovalNoticeSender({ url: 'http://rings.test/approvals', serverId: 'node', workspaceId: 'default' })
+    const notice: ApprovalNotice[] = [{ token: randomUUID(), event: 'skipped', at: new Date().toISOString(), reason: 'no_response' }]
+    const refusal = await send(notice).then(() => undefined, (error: unknown) => error)
+    expect(refusal).toBeInstanceOf(NoticeRefusedError)
+    expect(refusal).toMatchObject({ status, message: `Approval lifecycle webhook returned HTTP ${status}` })
+  })
+
+  it.each([401, 403, 404, 429, 500, 503])('leaves an HTTP %d answer a failure of the receiver or the link, not of the notices', async status => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status })))
+    const send = createApprovalNoticeSender({ url: 'http://rings.test/approvals', serverId: 'node', workspaceId: 'default' })
+    const refusal = await send([{ token: randomUUID(), event: 'cancelled', at: new Date().toISOString() }]).then(() => undefined, (error: unknown) => error)
+    expect(refusal).toBeInstanceOf(Error)
+    expect(refusal).not.toBeInstanceOf(NoticeRefusedError)
+  })
 })
 
 // Review M2 of the continuation review: an ask without the notify flag (asked before the webhook was configured, by
@@ -356,5 +374,105 @@ describe('the outcome sender keeps its retry delay while the receiver fails', ()
       await notices.settle()
       rmSync(root, { recursive: true, force: true })
     }
+  })
+})
+
+// A receiver on an older protocol refuses a whole batch for one notice it cannot read, such as the skipped notice with
+// the reason no_response (APPROVAL-36). The others in the batch must still arrive, and the refused one must wait for a
+// receiver that takes it, for as long as the outbox keeps it.
+describe('a receiver that refuses one notice', () => {
+  const PAUSE_MS = 5 * 60_000
+  const refusing = (refused: Set<string>, delivered: string[] = []) => vi.fn(async (batch: ApprovalNotice[]) => {
+    if (batch.some(notice => refused.has(notice.token))) throw new NoticeRefusedError(400)
+    delivered.push(...batch.map(notice => notice.token))
+  })
+  async function answered(q: ReturnType<typeof queue>, count: number) {
+    const asks = await q.ask(count)
+    for (const ask of asks) await q.registry.resolve({ token: ask.token, approved: true, scope: 'once' }, SOURCES.cli)
+    return asks.map(ask => ask.token)
+  }
+
+  it('delivers the other notices, holds the refused one, and sends it again once the pause has passed', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(at)
+    const q = queue()
+    const [first, poison, last] = await answered(q, 3)
+    const refused = new Set([poison!])
+    const delivered: string[] = []
+    const send = refusing(refused, delivered)
+    const notices = createApprovalNotices(send, { registry: q.registry, retryMs: 50 })
+    await notices.flush()
+    expect(delivered.sort()).toEqual([first!, last!].sort())
+    expect(q.registry.pendingDeliveries().map(row => row.notice.token)).toEqual([poison])
+    const calls = send.mock.calls.length
+    await vi.advanceTimersByTimeAsync(PAUSE_MS - 1_000)
+    expect(send.mock.calls.length, 'the refused notice is not sent again during the pause').toBe(calls)
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(send.mock.calls.at(-1)![0].map(notice => notice.token)).toEqual([poison])
+    expect(q.registry.pendingDeliveries()).toHaveLength(1)
+    refused.clear()
+    await vi.advanceTimersByTimeAsync(PAUSE_MS + 1_000)
+    expect(delivered).toContain(poison)
+    expect(q.registry.pendingDeliveries()).toEqual([])
+    await notices.settle()
+  })
+
+  it('does not let a held notice delay one that arrives after it', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(at)
+    const q = queue()
+    const [poison] = await answered(q, 1)
+    const delivered: string[] = []
+    const send = refusing(new Set([poison!]), delivered)
+    const notices = createApprovalNotices(send, { registry: q.registry, retryMs: 50 })
+    await notices.flush()
+    expect(q.registry.pendingDeliveries()).toHaveLength(1)
+    const [later] = await answered(q, 1)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(delivered).toEqual([later])
+    expect(send.mock.calls.at(-1)![0].map(notice => notice.token)).toEqual([later])
+    expect(q.registry.pendingDeliveries().map(row => row.notice.token)).toEqual([poison])
+    await notices.settle()
+  })
+
+  it('asks a receiver that refuses everything once per notice, then leaves it alone for the pause', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(at)
+    const q = queue()
+    const tokens = await answered(q, 4)
+    const send = refusing(new Set(tokens))
+    const notices = createApprovalNotices(send, { registry: q.registry, retryMs: 50 })
+    await notices.flush()
+    expect(q.registry.pendingDeliveries()).toHaveLength(4)
+    const calls = send.mock.calls.length
+    expect(calls).toBeLessThanOrEqual(2 * tokens.length)
+    await vi.advanceTimersByTimeAsync(PAUSE_MS - 1_000)
+    expect(send.mock.calls.length).toBe(calls)
+    await notices.settle()
+  })
+
+  it('does not split a batch an outage failed: nothing was refused, so all of it waits for the retry', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(at)
+    const q = queue()
+    await answered(q, 3)
+    const send = vi.fn(async (_batch: ApprovalNotice[]) => { throw new Error('connect ECONNREFUSED') })
+    const notices = createApprovalNotices(send, { registry: q.registry, retryMs: 50 })
+    await notices.flush()
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send.mock.calls[0]![0]).toHaveLength(3)
+    expect(q.registry.pendingDeliveries()).toHaveLength(3)
+    await notices.settle()
+  })
+
+  it('keeps a refused notice across a restart and sends it again at once, then holds it for the pause', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(at)
+    const q = queue()
+    const [, poison] = await answered(q, 2)
+    const before = createApprovalNotices(refusing(new Set([poison!])), { registry: q.registry, retryMs: 50 })
+    await before.settle()
+    expect(q.registry.pendingDeliveries().map(row => row.notice.token)).toEqual([poison])
+    const delivered: string[] = []
+    const after = createApprovalNotices(refusing(new Set(), delivered), { registry: q.open(), retryMs: 50 })
+    await after.flush()
+    expect(delivered).toEqual([poison])
+    expect(q.registry.pendingDeliveries()).toEqual([])
+    await after.settle()
   })
 })
