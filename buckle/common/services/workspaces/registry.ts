@@ -46,8 +46,6 @@ const StoredTokenSchema = z.object({
   label: z.string().trim().max(120).default(''),
   createdAt: z.string(),
 }).strict()
-export type StoredToken = z.infer<typeof StoredTokenSchema>
-
 const StoredWorkspaceSchema = z.object({
   id: WorkspaceIdSchema,
   name: WorkspaceNameSchema,

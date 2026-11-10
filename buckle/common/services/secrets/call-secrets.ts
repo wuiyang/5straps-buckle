@@ -1,8 +1,7 @@
-import { createHash } from 'node:crypto'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
 import type { ExecEffect, ResolvedEffect } from '../../domain/effect.js'
 import type { PermissionEngine, PermissionOutcome } from '../../domain/permission/engine.js'
-import { MIN_SECRET_LENGTH, SHORT_REASON, type FileReference } from '../../domain/secret-reference.js'
+import { digestOf, MIN_SECRET_LENGTH, SHORT_REASON, type FileReference } from '../../domain/secret-reference.js'
 import { ToolInputError, type FilledSecret, type FilledSecrets, type HeldSecret, type PreparedCall, type ToolContext } from '../../domain/tool.js'
 import { createMasker, type SecretValue } from '../../domain/secret-mask.js'
 import { holdMasker } from '../../runtime/held-secrets.js'
@@ -180,10 +179,6 @@ function heldHint(entries: readonly HeldSecret[]): string {
   return `${held} Put the file back, or end ${holders.length === 1 ? 'it' : 'them'}; the owner's ${command} ends every browser of the workspace and drops what they hold`
 }
 
-export function digestOf(value: string): string {
-  return createHash('sha256').update(value).digest('hex')
-}
-
 /** Refuses browser text whose value would move which argument agent-browser takes as the text, as a flag's value would. */
 function assertSamePositionals(before: JsonObject, after: JsonObject): void {
   const positionals = (args: JsonObject) => JSON.stringify(positionalIndexes(Array.isArray(args.args) ? args.args as string[] : []))
@@ -262,4 +257,3 @@ function maskError(error: unknown, mask: (text: string) => string): unknown {
 function refused(message: string): ToolInputError {
   return new ToolInputError(message, { code: 'PERMISSION_DENIED' })
 }
-

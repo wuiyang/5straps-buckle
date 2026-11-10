@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+
 /**
  * Secret references (docs/user/how-to/secrets.md): text a call writes in place of a value Buckle reads for it, so the value never
  * passes through the agent. `{{file:<path>:NAME}}` names NAME in a dotenv file inside the workspace or a mount, by a
@@ -18,6 +20,10 @@ export const MIN_SECRET_LENGTH = 8
 /** What a value is shown as wherever text leaves Buckle. */
 export function maskLabel(name: string): string {
   return `[secret:${name}]`
+}
+
+export function digestOf(value: string): string {
+  return createHash('sha256').update(value).digest('hex')
 }
 
 /** One `{{file:<path>:NAME}}` in a text: where it stands, as written, and what it names. */
