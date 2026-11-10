@@ -1,48 +1,6 @@
 import type { ToolCapability } from '@5straps/protocol'
 import type { ScriptVm } from '../../../types/ports/script-vm.js'
-
-/**
- * What a built-in tool's call resolves to inside a script, for the declaration comment: Buckle tools carry no output
- * schema, so a call is `Promise<unknown>`, and a script that filters a result needs its fields (D82 brief, point 9).
- * A tool not named here, a plugin's, resolves to the JSON its direct call returns.
- */
-const RETURNS: Readonly<Record<string, string>> = {
-  fs_read: '{ path, encoding, hash, content: string, size, firstLine?, lineCount?, totalLines?, truncated? }',
-  fs_read_batch: '{ files: Array<{ path, encoding, hash, content: string, size, truncated? }> }',
-  fs_write: '{ path, size, hash }',
-  fs_write_batch: '{ files: Array<{ path, size, hash }> }',
-  fs_patch: '{ path, replacements: number[], size }',
-  fs_apply_patch: '{ files: Array<{ path, change: "modified" | "created" | "deleted", size? }> }',
-  fs_move: '{ from, to, replaced: boolean, copied?, leftOver? }',
-  fs_delete: '{ removed: number, results: Array<{ path, removed: boolean, missing?, refused?, code?, notAttempted? }> }',
-  fs_list: '{ path, entries: Array<{ path (inside the listed path), name, type: "file" | "directory" | "symlink", size, modifiedAt }>, truncated }',
-  fs_find_names: '{ path, matches: string[], truncated }',
-  fs_search_content: '{ matches: Array<{ path, line, text, ranges }>, truncated, excludedFiles, skipped?: Array<{ path, reason }>, skippedMore?: number }',
-  history_list: '{ checkpoints: Array<{ id, createdAt, tool, sessionId, requestId?, stageId, turnId, restorable, reason?, changed, changedUnlisted?, notRestorable, notRestorableUnlisted?, ignored?: { count, reason }, status, current, restores?, undoes?, changes: Array<{ path, kind }>, unlisted? }>, more, turns: Array<{ id, checkpoints }> }',
-  history_restore: '{ checkpoint, restores, undoes, changes: Array<{ path, kind }>, unlisted?, notRestorable?, notRestorableUnlisted? }',
-  web_fetch: '{ url, status, headers, body: string, truncated }',
-  web_search: '{ query, results: Array<{ title, url, description }> }',
-  git_status: '{ branch, upstream, entries: Array<{ state, path }>, clean }',
-  git_diff: '{ diff: string }',
-  git_log: '{ commits: Array<{ hash, author, date, subject }> }',
-  git_blame: '{ lines: Array<{ hash, author, text }> }',
-  git_branch: '{ branches: Array<{ name, upstream, commit, current }> }',
-  git_commit: '{ hash, subject, files: string[] }',
-  git_revert: '{ hash, subject, reverted, files: string[] }',
-  git_push: '{ branch, remote, headSha }',
-  pr_open: '{ number, url, headSha, state }',
-  pr_read: '{ number, state, title, head, base, diff?, files?, comments? }',
-  lsp_discover: '{ servers: Array<{ pid, serverId, commandLine, attach, port }> }',
-  lsp_definition: '{ locations } (the language server\'s answer)',
-  lsp_references: '{ locations } (the language server\'s answer)',
-  lsp_hover: '{ hover } (the language server\'s answer)',
-  lsp_rename: '{ workspaceEdit } (the language server\'s answer, not applied)',
-  lsp_diagnostics: '{ uri, diagnostics: object[] }',
-  browser_command: '{ result, stderr, truncated, notice? } (result: agent-browser\'s JSON, or its text)',
-  shell_exec: '{ exitCode, signal, stdout, stderr, truncated, timedOut, sandbox }',
-  script_run: '{ exitCode, signal, stdout, stderr, truncated, timedOut, sandbox }',
-  env_validate: '{ valid, timedOut }',
-}
+import { BUILTIN_RESULT_DESCRIPTIONS } from '../results.js'
 
 /**
  * The estimated tokens (characters / 4) the declarations in code_run's description may take: enough for every built-in
@@ -53,7 +11,7 @@ const CHARS_PER_TOKEN = 4
 
 /** One tool's comment: its own description, then what its call resolves to. */
 function described(tool: Pick<ToolCapability, 'name' | 'description'>): string {
-  const returns = RETURNS[tool.name]
+  const returns = BUILTIN_RESULT_DESCRIPTIONS[tool.name]
   return `${tool.description.trim()}\nResolves to ${returns ?? 'the JSON its direct call returns'}.`
 }
 
