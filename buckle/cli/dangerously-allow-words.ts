@@ -12,13 +12,11 @@ export const OUTSIDE = 'Paths outside it keep their normal outcome: they ask, or
 export const RESTORE_ASKS = 'A history restore asks a person in every mode.'
 export const EARLIER_BUILD = 'off: an earlier build of Buckle set it on, and this build reads its file as off; buckle policy dangerously-allow on or safe sets it again'
 
-/** The switch as a sentence names it: its mode in capitals where on, the earlier build's note where one set it, null where it is plainly off. */
 export function switchWords(reading: DangerouslyAllowReading): string | null {
   if (reading.mode !== 'off') return reading.mode.toUpperCase()
   return reading.setByEarlierBuild ? EARLIER_BUILD : null
 }
 
-/** What a reach answers beyond the asks every mode covers, and what it leaves to a person. */
 export function wordsOf(reach: Readonly<ModeReach>): { reached: string[]; kept: string[] } {
   const fields: Array<[boolean, string]> = [[reach.floor, FLOOR_ASKS], [reach.unreadCode, UNREAD_CODE], [reach.secretFile, SECRET_FILE]]
   return {
@@ -43,10 +41,8 @@ function modeSentence(mode: DangerouslyAllowOnMode): string {
   return kept.length === 0 ? `${mode} allows every ask there` : `${mode} still asks a person for ${wordList(kept)}`
 }
 
-/** What both helps say of the modes. */
 export const MODES_HELP = `each use is audited, deny rules still refuse, and a history restore still asks. ${modeSentence('on')}; ${modeSentence('safe')}. true and false read as on and off`
 
-/** The text as help lines of at most `width` columns, each after `indent` spaces; an option such as `-rf` stays with the word before it. */
 export function helpLines(input: { text: string; indent: number; width: number }): string {
   const lines: string[] = []
   let line = ''

@@ -27,7 +27,6 @@ export interface SettingKey {
   unset(settings: WorkspaceSettings): WorkspaceSettings
 }
 
-/** A value the key does not take, refused before anything is written. */
 export class SettingValueError extends Error {}
 
 const TRUE_WORDS = new Set(['true', 'on', 'yes', '1'])
@@ -123,7 +122,6 @@ function withoutApproval(settings: WorkspaceSettings, name: ApprovalKey): Worksp
   return { ...settings, approval }
 }
 
-/** One word of a fixed set, refused naming the set. */
 function oneOf<T extends string>(key: string, words: readonly T[], raw: string): T {
   const word = words.find(item => item === raw.trim().toLowerCase())
   if (word === undefined) throw new SettingValueError(`${key} is ${words.length === 2 ? words.join(' or ') : words.join(', ')}`)

@@ -29,7 +29,6 @@ function policy(input: { allow?: string[]; deny?: string[]; destructive?: string
   return value
 }
 
-/** A registered workspace with `child` as its policy, on a node whose environment names `environment`. */
 async function workspace(child: WorkspacePolicy = policy(), environment: Record<string, string> = {}) {
   const root = mkdtempSync(join(tmpdir(), 'buckle-workspace-policy-'))
   roots.push(root)

@@ -63,7 +63,6 @@ describe('declarations of the built-in tools', () => {
   })
 
   it('past the budget, declares the tools that fit and names the rest, never both and never neither', () => {
-    // Plugins' tools with long descriptions, enough to pass the budget twice over.
     const plugins = Array.from({ length: 40 }, (_, index) => ({ ...tools[0]!, name: `plugin_tool_${index}`, description: `A plugin tool. ${'It does a great deal. '.repeat(40)}` }))
     const reachable = [...tools, ...plugins]
     const { declared, named } = withinBudget(vm, reachable)

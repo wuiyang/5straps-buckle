@@ -29,7 +29,6 @@ const captured = () => {
   return { out: () => out, err: () => err }
 }
 
-/** A node in fresh directories whose workspace default's policy denies `curl *`, with its settings file's text before any command. */
 async function storedNode(prefix: string) {
   const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), `${prefix}-`)), BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), `${prefix}-state-`)), BUCKLE_SANDBOX: 'none' })
   const stored = { ...emptyWorkspacePolicy(), commands: { ...emptyWorkspacePolicy().commands, deny: ['curl *'] } }

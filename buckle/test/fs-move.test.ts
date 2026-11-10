@@ -416,7 +416,6 @@ describe('moveEntry', () => {
     }
   }
 
-  /** The system's own operations, with the one rename of `name` onto a path of that name answered EXDEV, and the first removal of `name` failed if asked. */
   function acrossDevicesToTheSameName(input: { name: string; failFirstUnlink?: boolean }): MoveIo {
     let crossed = false
     let failed = false

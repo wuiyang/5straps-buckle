@@ -22,7 +22,6 @@ interface Shutdown {
   requested(): boolean
 }
 
-// One common runtime for the process; main owns its signals and closes it stage by stage.
 export async function runService(input: { kind: ServiceKind; options: string[]; service: ServiceManagerKind | null; config: NodeConfig; logging: LoggerRoot; console?: ConsoleWriter }): Promise<void> {
   const { logging } = input
   trapUnhandledRejections(logging.logger)

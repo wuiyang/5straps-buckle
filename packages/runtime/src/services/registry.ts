@@ -61,9 +61,7 @@ export interface ServiceRegistryOptions {
 interface Created { definition: AnyServiceDefinition; value: unknown }
 interface ScopeCache {
   inFlight: Map<AnyServiceDefinition, Promise<unknown>>
-  // Every scoped or transient construction still running, by service name; scope disposal waits for them.
   constructing: Map<Promise<unknown>, string>
-  // Dispose failures of values that finished after their scope stopped serving; reported by the scope.
   lateDisposeErrors: unknown[]
 }
 type Owner = { kind: 'runtime' } | { kind: 'scope'; scope: OperationScope }

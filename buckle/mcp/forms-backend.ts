@@ -78,9 +78,7 @@ const SAVE_FORMS: Readonly<Record<UnsavedKind, { answers: SaveAnswer[]; choices:
 export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
   let host: ApprovalHost | undefined
   let closed = false
-  // The answers still being decided, which close waits for.
   const answering = new Set<Promise<FormsAnswered>>()
-  // The save forms drawn and not answered yet, by token, with the caller each was drawn for.
   const saveQuestions = new Map<string, UnsavedDecision & { caller: string | undefined }>()
   const live = () => (closed ? undefined : host)
 
@@ -247,7 +245,6 @@ function saveForm(question: UnsavedDecision) {
   })
 }
 
-/** The ask a save names: its tool, rule, subject, and token. */
 function askLine(ask: FullAsk): string {
   return `${printable(ask.tool)} asked ${printable(ask.policy.rule)}: ${printable(ask.policy.subject)} (${printable(ask.token)})`
 }

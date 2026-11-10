@@ -31,7 +31,6 @@ function seededRandom(seed: number): () => number {
   }
 }
 
-// Four shapes in turn: base64 or AWS alphabet, 40 random characters or '/' plus 39.
 function randomKeys(count: number): string[] {
   const random = seededRandom(20_260_927)
   const pick = (alphabet: string, length: number) => Array.from({ length }, () => alphabet[Math.floor(random() * alphabet.length)]).join('')

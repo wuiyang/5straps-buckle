@@ -16,7 +16,6 @@ import { settleAuditLogs } from './support/action-log-writer.js'
 const roots: string[] = []
 afterEach(async () => { vi.restoreAllMocks(); await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
-/** A workspace whose history holds the writes `files` names, one call each, made by an agent through the invoker. */
 async function workspaceWith(writes: Array<{ requestId: string; files: Record<string, string> }>): Promise<{ config: BuckleConfig; workspace: string }> {
   const root = mkdtempSync(join(tmpdir(), 'buckle-history-cli-'))
   roots.push(root)

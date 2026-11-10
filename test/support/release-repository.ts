@@ -30,7 +30,6 @@ afterEach(() => {
   for (const directory of made.splice(0)) rmSync(directory, { recursive: true, force: true })
 })
 
-/** A fresh directory, removed after the test that made it. */
 export function scratchDirectory(prefix: string): string {
   const directory = mkdtempSync(join(tmpdir(), prefix))
   made.push(directory)
@@ -43,7 +42,6 @@ export function linkedScriptPath(script: string): string {
   return join(link, basename(script))
 }
 
-/** A scratch repository whose packages hold `versions` (one version for all, or one each) and whose changelog is `changelog`. */
 export function scratchRepository(input: { versions?: string | Partial<Record<PackageName, string>>; changelog?: string } = {}): string {
   const root = scratchDirectory('release-repository-')
   for (const name of NAMES) {
@@ -67,7 +65,6 @@ export function readChangelog(root: string): string {
   return readFileSync(join(root, 'CHANGELOG.md'), 'utf8')
 }
 
-/** A failed command as the release scripts' runner reports it. */
 export function commandFailure(status: number, stderr = ''): Error {
   return Object.assign(new Error(`exited with ${status}`), { status, stderr })
 }

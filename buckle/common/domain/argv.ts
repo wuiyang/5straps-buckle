@@ -663,7 +663,6 @@ export interface StatementList extends SplitLimits {
   heads: ReadonlyMap<string, Seen>
 }
 
-/** Each text without the blanks around it, once, with what was seen of it wherever a reading met it. */
 function merged(texts: readonly string[], flags: readonly number[]): Map<string, Seen> {
   const seen = new Map<string, Seen>()
   for (let index = 0; index < texts.length; index++) {
@@ -751,7 +750,6 @@ export interface SplitLimits { deep: boolean; overDepth: boolean; unsureComment:
 
 const noLimits = (): SplitLimits => ({ deep: false, overDepth: false, unsureComment: false, qualifier: false, overBudget: false })
 
-/** Adds the limits one reading met to those of the reading around it. */
 function meet(into: SplitLimits, from: SplitLimits): void {
   into.deep ||= from.deep
   into.overDepth ||= from.overDepth
@@ -799,7 +797,6 @@ interface SplitLevel {
   closer: ')' | '`' | null
   parens: number
   quote: Quote
-  /** The quote each quote open at this level was opened inside, innermost last, so closing one goes back to it. */
   quotes: Quote[]
   /** Where a backtick level's body starts, and whether double quotes hold it, so `\"` in it is an escape too. */
   body: number
@@ -817,13 +814,9 @@ interface SplitLevel {
    * either (`!(`); `body` when its text is read as a body of its own, which the command around it goes on after.
    */
   opens: Array<{ kind: ParenKind; body: boolean }>
-  /** The last character read at this level outside quotes that no backslash escaped, or '' after an escaped one. */
   previous: string
-  /** Whether that character started a word. */
   previousStarted: boolean
-  /** The simple command being read at this level. */
   command: CommandText
-  /** The commands a body outside quotes (`$(`, a backtick, `a=(`) interrupted at this level, the innermost last. */
   interrupted: CommandText[]
   /** Where the input of the commands read here may come from the call's own text, and that of each body interrupted. */
   feeding: Feeding
@@ -855,7 +848,6 @@ interface Join { text: string; cut: boolean; feed: boolean }
 const commandAt = (from: number, runs: boolean, found: Found): CommandText =>
   ({ text: '', from, cut: false, runs, feed: false, statements: found.statements.length, heads: found.heads.length, pieces: null, pattern: false, subject: false, join: null })
 
-/** How many statements and heads were found before a point of the reading. */
 interface Mark { statements: number; heads: number }
 
 /**
@@ -901,7 +893,6 @@ const plainInQuotes = (code: number): boolean => code !== 92 && code !== 34 && c
 const levelStart = (start: number, closer: SplitLevel['closer'], quote: Quote, doubleQuoted: boolean, runs: boolean, found: Found): SplitLevel =>
   ({ start, closer, parens: 0, quote, quotes: [], body: start, doubleQuoted, backtick: null, wordStart: true, opens: [], previous: '', previousStarted: false, command: commandAt(start, runs, found), interrupted: [], feeding: unfed(), feedings: [] })
 
-/** A quote opens at this level inside the one open there, and closing it goes back to that one. */
 function openQuote(level: SplitLevel, quote: Quote): void {
   level.quotes.push(level.quote)
   level.quote = quote
@@ -1033,7 +1024,6 @@ function wordBodyRuns(previous: string, previousStarted: boolean, kind: ParenKin
   return previous === '=' && previousStarted
 }
 
-/** How unquotedSplit reads its text. */
 interface SplitMode {
   /** Heredoc text: `'` and `"` are literal, and only each `$(...)` or backtick body in it is statements. */
   heredocText: boolean
@@ -1098,14 +1088,12 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
     fedRun(feeding.pipe, mark())
     feeding.pipe = null
   }
-  // A body ends: whatever fed its commands feeds them up to here.
   const feedingEnds = (feeding: Feeding) => {
     const now = mark()
     if (feeding.fed !== null) fedRun(feeding.fed, now)
     if (feeding.pipe !== null) fedRun(feeding.pipe, now)
   }
   let mentionsCase: boolean | null = null
-  // A piece of the command at this level ends at `at`, and the text goes on at `next`.
   const piece = (level: SplitLevel, at: number, next: number) => {
     const command = level.command
     if (command.cut) (command.pieces ??= []).push(found.statements.length)
@@ -1184,7 +1172,6 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
     const own = command.cut ? command.text + (command.from >= 0 ? text.slice(command.from, amp) : '') : text.slice(level.start, amp)
     return { text: `${command.join?.text ?? ''}${own} `, cut: command.cut || command.join?.cut === true, feed: command.feed || command.join?.feed === true }
   }
-  // A body opens at `at` inside the command at this level, which `marker` replaces in its head until the body ends.
   const cut = (command: CommandText, at: number, marker = SUBSTITUTED) => {
     if (command.from >= 0) command.text += text.slice(command.from, at) + marker
     command.from = -1
@@ -1201,7 +1188,6 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
     level.command = commandAt(next, runs, found)
     level.feeding = unfed()
   }
-  // The body open at this level ends at `at`, and the command it interrupted goes on at `next`.
   const close = (level: SplitLevel, at: number, next: number) => {
     finish(level, at, next)
     feedingEnds(level.feeding)
@@ -1212,7 +1198,6 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
     level.command = command
     level.feeding = feeding
   }
-  // A level ends at `at`: its command, and each one a body still open interrupted, the innermost first.
   const endLevel = (level: SplitLevel, at: number, next: number) => {
     finish(level, at, next)
     feedingEnds(level.feeding)
@@ -1271,7 +1256,6 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
   }
   for (let index = 0; index < text.length; index++) {
     const level = levels.at(-1)!
-    // Runs of characters that change nothing are passed over in one step, so each pass costs little per character.
     if (level.quote === "'") {
       const close = text.indexOf("'", index)
       if (close < 0) break
@@ -1604,7 +1588,6 @@ function heredocBodies(input: { text: string; from: number; heredocs: Heredoc[];
   for (const heredoc of input.heredocs) {
     const bodyStart = index
     let bodyEnd = index
-    // The lines joined so far, each without the backslash-newline that joins it to the next.
     let joined: string | null = null
     // Whether the previous physical line continues into this one, so this one is not tested as the delimiter.
     let continues = false
@@ -1817,7 +1800,6 @@ interface BodyReading {
 /** Characters that end a word as bash's reader ends one outside quotes: a blank or an operator character. */
 const WORD_ENDS = new Set([' ', '\t', '\n', ';', '&', '|', '(', ')', '<', '>'])
 
-/** Characters each part acts on; any other one is passed over with the run it begins. */
 const specials = (characters: string): Uint8Array => {
   const table = new Uint8Array(128)
   for (const character of characters) table[character.charCodeAt(0)] = 1
@@ -1830,7 +1812,6 @@ const BACKTICK_SPECIAL = specials('\\`')
 const ARITHMETIC_SPECIAL = specials('\\\'"$`()')
 const BODY_SPECIAL = specials(' \t\n\\\'"$`<>;&|()')
 
-/** Where the run of characters a part passes over, starting with the one at `index`, ends. */
 function runEnd(text: string, index: number, special: Uint8Array): number {
   let at = index + 1
   while (at < text.length) {
@@ -1938,7 +1919,6 @@ function partEnd(text: string, from: number, first: WordPart): number {
   while (index < text.length) {
     const part = parts[parts.length - 1]!
     const character = text[index]!
-    // The innermost part closes at `index` when `closes` is set: the reading goes on in the one around it, or returns.
     let closes = false
     let opened: { part: WordPart; next: number } | null = null
     // A command body reads its own escapes (bodyStep); every other part passes over the escaped character.

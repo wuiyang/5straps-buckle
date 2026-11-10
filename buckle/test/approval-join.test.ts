@@ -15,7 +15,6 @@ import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 import { auditEntries, startActionLogWriter } from './support/action-log-writer.js'
 
-/** A node whose gated calls wait a minute, with two directories a write asks for. */
 async function node(interaction = headlessGrace) {
   const root = mkdtempSync(join(tmpdir(), 'buckle-join-'))
   for (const directory of ['workspace', 'workspace/one', 'workspace/two']) mkdirSync(join(root, directory))
@@ -36,7 +35,6 @@ async function answer(runtime: CoreRuntime, token: string, scope: 'once' | 'sess
   expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope }, source: SOURCES.cli })).ok).toBe(true)
 }
 
-/** Resolves once the registry has joined a re-sent call to the ask already waiting. */
 // The writer's thread starts on its first write, which a first ask's wait would otherwise include.
 beforeAll(startActionLogWriter)
 

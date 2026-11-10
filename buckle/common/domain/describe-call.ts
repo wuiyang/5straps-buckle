@@ -21,6 +21,9 @@ const KEPT_DESCRIPTION_LENGTH = 3_880
 /** What a description with a cut fact ends with: the arguments a person reads below it are whole. */
 export const SUMMARY_CUT = '[summary cut; the arguments below are complete]'
 
+/** How a call a script made opens its description. */
+export const SCRIPT_CALL_NOTE = 'Called by a'
+
 /**
  * What a call does, in words Buckle writes for the person who approves it (owner decision D9): built
  * from the tool, the directory the call runs in and facts its arguments state (a path, a size, a
@@ -32,9 +35,6 @@ export const SUMMARY_CUT = '[summary cut; the arguments below are complete]'
  * outside any quote, and that the arguments shown with it are complete. It rides inside the node-signed
  * challenge, where a relay that rewrites it breaks the signature.
  */
-/** How a call a script made opens its description. */
-export const SCRIPT_CALL_NOTE = 'Called by a'
-
 export function describeCall(input: { tool: string; args: JsonObject; cwd: string; via?: { tool: string; parentRequestId: string }; facts?: JsonObject }): string {
   const cut = { truncated: false }
   const facts = factsOf(cut)
@@ -117,7 +117,6 @@ function shellExtras(args: JsonObject, facts: Facts): string {
   return `${cwd === undefined || cwd === '.' ? '' : ` from ${facts.fact(cwd, PATH_LENGTH)}`}${args.allowNetwork === true ? ', with network access' : ''}${facts.names(', setting', args.env)}${strings(args.sensitiveFiles).length > 0 ? `, reading ${facts.paths(strings(args.sensitiveFiles))}` : ''}`
 }
 
-/** The fact quoting of one description, which records whether it cut any fact. */
 function factsOf(cut: { truncated: boolean }): Facts {
   /** Shown text quoted and escaped, and when cut, its length named outside the quote. */
   const show = (shown: string, length: number, limit: number): string => {
@@ -180,7 +179,6 @@ function closeQuote(text: string): string {
   return `${escaped ? text.slice(0, -1) : text}"`
 }
 
-/** The first `length` UTF-16 units, one fewer where the cut would split a surrogate pair. */
 function bytes(value: JsonValue | undefined, encoding?: JsonValue): string {
   return count(byteCount(value, encoding), 'byte')
 }

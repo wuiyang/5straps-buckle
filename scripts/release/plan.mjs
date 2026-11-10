@@ -56,13 +56,11 @@ function packReleaseCheck({ name, version, manifest, listing }) {
   if (missing.length > 0) throw new Refusal(`${name}@${version} was packed without ${missing.join(', ')}, which its manifest points at: the build did not run (pnpm pack builds through prepack, which ignore-scripts skips)`)
 }
 
-/** The files a manifest's main, types, bin, and exports name, leaving out export patterns. */
 function entryPoints(manifest) {
   const leaves = value => typeof value === 'string' ? [value] : Object.values(value ?? {}).flatMap(leaves)
   return [manifest.main, manifest.types, manifest.bin, manifest.exports].flatMap(leaves).filter(path => !path.includes('*'))
 }
 
-/** The plan, packing, and notes in one run, into a directory that holds nothing else. */
 export function prepareArtifact({ destination, root = REPOSITORY_ROOT, run = runCommand }) {
   if (existsSync(destination) && readdirSync(destination).length > 0) throw new Refusal(`${destination} is not empty: the release artifact must hold only this release`)
   const plan = planRelease({ root, run })

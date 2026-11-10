@@ -45,7 +45,6 @@ try {
 for (const generator of BUILD_TIME_GENERATORS) bundled.add(packageOf(createRequire(import.meta.resolve('nitro/builder')).resolve(generator)))
 writeFileSync(join(outDir, 'bundled-packages.json'), `${JSON.stringify([...bundled].sort(), null, 2)}\n`)
 
-/** Collects the package of every bundled module that came from node_modules. */
 function recordBundledPackages(found) {
   return {
     name: 'buckle:bundled-packages',
@@ -61,7 +60,6 @@ function recordBundledPackages(found) {
   }
 }
 
-/** name@version of the package a module id sits in: the directory after the last node_modules/, read from its package.json. */
 function packageOf(id) {
   const path = id.replace(/^\0/, '').split('?')[0]
   const marker = '/node_modules/'

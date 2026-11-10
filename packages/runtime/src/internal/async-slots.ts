@@ -12,7 +12,6 @@ export function globalSlot<T>(name: string, create: () => T): T {
 
 export const scopeStorage = globalSlot('scope-storage', () => new AsyncLocalStorage<OperationScope>())
 export const transactionStorage = globalSlot('transaction-storage', () => new AsyncLocalStorage<string>())
-// The logger root whose sink is running, across the sink's awaits.
 export const sinkStorage = globalSlot('logger-sink-root', () => new AsyncLocalStorage<symbol>())
 
 // Runtime-held values (singletons, their timers and listeners) must not capture the first caller's scope,

@@ -49,7 +49,6 @@ function lockApp(app: Record<string, unknown> & { config: object }): void {
   for (const value of Object.values(app)) if (Array.isArray(value)) Object.freeze(value)
 }
 
-/** The methods the app's classes define, nearest first; getters and the constructor are not methods. */
 function methodNames(app: object): Set<string> {
   const names = new Set<string>()
   for (let prototype = Object.getPrototypeOf(app) as object | null; prototype && prototype !== Object.prototype; prototype = Object.getPrototypeOf(prototype) as object | null) {

@@ -12,7 +12,6 @@ import { blobId, openObjectStore } from '../common/services/history/object-store
 // store holds: it reads what to keep and lists what to remove without the lock, and removes in slices that take the lock
 // briefly, check with a few stats that nothing changed, and remove for 25 ms, so a hold runs past that by one removal at most.
 
-/** Each time the execution lock was held: when the operation under it started and ended. */
 const holds = vi.hoisted(() => ({ list: [] as Array<{ start: number; end: number }> }))
 vi.mock('../common/services/history/execution-lock.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../common/services/history/execution-lock.js')>()
@@ -102,7 +101,6 @@ it('never holds the execution lock past a short slice and one removal while it s
     await history.run({ ...details, stageId: 'next' }, async () => { command.start = performance.now(); writeFileSync(join(workspace, 'a.txt'), 'a2'); command.end = performance.now() })
     await vi.waitFor(() => expect(storedCount(directory)).toBeLessThan(10), { timeout: 120_000, interval: 200 })
     await vi.waitFor(() => expect(readdirSync(directory).filter(name => name.endsWith('.tmp'))).toEqual([]), { timeout: 10_000, interval: 100 })
-    // Every hold but the command's own, which ran under the lock from its first capture to its last.
     const sweep = holds.list.filter(hold => !(hold.start <= command.start && command.end <= hold.end))
     expect(sweep.length).toBeGreaterThan(1)
     for (const hold of sweep) {
@@ -113,7 +111,6 @@ it('never holds the execution lock past a short slice and one removal while it s
   } finally { await history.close() }
 }, 180_000)
 
-/** Where the store keeps `id`. */
 function objectPath(directory: string, id: string): string { return join(directory, 'blobs', id.slice(0, 2), id.slice(2)) }
 /** `content` as a loose blob, written as git writes one, at once: what a record's git add stores. */
 function looseObject(directory: string, content: Buffer): string {

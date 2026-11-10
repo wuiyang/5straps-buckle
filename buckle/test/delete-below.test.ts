@@ -191,7 +191,6 @@ describe('the approval queue', () => {
   })
 })
 
-/** A terminal that answers each question with `choice`. */
 function answering(choice: string): RequestCli {
   return async request => ({ status: 'answered', requestId: request.id, answer: { choice } })
 }

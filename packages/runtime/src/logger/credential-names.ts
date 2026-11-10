@@ -20,7 +20,6 @@ const NAMED_KEY = /passw(?:or)?d|secret|token/
 const QUERY_NAME = /signature/
 const QUERY_WORDS = new Set(['key', 'keys', 'auth', 'sig', 'pwd'])
 
-/** A key split into lowercase words at camel case, digits and punctuation (`PGPassword` is `pg password`). */
 export function keyWords(key: string): string[] {
   return key.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z])([A-Z][a-z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
 }
@@ -63,7 +62,6 @@ export function isCredentialQueryName(name: string, value?: string): boolean {
   return keyWords(name).some(word => QUERY_WORDS.has(word) || word.endsWith('key'))
 }
 
-/** A key in lowercase with everything but letters and digits dropped, so `pass_word` holds `password`. */
 function squashed(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9]/g, '')
 }

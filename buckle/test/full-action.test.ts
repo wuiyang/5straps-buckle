@@ -86,7 +86,6 @@ async function allowShellWrapper(runtime: CoreRuntime): Promise<void> {
   await runtime.policy.apply(policy)
 }
 
-/** An approval webhook that keeps every body posted to it. */
 async function captureWebhook(): Promise<{ url: string; bodies: Array<Record<string, unknown>>; close: () => Promise<void> }> {
   const bodies: Array<Record<string, unknown>> = []
   const server = createServer((request, response) => {

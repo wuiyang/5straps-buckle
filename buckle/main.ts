@@ -207,7 +207,6 @@ function printServiceUsage(kind: ServiceKind): number {
   return 0
 }
 
-// A one-shot command answers a person at a terminal: the reason on one line, the detail at debug level.
 function refuseCommand(error: unknown): number {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
   logger.debug('Command refused', { error })

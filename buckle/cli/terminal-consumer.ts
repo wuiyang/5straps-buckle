@@ -28,7 +28,6 @@ export interface TerminalOptions {
   console?: ConsoleWriter
 }
 
-/** What interrupting the process needs of it; the process itself unless a test hands in its own. */
 export interface InterruptTarget {
   readonly pid: number
   kill(pid: number, signal: NodeJS.Signals): unknown
@@ -240,7 +239,6 @@ function promptRow(input: { question: ApprovalQuestion; output: Writable; readli
       else signal.addEventListener('abort', quiet.hold, { once: true })
     },
     async ask(signal: AbortSignal): Promise<string> {
-      // The quiet is over: the hold the abort below takes is the one that counts from here.
       waiting?.()
       const held = input.writer.asking(readline)
       prompted = held
@@ -271,7 +269,6 @@ function promptRow(input: { question: ApprovalQuestion; output: Writable; readli
         output.write(`${text}${printable(typed)}${tag}\n`)
         return
       }
-      // The row drawn again whole, so no column is computed; what a paste echoed below it is cleared.
       moveCursor(output, 0, -(1 + extraLines))
       cursorTo(output, 0)
       clearScreenDown(output)

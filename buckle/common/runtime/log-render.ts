@@ -11,7 +11,6 @@ export interface RenderOptions {
   verbose: boolean
 }
 
-/** The log is at debug or trace. */
 export function isVerbose(level: LogLevel): boolean {
   return level === 'debug' || level === 'trace'
 }
@@ -29,7 +28,6 @@ const STEP_MESSAGES: ReadonlySet<string> = new Set(['cli:call listener registere
 /** How a request that ended well reads in `request completed`, which then says nothing of its outcome. */
 const GOOD_OUTCOME = /^(?:ok|streamed)(?: [23]\d\d)?$/
 
-/** One event as a known message words it: its tag, its text, and the fields it did not already say. */
 interface Shown {
   tag: string
   text: string
@@ -83,7 +81,6 @@ export interface StoredLineRenderer {
   last(lines: readonly string[], count: number): string[]
 }
 
-/** One stored line as the console shows it: when it was logged, for the date separator, and its rows. */
 interface StoredEntry {
   at: Date | null
   rows: string[]
@@ -115,7 +112,6 @@ export function createStoredLineRenderer(options: RenderOptions): StoredLineRend
   )
 }
 
-/** A stored line as it is shown, or null where the console leaves it to the JSON; a line that is no event is one row. */
 function storedEntry(line: string, options: RenderOptions): StoredEntry | null {
   const event = storedEvent(line)
   if (event === null) return { at: null, rows: [printable(line)] }
@@ -123,7 +119,6 @@ function storedEntry(line: string, options: RenderOptions): StoredEntry | null {
   return rows === null ? null : { at: new Date(event.timestamp), rows }
 }
 
-/** A stored line read back as a log event, or null where it is not one in the shape the logger writes. */
 function storedEvent(line: string): LogEvent | null {
   let value: unknown
   try {

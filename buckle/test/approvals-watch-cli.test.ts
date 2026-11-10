@@ -15,7 +15,6 @@ import { QUIET_MS } from '../cli/terminal-keys.js'
 // each poll, and closes what a workspace taken offline left open in its process (finding 10 of the Phase 1 review, and
 // its recheck). The unit tests of watchApprovals hand it a list of their own; these go through runCli and the manager.
 
-/** Every runtime this file's managers open, with the phase it was opened in and how often it was closed. */
 const opened = vi.hoisted(() => ({ phase: 'owner', records: [] as Array<{ phase: string; workspaceId: string; closes: number }> }))
 vi.mock('../common/services/workspaces/workspace-runtime.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../common/services/workspaces/workspace-runtime.js')>()
@@ -132,7 +131,6 @@ describe('buckle approvals --watch --all', () => {
 })
 
 describe('buckle approvals --watch, decision records', () => {
-  /** Answers the question on screen once, as the owner types it at the keyboard. */
   async function answer(keys: string): Promise<void> {
     await vi.waitFor(() => expect(out).toMatch(/n\) skip > /), { timeout: 10_000, interval: 25 })
     // A question takes keys only once the keyboard rested with it on screen.

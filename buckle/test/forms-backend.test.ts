@@ -178,7 +178,6 @@ const SAVED: DecisionReceipt = { status: 'repeated', state: 'approved', save: 's
 const UNSAVED_DENIAL: DecisionReceipt = { status: 'refused', error: { code: 'grant_unsaved', message: 'Not denied for the session: saving failed: permission denied; the call still waits', retryable: true, saveError: 'permission denied' } }
 const SENDER = { caller: 'agent:a' }
 
-/** A backend whose host answers each decision of `token` with `receipts` in turn, the last one again once they run out. */
 async function savingBackend(receipts: DecisionReceipt[]) {
   const backend = forms()
   const host = fakeHost({ routed: [askFor('a')], receipt: (_decision, sent) => receipts[Math.min(sent, receipts.length) - 1]! })

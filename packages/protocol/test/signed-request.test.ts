@@ -90,7 +90,6 @@ describe('a signed request', () => {
   it('refuses a key that is not enrolled, a revoked one, and a key substituted into the payload', () => {
     expect(verifier()(signed({ key: other }))).toBe('unknown_key')
     expect(verifier({ enrolled: [] })(signed())).toBe('unknown_key')
-    // Another key's signature over a payload naming the enrolled key.
     const forged = signed({ key: other })
     const [scheme, token] = forged.split(' ')
     const [encoded, signature] = token!.split('.')

@@ -11,7 +11,6 @@ export function fail(message: string): CliResult {
   return { exitCode: 1 }
 }
 
-/** A named workspace that is unknown, disabled or retired is a typo to report, not a crash. */
 export async function reportWorkspaceErrors(operation: () => Promise<CliResult>): Promise<CliResult> {
   try {
     return await operation()

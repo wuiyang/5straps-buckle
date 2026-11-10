@@ -1157,7 +1157,6 @@ function refusedAsWorkbench<T>(check: () => T): T {
 
 function workspaceProgramTrust(input: RuntimeInput): UntrustedRoots { return workspaceUntrusted({ root: input.config.cwd, scratchRoots: scratchSources(input.config.mounts), mounts: input.config.mounts }, input.nodeRoots) }
 
-/** Whether two readings of the record name the same files, in the order it keeps them. */
 function sameFiles(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((file, index) => file === right[index])
 }

@@ -27,7 +27,6 @@ async function cli(config: BuckleConfig, argv: string[]) {
   } finally { stdout.mockRestore(); stderr.mockRestore() }
 }
 
-/** A fresh runtime per call, as a restarted node or the next CLI process would read the policy file. */
 async function invoke(config: BuckleConfig, tool: string, args: Record<string, unknown>) {
   const runtime = await createRuntime({ config })
   const response = await runtime.invoke({ request: { requestId: `r-${tool}`, tool, args: args as Record<string, never>, approvalTokens: [] }, sessionId: 'tool-switch' })

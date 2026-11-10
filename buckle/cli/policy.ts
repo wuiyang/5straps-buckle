@@ -218,16 +218,13 @@ function opensNetwork(before: WorkspacePolicy, after: WorkspacePolicy): boolean 
 
 class UsageError extends Error {}
 
-/** The actions that take no flag. */
 const FLAGLESS_ACTIONS = new Set([
   'allow-command', 'deny-command', 'destructive-command', 'allow-interpreter', 'remove-interpreter', 'allow-url', 'mount', 'unmount',
   'deny-tool', 'allow-tool', 'remove', 'import', 'export', 'clear',
 ])
 
-/** The actions that parse flags of their own, with the flags each one knows. */
 const OWN_FLAGS = new Map<string, readonly string[]>([['show', ['--json']]])
 
-/** The actions that take exactly one argument. */
 const ONE_ARGUMENT_ACTIONS = new Set([
   'allow-command', 'deny-command', 'destructive-command', 'allow-interpreter', 'remove-interpreter', 'allow-url', 'mount',
   'deny-tool', 'allow-tool', 'remove', 'import',

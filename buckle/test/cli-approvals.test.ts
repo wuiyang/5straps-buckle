@@ -33,7 +33,6 @@ function node(environment: NodeJS.ProcessEnv = {}): BuckleConfig {
   })
 }
 
-/** A request waiting on the node, written through a second registry over the same state files. */
 async function pendingRequest(config: BuckleConfig): Promise<string> {
   const registry = createApprovalRegistry(
     createFileGrantStore({ filePath: grantsPath(config), workspace: config.workspaceId }),

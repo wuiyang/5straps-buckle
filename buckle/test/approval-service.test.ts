@@ -39,7 +39,6 @@ function call(overrides: Partial<ApprovalAskInput> = {}): ApprovalAskInput {
   return { sessionId: 'chat-1', requestId: 'request-1', tool: 'fs_write', call: { arguments: { path: '/outside/a.md', content: 'x' }, cwd: '/workspace', description: null, effects: ['write /outside/a.md'], complete: true }, asks: [ask('/outside/a.md')], ...overrides }
 }
 
-/** A terminal that answers its questions in order with the given choices, then leaves the rest on screen. */
 function scriptedTerminal(choices: string[]): { requestCli: RequestCli; asked: string[] } {
   const asked: string[] = []
   return {
@@ -291,7 +290,6 @@ describe('the interaction each HTTP request binds', () => {
   })
 })
 
-/** A stand-in for the approval webhook, keeping every body it receives. */
 async function captureWebhook() {
   const bodies: Array<{ approvals?: Array<{ token: string; subject: string }>; notices?: Array<{ token: string; event: string; scope?: string; reason?: string }> }> = []
   const server = createServer((request, response) => {

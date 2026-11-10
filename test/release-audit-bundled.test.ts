@@ -28,7 +28,6 @@ const BUNDLED = ['hookable@6.1.1', 'nitro@3.0.260903-beta', 'srvx@1.0.5']
 
 const directories: string[] = []
 
-/** A fresh temp directory, removed after the test that made it. */
 function tempDirectory(): string {
   const directory = mkdtempSync(join(tmpdir(), 'audit-bundled-'))
   directories.push(directory)

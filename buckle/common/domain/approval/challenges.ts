@@ -90,7 +90,6 @@ export function createApprovalChallenges(identity: ApprovalChallengeIdentity) {
 
 }
 
-// Hash and size each group's whole call once, however many asks share it.
 type CallShape = { digest: string; callRef: string; inline: boolean }
 type CallShapes = (tool: string, call: AskedCall) => CallShape
 

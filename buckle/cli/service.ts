@@ -27,7 +27,6 @@ import { asksForHelp } from './help-request.js'
 
 
 
-/** How long a command waits for the node to listen after a start, and to end after a stop. */
 const START_WAIT_MS = 30_000
 const STOP_WAIT_MS = 30_000
 const DEFAULT_LOG_LINES = 50
@@ -80,7 +79,6 @@ export const UNSUPPORTED_EXIT = 2
  * fixed list besides. A change is audited in the node's log, where the node has a state directory.
  */
 export async function serviceCommand(input: ServiceCommandInput): Promise<CliResult> {
-  /** For the command's audit entry. */
   const out = input.out ?? (text => void process.stdout.write(text))
   const err = input.err ?? (text => void process.stderr.write(text))
   const [action, ...rest] = input.argv
@@ -146,7 +144,6 @@ function flags(argv: string[], options: ParseOptions): Record<string, string | b
   }
 }
 
-/** Where no service manager answers: the plain detach runs the node instead. */
 const FALLBACK = 'buckle serve --background runs the node until it stops'
 
 /** A platform Buckle drives no service manager on: one other than Linux, macOS, and Windows. */
@@ -203,7 +200,6 @@ function definitionFor(context: ServiceContext): ServiceDefinition {
   }
 }
 
-/** Whether a node serves under this manager's definition: its record names the manager, or it has not written one yet. */
 function ownsNode(manager: ServiceManager, running: RunningNode | null): running is RunningNode {
   return running !== null && (running.record === null || running.record.manager === manager.kind)
 }
@@ -330,7 +326,6 @@ async function restart(context: ServiceContext): Promise<CliResult> {
   return reportStarted(context, { verb: 'Restarted', detail: 'restart', before })
 }
 
-/** Waits for the node a start began to listen, a pid other than `before`, and says so in one line. */
 async function reportStarted(context: ServiceContext, step: { verb: string; detail: string; before?: number | undefined }): Promise<CliResult> {
   const { manager, location } = context
   const record = await waitForNewRecord(location.stateDirectory, step.before)
@@ -339,7 +334,6 @@ async function reportStarted(context: ServiceContext, step: { verb: string; deta
   return { exitCode: 0, detail: `${step.detail} ${manager!.kind}` }
 }
 
-/** The record of a node that holds the serve lock now, under a pid other than `before`, once one listens; null after the wait. */
 async function waitForNewRecord(stateDirectory: string, before: number | undefined): Promise<ServeRecord | null> {
   const deadline = Date.now() + START_WAIT_MS
   for (;;) {
@@ -402,7 +396,6 @@ async function status(context: ServiceContext, json: boolean): Promise<CliResult
   return { exitCode: 0 }
 }
 
-/** How long status waits for each health probe. */
 const PROBE_MS = 2_000
 
 /** Whether the node answers its liveness probe, and the status its readiness probe gives; both need no token. */
@@ -412,7 +405,6 @@ async function probeHealth(address: string): Promise<{ live: boolean; ready: num
   return { live: live === 200, ready }
 }
 
-/** The version of the package whose dist/main.js this is, read from its package.json now; null where it cannot be read. */
 function versionOf(main: string): string | null {
   try {
     return (JSON.parse(readFileSync(join(dirname(dirname(main)), 'package.json'), 'utf8')) as { version?: string }).version ?? null
@@ -455,11 +447,8 @@ async function logs(context: ServiceContext, options: { follow: boolean; lines: 
   return { exitCode: 0 }
 }
 
-/** What `logs` prints of the file: its last lines, and then what it gains, which share one state (the date separators). */
 interface LogView {
-  /** The last `count` of the whole lines the file holds. */
   last(lines: string[], count: number): string
-  /** Whole lines the file gained, as text. */
   added(text: string): string
 }
 

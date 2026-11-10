@@ -63,7 +63,6 @@ function stuck(name: string): { destination: LogDestination; batches: string[][]
   return { destination, batches }
 }
 
-/** The JSON lines written to stderr while it is captured. */
 function captureStderr(): () => Array<Record<string, unknown>> {
   let text = ''
   vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => { text += String(chunk); return true })
@@ -82,7 +81,6 @@ const tick = () => new Promise(resolve => setImmediate(resolve))
 
 type Hook = (...args: unknown[]) => void
 
-/** The request-log plugin on a Nitro app of its own: each call answers one request with `status`, logged through `logger`. */
 function answeredRequests(logger: Logger): (status: number) => void {
   const hooks = new Map<string, Hook>()
   ;(requestLog as unknown as (nitroApp: { hooks: { hook: (name: string, hook: Hook) => void } }) => void)({ hooks: { hook: (name, hook) => { hooks.set(name, hook) } } })

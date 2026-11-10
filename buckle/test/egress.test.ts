@@ -182,7 +182,6 @@ describe('guardedFetch across redirect hops', () => {
   let firstPort = 0
   let secondPort = 0
 
-  /** Records every request, answers `/start?status=N&to=URL` with that redirect, and anything else with 200. */
   function startRecorder(): Promise<number> {
     return new Promise(resolve => {
       const server = createServer((request, response) => {

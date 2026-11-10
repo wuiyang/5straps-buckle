@@ -10,7 +10,6 @@ import { RECENT_CHECKPOINTS_MAX, RestoreRefusedError, withConflictPath, type Che
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 
-/** How many files `list --last` names for one checkpoint before it counts the rest. */
 const SHOWN_FILES = 10
 
 /** `buckle history`: the owner's view of the workspace's change history, and the owner's own restores. */
@@ -76,7 +75,6 @@ function recentText(input: { checkpoints: Array<CheckpointSummary & { current: b
   return `${lines.join('\n')}\n`
 }
 
-/** The call that made a checkpoint: its tool, session, and request, and for a restore, what it undid. */
 function callText(checkpoint: CheckpointSummary): string {
   const request = checkpoint.requestId === undefined ? '' : `, request ${printable(checkpoint.requestId)}`
   const undid = checkpoint.restores === undefined ? '' : `, undid ${printable(checkpoint.restores)}${(checkpoint.undoes ?? 1) > 1 ? ` and the ${checkpoint.undoes! - 1} after it` : ''}`

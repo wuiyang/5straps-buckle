@@ -133,7 +133,6 @@ type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 const WRITE: Ask = { kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside/a', reason: 'outside', offeredScopes: ['once', 'session', 'always'] }
 const CALL = { arguments: { path: '/outside/a' }, cwd: '/', description: null, complete: true as const }
 
-/** The store, its first `failing` grant writes refused as a locked grants file refuses them. */
 function failingGrants(store: GrantStore, failing: number): GrantStore {
   let left = failing
   return { ...store, grant: async (input) => {
@@ -195,7 +194,6 @@ describe('the caller in the ledger', () => {
 
 const accepted = (content: Record<string, unknown>) => ({ action: 'accept', content })
 
-/** A forms backend core opens under one face's forms source, the host it hands over caught as the backend receives it. */
 function opened(face: FormsFace) {
   const root = scratch()
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' })

@@ -13,13 +13,11 @@ export function readTimerList(name: string, values: readonly number[] | undefine
   return [...values]
 }
 
-// An optional wait from a runtime config.
 export function readOptionalTimer(name: string, value: number | undefined): number | undefined {
   if (value !== undefined) assertTimerMs(name, value)
   return value
 }
 
-// True when every promise settled before the deadline; the timer never outlives the wait.
 export async function settleWithin(work: readonly Promise<unknown>[], timeoutMs: number): Promise<boolean> {
   let timer: NodeJS.Timeout | undefined
   const timedOut = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), Math.max(0, timeoutMs)) })

@@ -45,7 +45,6 @@ export async function serveHttp(input: ServeHttpInput): Promise<void> {
   if (config.experimentalAdminHttp) input.logger.warn('The admin HTTP face is on, as an experiment (BUCKLE_EXPERIMENTAL_ADMIN_HTTP): /setup answers the admin credential and signed requests of enrolled keys', { adminCredential: config.adminToken ? 'set' : 'unset' })
 }
 
-/** The online workspaces with their settings, for the decision AI's notice; one whose settings will not read is left to its own report. */
 function judgedWorkspaces(workspaces: WorkspaceManager): Array<{ name: string; settings: ReturnType<WorkspaceManager['settings']> }> {
   return workspaces.list().filter(workspace => workspace.online).flatMap((workspace) => {
     try { return [{ name: workspace.name, settings: workspaces.settings(workspace.id) }] } catch { return [] }

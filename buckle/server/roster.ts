@@ -62,7 +62,6 @@ export function rosterLines(text: string, at: Date): string[] {
   return [`${localTime(at)} [info] ${first}`, ...rest]
 }
 
-/** Writes each list through the console writer, in turn after the log lines logged before it. */
 export function consoleRoster(writer: ConsoleWriter): (text: string) => void {
   return (text) => {
     const at = new Date()
@@ -116,7 +115,6 @@ export function watchOnline(input: { workspaces: WorkspaceManager; write: (text:
 /** The registry watcher's debounce (Q2): a change is re-listed this long after the last write, within the 100 to 250 ms the brief allows. */
 export const ROSTER_WATCH_DEBOUNCE_MS = 150
 
-/** What the list depends on: the registry, and each online workspace's settings revision, or that they will not read. */
 function fingerprint(workspaces: WorkspaceManager): string {
   let listed: WorkspaceDescriptor[]
   try { listed = workspaces.list() } catch (error) { return `unreadable registry: ${error instanceof Error ? error.message : String(error)}` }

@@ -67,7 +67,6 @@ async function settings(argv: string[], environment: NodeJS.ProcessEnv = {}, env
   } finally { stdout.mockRestore(); stderr.mockRestore() }
 }
 
-/** The file with one line swapped, so a test states exactly which bytes may change. */
 function withLine(from: string, to: string): string {
   expect(original).toContain(from)
   return original.replace(from, to)

@@ -108,7 +108,6 @@ export async function applyPatch(context: PatchContext, judged: SettledPatch): P
   return { files: results }
 }
 
-/** One planned file written, created, or deleted. */
 async function writeStep(step: Step, context: PatchContext): Promise<JsonObject> {
   if (step.file.kind === 'delete') {
     const directory = openRealDirectory(step.directory, { refusal: { shown: step.file.path, outcome: 'nothing more was changed' } })

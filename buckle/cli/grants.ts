@@ -25,7 +25,6 @@ function grantLine(grant: GrantRecord, note = ''): string {
   return `${grant.id}  ${grant.denied ? 'DENY ' : 'ALLOW'} ${grant.scope.padEnd(8)} ${grant.rule.padEnd(20)} ${printable(grant.subject)}${grant.pattern ? '  (host pattern)' : ''}${holder}${note}\n`
 }
 
-/** The approvals decided whose grants are not written yet, which a revoke still takes; none listed where the ledger cannot be read. */
 function owedGrants(runtime: BuckleRuntime): GrantRecord[] {
   try {
     return runtime.grants.owed()

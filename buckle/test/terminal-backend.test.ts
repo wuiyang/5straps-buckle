@@ -4,7 +4,6 @@ import { createTerminalBackend } from '../common/adapters/approval/terminal-back
 import type { ApprovalBackend, ApprovalHost, DecisionReceipt } from '../common/types/ports/approval-backend.js'
 import { askFor, event, fakeHost, live, runApprovalBackendKit, tick, type KitChoice } from './support/approval-backend-kit.js'
 
-/** A terminal someone answers: each question gets the next choice, or waits until its signal aborts. */
 function answering(choices: Array<string | 'wait'>): { requestCli: RequestCli; asked: CliRequest[] } {
   const asked: CliRequest[] = []
   const requestCli: RequestCli = (request, options) => {

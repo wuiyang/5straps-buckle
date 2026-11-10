@@ -142,10 +142,8 @@ export function normaliseSetting(input: { setting: NodeSetting; raw: string; cwd
   return refusal === null ? value : refuse(refusal)
 }
 
-/** The browser variables and the field of a browser block each sets. */
 const BROWSER_SETTING_FIELDS: Readonly<Record<string, 'cdp' | 'profile' | 'args' | 'headed'>> = { BUCKLE_BROWSER_CDP: 'cdp', BUCKLE_BROWSER_PROFILE: 'profile', BUCKLE_BROWSER_ARGS: 'args', BUCKLE_BROWSER_HEADED: 'headed' }
 
-/** The browser block the file would hold with `key` set to `value`. */
 function browserBlockWith(file: Readonly<Record<string, string | undefined>>, key: string, value: string): { cdp?: string; profile?: string; args?: string; headed?: boolean } {
   const held = { ...file, [key]: value }
   return {
@@ -295,7 +293,6 @@ function list(raw: string): string[] {
   return [...new Set(raw.split(',').map(item => item.trim()).filter(Boolean))]
 }
 
-/** The value where Buckle compiles it as a workspace's own would be, or the policy's refusal. */
 function compiled(compile: () => unknown, value: string): SettingValue {
   try {
     compile()

@@ -296,7 +296,6 @@ describe('code mode inside one workspace (BUCKLE-D07: a token opens one workspac
 describe('the limits on a script\'s calls', () => {
   const echo: ToolCapability = { name: 'echo', description: 'Echo its arguments.', inputSchema: { type: 'object' }, risk: 'read', tags: [], pack: 'test' }
 
-  /** code_run on its own, its calls answered by `invokeNested` as the test chooses. */
   function codeRun(invokeNested: (call: NestedCall) => Promise<InvokeResponse>) {
     const directory = mkdtempSync(join(tmpdir(), 'buckle-code-limits-'))
     roots.push(directory)

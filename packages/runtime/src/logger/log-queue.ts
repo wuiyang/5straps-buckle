@@ -77,7 +77,6 @@ export interface LogQueue<T> {
   stats(): LogQueueStats
 }
 
-/** `onlyExpendable` narrows each to the member's expendable entries. */
 interface BudgetMember {
   oldest(onlyExpendable: boolean): number | undefined
   dropOldest(onlyExpendable: boolean): void
@@ -99,9 +98,7 @@ interface Batch<T> {
   summary: T | undefined
   attempts: number
   writing: boolean
-  /** An attempt past its deadline, still out: true once it wrote. */
   late: Promise<boolean> | undefined
-  /** Entries the budget dropped while the late attempt carrying them was out. */
   droppedLate: number
 }
 
@@ -179,7 +176,6 @@ export function createLogQueue<T>(options: LogQueueOptions<T>): LogQueue<T> {
 
   async function pump(): Promise<void> {
     try {
-      // Entries pushed in the same tick go out in one batch.
       await Promise.resolve()
       while (!stopped && (batch ??= takeBatch())) {
         const current = batch
@@ -189,7 +185,6 @@ export function createLogQueue<T>(options: LogQueueOptions<T>): LogQueue<T> {
         else await retryOrDrop(current)
       }
     } finally {
-      // In the same step as the last empty check, so no push lands between them unpumped.
       pumping = undefined
     }
   }
@@ -246,7 +241,6 @@ export function createLogQueue<T>(options: LogQueueOptions<T>): LogQueue<T> {
     await waitOrStop(delay)
   }
 
-  // Out until it answers, so a drop meanwhile is known to ride in it.
   async function lateAnswer(current: Batch<T>): Promise<boolean> {
     if (!current.late) return false
     try {
@@ -256,7 +250,6 @@ export function createLogQueue<T>(options: LogQueueOptions<T>): LogQueue<T> {
     }
   }
 
-  // The late attempt carried the entries dropped while it was out, so they were written after all.
   function retractLateDrops(current: Batch<T>): void {
     if (current.droppedLate === 0) return
     counts.dropped -= current.droppedLate
@@ -266,7 +259,6 @@ export function createLogQueue<T>(options: LogQueueOptions<T>): LogQueue<T> {
     if (!drops) dropping = false
   }
 
-  // The batch's own count goes back unwritten, to be reported with the next one.
   function dropBatch(current: Batch<T>): void {
     batch = undefined
     budget.held -= current.entries.length
@@ -388,7 +380,6 @@ function budgetStateOf(budget: LogBudget): BudgetState {
   return state
 }
 
-// The attempt's answer, or undefined once the deadline passes first.
 async function answerWithin(attempt: Promise<boolean>, deadlineMs: number): Promise<boolean | undefined> {
   let timer: NodeJS.Timeout | undefined
   const passed = new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), deadlineMs) })

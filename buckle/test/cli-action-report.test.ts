@@ -8,7 +8,6 @@ import { runCli } from './support/cli.js'
 
 afterEach(() => { vi.unstubAllGlobals() })
 
-/** A node configured to report, with one file to list. */
 function node(): BuckleConfig {
   const root = mkdtempSync(join(tmpdir(), 'buckle-cli-report-'))
   writeFileSync(join(root, 'note.txt'), 'workspace content')
@@ -22,7 +21,6 @@ function node(): BuckleConfig {
   })
 }
 
-/** Every batch the report endpoint was posted, and the bearer it arrived under. */
 function endpoint() {
   const posts: Array<{ body: { event?: string; reports?: Array<{ requestId: string; tool: string; outcome: string }> }; authorization: string | undefined }> = []
   vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {

@@ -45,7 +45,6 @@ const roots: string[] = []
 
 let server: Server
 let apiUrl: string
-/** Every Authorization header the scripted forge saw, so a missing bearer fails loudly. */
 const seenAuthorization: string[] = []
 
 beforeAll(async () => {
@@ -106,7 +105,6 @@ function git(repository: string, ...args: string[]): string {
   return execFileSync('git', ['-C', repository, ...args], { encoding: 'utf8' })
 }
 
-/** A work repository whose origin is whatever the caller needs judged. */
 function workRepository(input: { origin: string }): string {
   const root = temporaryRoot('repo')
   const repository = join(root, 'work')
@@ -1395,7 +1393,6 @@ function gitDirectoryState(directory: string): Array<[string, string, number]> {
   })
 }
 
-/** Every file below `root` with its size, so a write anywhere in it shows up as a difference. */
 function filesUnder(root: string): string[] {
   return readdirSync(root, { recursive: true, withFileTypes: true })
     .filter(entry => !entry.isDirectory())

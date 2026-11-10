@@ -383,7 +383,6 @@ describe('buckle policy dangerously-allow --workspace and --dir', () => {
     expect(changes('default')).toEqual([])
 
     expect((await inDefault(['off', '--dir', join(root, 'child')])).exitCode).toBe(0)
-    // Off removes the workspace's entry from its own switch file.
     expect(switchOf('child')).toEqual({})
     expect(switchOf('default')).toEqual({})
     expect(changes('child')).toMatchObject([{ workspaceId: idsOf.child, detail: 'on' }, { workspaceId: idsOf.child, detail: 'off' }])
@@ -538,7 +537,6 @@ describe('the switch\'s modes', () => {
     return setup
   }
 
-  /** `buckle policy dangerously-allow <argv>`, with what it printed. */
   async function switchTo(runtime: BuckleRuntime, argv: string[]): Promise<CliOutput> {
     const printed = { out: '', err: '' }
     const out = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { printed.out += String(chunk); return true })
@@ -552,7 +550,6 @@ describe('the switch\'s modes', () => {
     }
   }
 
-  /** `buckle policy <argv>`, with what it printed to stdout. */
   async function policyOut(runtime: BuckleRuntime, argv: string[]): Promise<string> {
     let printed = ''
     const out = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { printed += String(chunk); return true })

@@ -6,7 +6,6 @@ export interface CliAdapter {
   requester: CliRequester
 }
 
-// Owns the interactive terminal slot and the requester queue main injects into HTTP and MCP.
 export async function setupCli(input: { runtime: FixtureRuntime; terminalPath?: string; secondTerminalPath?: string }): Promise<CliAdapter> {
   const { runtime } = input
   const slot = createCliConsumerSlot()

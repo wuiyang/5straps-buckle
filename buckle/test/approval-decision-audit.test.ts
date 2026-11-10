@@ -249,7 +249,6 @@ describe('the decision audit seam', () => {
   })
 })
 
-/** A runtime as a node composes it, with one write waiting for a person. */
 async function askedInRuntime() {
   const root = mkdtempSync(join(tmpdir(), 'buckle-decision-audit-'))
   roots.push(root)

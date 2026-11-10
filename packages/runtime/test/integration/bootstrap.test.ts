@@ -73,7 +73,6 @@ describe('F01 file routing through extended layers', () => {
 describe('F02 duplicate route registrations fail the project check', () => {
   const script = join(packageRoot, '../../scripts/check-duplicate-routes.mjs')
 
-  // A throwaway Nitro project: files relative to its root, config as source text.
   function project(files: Record<string, string>, config: string): string {
     const root = mkdtempSync(join(tmpdir(), 'duplicate-routes-'))
     mkdirSync(join(root, 'node_modules'))
@@ -272,7 +271,7 @@ describe('F22 close order', () => {
     expect(answer.status).toBe(200)
     const { outcome } = await answer.json() as { outcome: Record<string, unknown> }
     expect(outcome).toMatchObject({ status: 'unavailable', requestId: prompt.id, pending: { id: prompt.id } })
-    while (!(await stream.read()).done) { /* the stream ended at shutdown */ }
+    while (!(await stream.read()).done) {}
 
     const order = fixture.events.flatMap((event) => {
       if (event.message === 'close step') return [`${String(event.fields?.stage)}:${String(event.fields?.name).replace(dataDir, '<data>')}`]
@@ -349,7 +348,6 @@ describe('F54 explicit imports and fixture boundaries', () => {
   const IMPORT = /\bfrom\s+['"]([^'"]+)['"]|\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)|\bimport\s+['"]([^'"]+)['"]/g
   const FRAMEWORK = /^(nitro|h3|srvx|crossws)(\/|$)|^@5straps\/runtime\/nitro$/
 
-  // Every module reachable through relative imports from a directory's files, and the packages they import.
   function importGraph(directory: string): { files: string[]; packages: { file: string; specifier: string }[] } {
     const pending = readdirSync(join(fixtureRoot, directory), { recursive: true, encoding: 'utf8' }).filter(path => path.endsWith('.ts')).map(path => join(fixtureRoot, directory, path))
     const seen = new Set<string>()

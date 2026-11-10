@@ -117,7 +117,6 @@ function holdsCurrentDirectory(workspaces: WorkspaceManager, cwd: string): boole
   try { workspaces.target({ cwd }); return true } catch { return false }
 }
 
-/** A command on the node, audited in the node's own log. */
 async function runNodeCommand(input: CommandRun & { loaded: LoadedNodeCommand; workspaces: WorkspaceManager }): Promise<CliResult> {
   const { workspaces, loaded } = input
   return auditOperation({ actions: workspaces.nodeActions, workspaceId: NODE_SCOPE, tool: loaded.definition.audit.tool, sessionId: 'local-owner', ignoreWarning: input.ignoreWarning, isSuccessful: loaded.definition.audit.isSuccessful, describe: result => result.detail,
@@ -148,12 +147,10 @@ async function runWorkspaceCommand(input: CommandRun & { loaded: LoadedRuntimeCo
   return runOnWorkspace({ ...input, runtime })
 }
 
-/** An owner's command that no one workspace answers, audited in the node's log: an attempt, and its result. */
 function nodeAudited(input: { workspaces: WorkspaceManager; loaded: LoadedRuntimeCommand; ignoreWarning: boolean }, operation: () => CliResult | Promise<CliResult>): Promise<CliResult> {
   return auditOperation({ actions: input.workspaces.nodeActions, workspaceId: NODE_SCOPE, tool: input.loaded.definition.audit?.tool ?? `cli_${input.loaded.command}`, sessionId: 'local-owner', ignoreWarning: input.ignoreWarning, isSuccessful: result => result.exitCode === 0, operation })
 }
 
-/** A command on one workspace's runtime, audited in its log where the command is one the owner's log keeps. */
 async function runOnWorkspace(input: Pick<CommandRun, 'config' | 'prompts' | 'ignoreWarning'> & { loaded: LoadedRuntimeCommand; runtime: BuckleRuntime; workspaces: WorkspaceManager }): Promise<CliResult> {
   const { runtime, workspaces, loaded } = input
   const execute = () => loaded.handler.execute({ config: input.config, runtime, workspaces, command: loaded.command, argv: loaded.argv, prompts: input.prompts, ignoreWarning: input.ignoreWarning })

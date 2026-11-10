@@ -120,7 +120,6 @@ function probesFor(call: ProgramCall, places: readonly ArgumentPlace[]): Map<Fil
   return probes
 }
 
-/** How many `${` open in text before `end`. */
 function expansionsIn(text: string, end: number): number {
   let count = 0
   for (let at = text.indexOf('${'); at >= 0 && at + 2 <= end; at = text.indexOf('${', at + 2)) count++
@@ -161,7 +160,6 @@ export function replaceReferences(text: string, references: readonly FileReferen
   return result + text.slice(at)
 }
 
-/** A reading with each word passed through `word`, in the shape two readings are compared in. */
 function mapped(forms: CommandForms, word: (text: string) => string) {
   const each = (list: readonly string[][]) => list.map(form => form.map(word))
   return { chain: each(forms.chain), nested: each(forms.nested), pieces: each(forms.pieces), heads: each(forms.heads), unread: forms.unread, overBudget: forms.overBudget, scriptData: forms.scriptData, interpreters: forms.interpreters }

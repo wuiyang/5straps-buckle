@@ -53,6 +53,6 @@ function parseInput(line: string): TerminalInput | undefined {
     if (typeof value.requestId !== 'string') return undefined
     if (value.type === 'answer' && typeof value.choice === 'string') return value as TerminalInput
     if (value.type === 'deny') return value as TerminalInput
-  } catch { /* A malformed line from the person is ignored; the prompt stays open. */ }
+  } catch {}
   return undefined
 }

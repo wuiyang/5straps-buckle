@@ -40,7 +40,6 @@ function packed(name: string): Manifest {
     : { name, version: '0.1.1', exports: { '.': { types: './dist/index.d.ts', default: './dist/index.js' }, './*': { default: './dist/*.js' } } }
 }
 
-/** What a tarball lists: the built files, unless the build never ran. */
 function listing(name: string, unbuilt = false): string {
   const built = name === '@5straps/buckle' ? ['package/dist/main.js'] : ['package/dist/index.d.ts', 'package/dist/index.js']
   return ['package/package.json', 'package/README.md', ...(unbuilt ? [] : built)].join('\n')
@@ -84,7 +83,6 @@ describe('planning a release', () => {
     })
   })
 
-  // A repeated run: npm already has some packages, and the tag may already be on this commit.
   it('says which packages npm already holds, and accepts the tag on this commit', () => {
     const root = scratchRepository({ versions: '0.1.1', changelog: CHANGELOG })
     const plan = planRelease({ root, run: fake({ tag: HEAD, npm: { '@5straps/protocol': ['0.1.0', '0.1.1'], '@5straps/runtime': ['0.1.1'] } }).run })

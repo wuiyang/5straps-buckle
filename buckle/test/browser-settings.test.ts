@@ -307,7 +307,6 @@ describe('where a profile folder may lie', () => {
   })
 })
 
-/** A fake agent-browser that records its arguments and answers as `answer` writes, success by default. */
 async function runtimeFixture(settings: NodeJS.ProcessEnv, options: { answer?: string; args?: JsonObject } = {}) {
   const { root, environment } = base()
   const log = join(root, 'calls.jsonl')

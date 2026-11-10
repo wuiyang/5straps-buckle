@@ -50,7 +50,6 @@ const DEFAULT_MAX_OBJECT_KEYS = 100
 const DEFAULT_MAX_EVENT_BYTES = 65_536
 
 interface ErrorTrim { maxErrors: number; maxStackBytes: number; maxMessageBytes: number; maxCauseDepth: number }
-// Tried in order until an oversized event fits: fewer aggregated errors, shorter stacks, then a bare error.
 const ERROR_TRIMS: readonly ErrorTrim[] = [
   { maxErrors: 10, maxStackBytes: 4_096, maxMessageBytes: DEFAULT_MAX_STRING_BYTES, maxCauseDepth: 3 },
   { maxErrors: 3, maxStackBytes: 1_024, maxMessageBytes: 1_024, maxCauseDepth: 1 },
@@ -116,7 +115,6 @@ export function createLogger(options: LoggerOptions): LoggerRoot {
     }
   }
 
-  // On the fallback, at once: the sink itself may be what cannot keep up.
   function warnDropping(notice: LogDropNotice): void {
     if (warns) fallback(JSON.stringify({ timestamp: new Date().toISOString(), level: 'warn', component: 'logger', message: 'Log events dropped', fields: notice }))
   }
@@ -302,5 +300,5 @@ function eventBytes(event: LogEvent): number {
 
 // Last resort when a sink fails: one synchronous stderr line, never routed back through a sink.
 function writeFallbackLine(line: string): void {
-  try { process.stderr.write(`${line}\n`) } catch { /* stderr itself is gone; nothing left to report to */ }
+  try { process.stderr.write(`${line}\n`) } catch {}
 }

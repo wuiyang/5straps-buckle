@@ -77,7 +77,6 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-/** A ledger, and a service with the HTTP face's forms open on it as core opens them, the forms setting on. */
 function node() {
   const root = mkdtempSync(join(tmpdir(), 'buckle-choice-parity-'))
   roots.push(root)
@@ -90,14 +89,12 @@ function node() {
   return { registry, http, host: () => host! }
 }
 
-/** A decision as `<outcome> <scope>`, and ` below` where it grants the ask's folder and its subfolders in place of its subject. */
 function choiceOf(decision: DecisionBody): string {
   return `${decision.outcome} ${decision.scope}${decision.widen === 'below' ? ' below' : ''}`
 }
 
 const sorted = (choices: Iterable<string>) => [...new Set(choices)].sort()
 
-/** Every answer an elicitation schema admits: each enum value, both booleans, and an optional field left out. */
 function answersOf(form: Form): Array<Record<string, unknown>> {
   const required = form.requestedSchema.required ?? []
   return Object.entries(form.requestedSchema.properties).reduce<Array<Record<string, unknown>>>((answers, [name, property]) => {

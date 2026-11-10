@@ -90,7 +90,6 @@ function passwordRange(url: string, parsed: URL): Range | null {
   return at >= start && split >= 0 && split < at - 1 ? { start: split + 1, end: at } : null
 }
 
-/** Each credential query value between `start` and `end`: the text after `=` up to the next `&`. */
 function queryRanges(url: string, start: number, end: number, ranges: Range[]): void {
   for (let from = start; from < end;) {
     const next = url.indexOf('&', from)
@@ -111,9 +110,7 @@ function decoded(text: string): string {
   }
 }
 
-/** A named argument or env-style assignment's start: optional `export ` or one or two dashes, a name, and `=`. */
 const ASSIGNMENT = /^\s*(?:export\s+|--?)?([A-Za-z_][\w.-]*)=/
-/** An assignment's value as one word: a quoted run, or a run up to whitespace or a quote. */
 const VALUE_WORD = /^(?:'[^'\n\r]*'|"[^"\n\r]*"|[^\s'"]+)/
 /** One plain shell word, which a named key's value must be: a single-quoted run, a double-quoted run with no `\`, `$` or backtick, or an unquoted run with no shell character. */
 const PLAIN_WORD = /^(?:'[^'\n\r]+'|"[^"\\$`\n\r]+"|[^\s'"\\`$;&|<>(){}]+)$/
@@ -121,12 +118,10 @@ const PLAIN_WORD = /^(?:'[^'\n\r]+'|"[^"\\$`\n\r]+"|[^\s'"\\`$;&|<>(){}]+)$/
 const LINE_TRAILER = /^(?:\s+#.*)?\s*$/
 const LINES = /^.*$/gm
 
-/** One value: a named argument or assignment by its name, else a whole URL. */
 function redactValue(value: string): string {
   return redactAssignment(value, false) ?? redactUrl(value)
 }
 
-/** Free text with each env-style line read as a value; every other line as written. */
 function redactLines(text: string): string {
   return text.replace(LINES, line => redactAssignment(line, true) ?? line)
 }
@@ -162,7 +157,6 @@ function redactJson(text: string): string | null {
   return redactJsonDocument(text)
 }
 
-/** One pass over a valid JSON document, with no recursion, so a deep one cannot exhaust the stack. */
 function redactJsonDocument(text: string): string {
   let shown = ''
   let cursor = 0
@@ -231,14 +225,12 @@ function scalarEnd(text: string, start: number): number {
   return index
 }
 
-/** The index of the quote that closes the JSON string opened at `open`. */
 function closingQuote(text: string, open: number): number {
   let index = open + 1
   while (text[index] !== '"') index += text[index] === '\\' ? 2 : 1
   return index
 }
 
-/** The text with each range replaced by `[redacted]`; ranges never overlap. */
 function redactRanges(text: string, ranges: Range[]): string {
   let shown = ''
   let cursor = 0

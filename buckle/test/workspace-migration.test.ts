@@ -575,7 +575,6 @@ describe('moving a 0.1 node onto the workspace model', () => {
     }
     const marker = (input: Scene) => join(input.state, 'moving-onto-workspaces')
     const moved = (input: Scene, file: string) => join(input.state, 'workspaces', ownId(input), file)
-    /** A docs page, its lines joined, as it quotes what the move prints. */
     const page = (name: string) => readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs', 'user', name), 'utf8').replace(/\s+/g, ' ')
     const troubleshooting = () => page('caveats/troubleshooting.md')
     /** What the move says holds a record open on Windows, and the step it asks for: the words the pages quote. */
@@ -688,7 +687,6 @@ describe('moving a 0.1 node onto the workspace model', () => {
         }
         return before
       }
-      /** The names a move renamed out of the site's 0.1 directory, in order. */
       const renamedFromSite = (input: Scene, held: ReturnType<typeof holding>) => held.sources.filter(from => dirname(from) === siteDirectory(input)).map(from => basename(from))
 
       it('moves its history, browser-sessions, and workbenches first, then the rest in the order the disk lists them', async () => {

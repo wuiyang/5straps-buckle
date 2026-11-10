@@ -29,7 +29,6 @@ its pid, and returns; buckle approvals --watch answers its approvals, and buckle
 install runs it at every login instead.
 `
 
-/** How long `buckle serve --background` waits for the node it started to listen. */
 const BACKGROUND_START_MS = 30_000
 
 export function parseServeOptions(options: readonly string[]): ServeOptions {

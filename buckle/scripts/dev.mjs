@@ -48,7 +48,6 @@ function onChange(_event, name) {
   timer = setTimeout(() => { void cycle({ first: false }) }, DEBOUNCE_MS)
 }
 
-/** Build, then stop the old node and start the new one; a change saved meanwhile runs one more cycle after. */
 async function cycle({ first }) {
   if (busy) {
     pending = true

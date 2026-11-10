@@ -28,7 +28,6 @@ export interface Human {
   close(): Promise<void>
 }
 
-// The person at the fixture's fake terminal: a local socket the fixture connects to.
 export async function startHuman(): Promise<Human> {
   const path = join(mkdtempSync(join(tmpdir(), 'human-')), 'terminal.sock')
   const messages: TerminalMessage[] = []

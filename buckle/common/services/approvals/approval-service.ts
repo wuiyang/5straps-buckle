@@ -220,7 +220,6 @@ type Ending = 'settled' | 'elapsed' | 'prompt_ended' | 'aborted' | 'closed' | 's
  * the request expires or another route answers.
  */
 export function createApprovalService(options: ApprovalServiceOptions): ApprovalService {
-  // By join key; `live` also holds an ask a newer group under the same key replaced, until it ends.
   const open = new Map<string, OpenAsk>()
   const live = new Set<OpenAsk>()
   const closing = new AbortController()
@@ -234,7 +233,6 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   // an answer already being recorded finish before the notices are flushed.
   const waiting = new Set<Promise<unknown>>()
   let unreadable = false
-  // The asks handed to the terminal, by token, while it asks them.
   const routed = new Map<string, FullAsk>()
   let opening: Promise<unknown> | undefined
   const callKeys = randomBytes(32)

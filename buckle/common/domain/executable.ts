@@ -283,7 +283,6 @@ export function programOrNull(resolved: ResolvedProgram): Program | null {
   return resolved.path === null ? null : resolved
 }
 
-/** What a test's lookup answered, found as named for a path and on PATH for a bare name. */
 function lookedUp(path: string | null, named: boolean): Located | null {
   return path === null ? null : { path, place: named ? AS_NAMED : ON_PATH }
 }
@@ -419,7 +418,6 @@ function matchTemplate(lines: readonly string[], template: readonly RegExp[]): s
   return named
 }
 
-/** A file's text, or null where it cannot be read or holds more than `limit` bytes. */
 function readCapped(path: string, limit: number): string | null {
   let descriptor: number
   try { descriptor = openSync(path, 'r') } catch { return null }
@@ -511,7 +509,6 @@ function namesOwnProcess(place: string, platform: NodeJS.Platform): boolean {
   return OWN_PROCESS_PLACES.some(folder => isInsideComparable(folder, place, ignoresCase(platform), platform))
 }
 
-/** The first untrusted root that holds any of `places`. */
 function rootHolding(roots: readonly UntrustedRoot[], places: readonly string[], platform: NodeJS.Platform): UntrustedRoot | undefined {
   return roots.find(root => places.some(place => isInsideComparable(root.path, place, ignoresCase(platform), platform)))
 }

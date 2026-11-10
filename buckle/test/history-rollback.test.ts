@@ -22,7 +22,6 @@ async function fixture(options: { now?: () => number } = {}) {
   const history = await openChangeHistory({ directory, excluded: [], maxBytes: 1_000_000, retentionDays: 30, ...options })
   histories.push(history)
   let call = 0
-  /** One write as an agent call makes it: its own checkpoint, its request named. */
   const write = (name: string, content: string, sessionId = 'chat-1') => history.run({ sessionId, stageId: `req-${++call}`, tool: 'fs_write', requestId: `req-${call}`, roots: [workspace] }, async () => { writeFileSync(join(workspace, name), content) })
   const read = (name: string) => (existsSync(join(workspace, name)) ? readFileSync(join(workspace, name), 'utf8') : null)
   const by = { sessionId: 'chat-1', stageId: 'undo-1', tool: 'history_restore', requestId: 'undo-1' }

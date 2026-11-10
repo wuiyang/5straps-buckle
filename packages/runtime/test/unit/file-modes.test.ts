@@ -19,7 +19,6 @@ function pathWithMode(kind: 'file' | 'directory', mode: number): string {
   return path
 }
 
-/** process.platform, which every helper reads by default, reads `platform` while `run` runs. */
 async function onPlatform<T>(platform: NodeJS.Platform, run: () => Promise<T>): Promise<T> {
   const original = Object.getOwnPropertyDescriptor(process, 'platform')!
   Object.defineProperty(process, 'platform', { ...original, value: platform })

@@ -39,7 +39,6 @@ afterEach(async () => {
 /** No terminal, a hold only while this process asks: a gated call answers approval_required at once. */
 const NOBODY: Interaction = { requestCli: NO_INTERACTION.requestCli, hold: 'prompt' }
 
-/** A serve terminal that answers each question with the next choice, then denies every later one. */
 function terminal(choices: string[]): Interaction & { asked: string[] } {
   const asked: string[] = []
   const requestCli: RequestCli = async (request) => {
@@ -78,7 +77,6 @@ const tokensOf = (response: InvokeResponse) => (response.outcome === 'approval_r
 
 interface ToolResult { isError?: boolean; structuredContent?: { outcome?: string } }
 
-/** A tool the MCP server registered, called as a host that elicits calls it, with the answers a retry carries. */
 function mcpTool(server: McpServer, tool: string) {
   const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown, context: ServerContext) => Promise<ToolResult> }> })._registeredTools
   const envelope = { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } }
@@ -362,7 +360,6 @@ describe('a stdio MCP form answer', () => {
 })
 
 describe('an answer while the action log cannot be written', () => {
-  /** The workspace's log becomes a directory: every write fails, its own decision records included. */
   const breakLog = (config: BuckleConfig) => {
     vi.spyOn(process.stderr, 'write').mockReturnValue(true)
     rmSync(actionsPath(config), { force: true })

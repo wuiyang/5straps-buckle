@@ -95,7 +95,6 @@ function packAll(runtime) {
 }
 
 function install(runtime) {
-  // Exact names, so a version bump never breaks the lookup.
   const tarball = file => {
     assert(existsSync(join(packages, file)), `Expected the packed ${file}`)
     return `file:${join(packages, file)}`
@@ -163,7 +162,6 @@ function checkLockReleased() {
   assert.equal(tryLock(), 'acquired')
 }
 
-// Resolves with the exit code (null when a signal ended it); the caller decides whether that is a failure.
 async function stopServer() {
   const child = server
   server = undefined

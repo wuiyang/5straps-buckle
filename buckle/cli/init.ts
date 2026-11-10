@@ -40,11 +40,9 @@ import { wordList } from '../common/domain/word-list.js'
 
 
 
-/** Where the questions are asked. A terminal by default; a test hands in scripted answers. */
 export interface InitPrompt {
   interactive: boolean
   question(text: string): Promise<string>
-  /** Explanations beside a question, on the same stream the questions use. */
   say(text: string): void
   close(): void
 }
@@ -195,7 +193,6 @@ async function startOf(stateDirectory: string, platform: NodeJS.Platform, home: 
   return serviceInstalled(stateDirectory, process.env, platform, home ?? homeDirectory(platform)) ? { kind: 'service' } : { kind: 'serve' }
 }
 
-/** The first step of Next, and the install offer where it still applies. */
 function startSteps(start: NodeStart, input: { out: string; platform: NodeJS.Platform; stateDirectory: string }): string {
   if (start.kind === 'running') {
     const { record } = start.running
@@ -319,7 +316,6 @@ async function serveFolder(input: { workspaces: WorkspaceManager; folder: string
   return { id: workspace.id, name: workspace.name, created: true, token }
 }
 
-/** The answers given as the workspace's own settings, the mounts checked already beside the folder's; an unanswered one stays unset. */
 function withChoices(settings: WorkspaceSettings, choices: WorkspaceChoices, mount: string | null, mounts: readonly OwnerMount[]): WorkspaceSettings {
   const chosen = withMount({
     ...settings,
@@ -394,7 +390,6 @@ function nodeSettingValue(key: string, raw: string): { ok: true; value: string }
   return normaliseSetting({ setting: findNodeSetting(key)!, raw, cwd: process.cwd(), isDirectory: () => false })
 }
 
-/** Asks until the answer passes `check`; empty keeps the default. */
 async function askValid(prompt: InitPrompt, text: string, check: (raw: string) => { ok: true; value: string } | { ok: false; reason: string }): Promise<string | null> {
   for (;;) {
     const answer = (await prompt.question(text)).trim()
@@ -480,10 +475,6 @@ const HINT_COLUMN = 32
 const HINT_INDENT = '       '
 const SHELL_LABEL_WIDTH = 13
 
-/**
- * A hint: one form follows its label on the same line, its further lines aligned beneath; several forms each go
- * on lines of their own below the label, each labelled with its shell.
- */
 function hintStep(label: string, forms: ShellForm[]): string {
   const [only] = forms
   if (forms.length === 1 && only!.shell === null) return `${label.padEnd(HINT_COLUMN)}${only!.lines.join(`\n${' '.repeat(HINT_COLUMN)}`)}`
@@ -502,7 +493,6 @@ function terminalPrompt(): InitPrompt {
   }
 }
 
-/** Yes or no; undefined where Enter keeps the default, which the workspace then leaves unset. */
 async function askYesNo(prompt: InitPrompt, text: string): Promise<boolean | undefined> {
   for (;;) {
     const answer = (await prompt.question(text)).trim().toLowerCase()

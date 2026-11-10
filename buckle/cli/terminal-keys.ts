@@ -9,7 +9,6 @@ import type { Readable } from 'node:stream'
 export const QUIET_MS = 500
 
 export interface KeyWatch {
-  /** Resolves once no key has arrived for `ms`, counted from the call at the earliest. */
   quiet(ms: number, signal: AbortSignal): Promise<void>
   stop(): void
 }

@@ -80,7 +80,6 @@ export async function readPragma(db: SqliteDatabase, name: string): Promise<unkn
   return row ? Object.values(row)[0] : undefined
 }
 
-// Normalised, so '..' can never point the created-directory walk at an existing parent.
 function requireExplicitPath(path: string): string {
   if (!path || !isAbsolute(path)) throw new TypeError(`SQLite path must be absolute; got ${JSON.stringify(path)}`)
   return resolve(path)
@@ -93,7 +92,6 @@ interface PrepareFileInput {
   existingDirectory: boolean
 }
 
-// Returns whether the database is new: this call created the file, or it is still empty.
 function prepareDatabaseFile(input: PrepareFileInput): boolean {
   const { path, logger } = input
   prepareDirectory({ ...input, directory: dirname(path) })

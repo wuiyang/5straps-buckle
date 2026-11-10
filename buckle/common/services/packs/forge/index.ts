@@ -266,7 +266,6 @@ export function createForgePack(options: ForgePackOptions): Pack {
     return repositoryOf(remote)
   }
 
-  /** The identity every commit a forge tool makes carries, author and committer both. */
   const identity = {
     GIT_AUTHOR_NAME: options.author.name,
     GIT_AUTHOR_EMAIL: options.author.email,
@@ -604,7 +603,6 @@ function destinationSpellings(input: { destination: ForgeRemote; typed: ForgeRem
   return new Set(spellings.map(sameRepositoryName))
 }
 
-/** A remote name or a destination with any trailing `/` and one trailing `.git` dropped, so the two forms compare equal. */
 function sameRepositoryName(name: string): string {
   return name.replace(/\/+$/, '').replace(/\.git$/, '').replace(/\/+$/, '')
 }

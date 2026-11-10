@@ -253,7 +253,6 @@ async function verifiedChallenges(input: { environment: NodeJS.ProcessEnv; node:
     const challenge = consistent && shared !== null ? { ...read.challenge, arguments: shared.call.arguments, cwd: shared.call.cwd, description: shared.call.description, effects: shared.call.effects } : read.challenge
     return [{ token: item.token, digest: read.digest, challenge, consistent }]
   })
-  // An entry beside a verified challenge for the same token says nothing the challenge does not.
   const verified = new Set(challenges.map(item => item.token))
   const unsigned = listed.flatMap(item => typeof item.signed !== 'string' && typeof item.token === 'string' && typeof item.error === 'string' && !verified.has(item.token) ? [{ token: item.token, error: item.error }] : [])
   return { pin, origin: url.origin, challenges, unsigned }
@@ -410,7 +409,6 @@ function unsavedWarning(input: { text: string; scope: 'once' | 'session' | 'alwa
   return `${unsavedApproval({ scope: input.scope, reason })}.\n${saveEndingLine({ ending: 'left', kind: 'approval' })}`
 }
 
-// A body that is not JSON is no answer about a save.
 function jsonOf(text: string): unknown {
   try { return JSON.parse(text) as unknown } catch { return null }
 }

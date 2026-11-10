@@ -105,7 +105,6 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     const runtime = await createRuntime({ config })
     if (network.length) await runtime.policy.apply(policy(network))
     const calls = (): string[][] => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line) as string[]) : []
-    // The store's records by session name, read as the session names and the lists they last ran with.
     const stored = () => {
       const { browsers, ...rest } = JSON.parse(readFileSync(join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd), 'sessions.json'), 'utf8')) as { browsers: Record<string, { allowedDomains?: string | null }> }
       return { ...rest, browsers, sessions: Object.keys(browsers), allowedDomains: Object.values(browsers).map(record => record.allowedDomains) }

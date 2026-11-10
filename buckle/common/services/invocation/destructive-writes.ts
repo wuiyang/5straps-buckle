@@ -58,7 +58,6 @@ export function destructiveWrites(input: {
   return effects
 }
 
-/** The size of the regular file at a real path, undefined where none stands there. */
 function sizeOf(target: string): number | undefined {
   try {
     const info = statSync(target, { throwIfNoEntry: false })

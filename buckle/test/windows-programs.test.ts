@@ -27,7 +27,6 @@ function scratch(): string {
   return root
 }
 
-/** A lookup that answers from a table, as findExecutable would from PATH, and records the platform it was asked for. */
 function lookupFrom(table: Record<string, string>): ExecutableLookup & { platforms: NodeJS.Platform[] } {
   const platforms: NodeJS.Platform[] = []
   return Object.assign((name: string, _environment: NodeJS.ProcessEnv, platform: NodeJS.Platform) => { platforms.push(platform); return table[name] ?? null }, { platforms })

@@ -18,7 +18,6 @@ interface Answers { refs?: readonly Ref[]; annotated?: { sha: string; type: 'com
 const commitRef = (sha: string, tag = 'v0.1.1'): Ref => ({ ref: `refs/tags/${tag}`, object: { sha, type: 'commit' } })
 const ANNOTATED: Ref = { ref: 'refs/tags/v0.1.1', object: { sha: TAG_OBJECT, type: 'tag' } }
 
-/** Answers gh as GitHub would for the tag's refs, an annotated tag object, and the release. */
 function fake(answers: Answers = {}) {
   const calls: string[][] = []
   const run: Run = (command, args) => {
@@ -42,7 +41,6 @@ function fake(answers: Answers = {}) {
 }
 
 const NOTES = '[compare changes](https://github.com/wuiyang/5straps-buckle/compare/v0.1.0...v0.1.1)\n\n### Fixes\n\n- Something new'
-/** A checkout of the release commit: its changelog holds the v0.1.1 section above the earlier ones. */
 const checkout = () => scratchRepository({ versions: '0.1.1', changelog: `# Changelog\n\n\n## v0.1.1\n\n${NOTES}\n\n${CHANGELOG.slice(CHANGELOG.indexOf('## v0.1.0'))}` })
 
 const release = (run: Run, input: Partial<{ repository: string; version: string; sha: string; root: string }> = {}) =>

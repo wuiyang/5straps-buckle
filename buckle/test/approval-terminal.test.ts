@@ -43,7 +43,6 @@ function approval(token: string, expiresInMs = 60_000): ApprovalRequest {
 /** The whole call an ask recorded, which every question of this build carries (owner decision D17). */
 const recordedCall = { arguments: { path: '/shots/a.png' }, cwd: '/workspace', description: 'Read "/shots/a.png"', effects: ['read /shots/a.png'], complete: true as const }
 
-/** The question the approval service puts to the terminal for one request. */
 function question(token: string, expiresInMs = 60_000): CliRequest {
   return questionFor({ approval: approval(token, expiresInMs), workspaceId: 'default', context: { correlationId: `c-${token}`, sessionId: 's', call: recordedCall } })
 }
@@ -105,7 +104,6 @@ function waitingService(input: { registry: ApprovalLedger; graceMs: number | nul
   return (tokens = 1, wait?: ApprovalWait) => service.request({ sessionId: 's', requestId: 'r', tool: 'fs_read', call: recordedCall, asks: Array.from({ length: tokens }, () => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule: 'read_scope' as const, subject: '/shots', reason: 'outside the sandbox', offeredScopes: ['once' as const, 'session' as const, 'always' as const] })), ...(wait ? { wait } : {}) })
 }
 
-/** A question held on screen until the test answers it, recording whether it was withdrawn. */
 function heldQuestion() {
   let answer: (choice: string) => void = () => undefined
   let withdrawn = false
@@ -201,7 +199,6 @@ describe('the terminal question after the grace period', () => {
     expect(registry.pending().map(entry => entry.token)).toEqual([issued!.token])
     held.answer('session')
     await vi.waitFor(() => expect(registry.pending()).toEqual([]))
-    // The terminal's answer is the one on record: the same answer again changes nothing.
     expect(await registry.resolve({ token: issued!.token, approved: true, scope: 'session' }, SOURCES.cli)).toEqual({ ok: true, repeated: true, asked: { rule: 'read_scope', subject: '/shots' }, save: 'saved' })
   })
 

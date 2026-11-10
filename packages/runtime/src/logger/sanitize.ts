@@ -36,7 +36,6 @@ const OPAQUE_MIN_LENGTH = 40
 // Only a whole one: no base64 character may touch it on either side, so a longer secret that starts or
 // ends like one is judged whole (review L10 of the second re-review).
 const KEY_FINGERPRINT = /(?<![A-Za-z0-9+/_-])SHA256:[A-Za-z0-9_-]{43}(?![A-Za-z0-9+/=_-])/g
-// Readable pieces between '/', '_' and '-': lowercase or hex, all caps, or camel words with trailing digits (myApp2, UserCard).
 const WORD_PIECE = /^(?:[a-z0-9]*|[A-Z0-9]+|[a-z]*[0-9]*(?:[A-Z][a-z]+[0-9]*)+)$/
 const PIECE_SEPARATOR = /[/_-]/
 // A bundler chunk name ends in a short hash after '-' or '_' (client-D3mGB526, src-STyD_Vvf).
@@ -180,7 +179,6 @@ function isHeaderList(key: string, value: unknown): value is string[] {
   return Array.isArray(value) && value.length % 2 === 0 && HEADER_LIST_WORD.test(keyWords(key).at(-1) ?? '') && value.every(item => typeof item === 'string')
 }
 
-// Each value is judged by the header name before it.
 function sanitizeHeaderList(value: string[], options: SanitizeOptions, depth: number, seen: WeakSet<object>): unknown[] {
   const headers = value.length / 2
   const kept = Array.from({ length: Math.min(headers, options.maxArrayItems) }, (_, index) => sanitizePair([value[index * 2]!, value[index * 2 + 1]], options, depth, seen)).flat()

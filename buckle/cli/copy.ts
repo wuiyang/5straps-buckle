@@ -24,7 +24,6 @@ import { copyNode, copyToken, CopyRefusal, CopyUsageError, parseEnd, refuseToken
 
 /** How long a connection to the node may take, as buckle client waits (cli/client.ts). */
 const CONNECT_TIMEOUT_MS = 30_000
-/** The pause before a copy waiting for a person is sent again; the node holds each send for its own wait first. */
 const POLL_MS = 2_000
 /** The mode a download's partial file has while it fills where nothing is replaced: owner only, as the workspace's file may be a secret. */
 const PARTIAL_MODE = 0o600
@@ -36,7 +35,6 @@ const ORDINARY_MODE = 0o666
  * nohup still ends the process, and may leave the 0600 partial file beside the target.
  */
 const STOPPING: readonly NodeJS.Signals[] = ['SIGINT', 'SIGTERM']
-/** What a JSON answer may hold; a node's answer is far smaller. */
 const MAX_ANSWER_BYTES = 1_048_576
 const CHUNK_BYTES = 1_048_576
 const readAt = promisify(read)
@@ -50,9 +48,7 @@ export interface CopyOptions {
   platform?: NodeJS.Platform
   stdout?: Output
   stderr?: Output
-  /** How long a copy waiting for a person sleeps between sends; POLL_MS by default. */
   pollMs?: number
-  /** The serve record lookup, for a test; this machine's own by default. */
   running?: (stateDirectory: string) => Promise<RunningNode | null>
   ownerOnly?: OwnerOnlyCheck
   /** The rename that puts a download in place, and the pause between its tries; the system's, with Windows' retries, by default. */
@@ -61,7 +57,6 @@ export interface CopyOptions {
   signals?: SignalHost
 }
 
-/** The part of `process` that stops a copy on a signal. */
 export interface SignalHost {
   on(signal: NodeJS.Signals, listener: () => void): unknown
   off(signal: NodeJS.Signals, listener: () => void): unknown
@@ -135,7 +130,6 @@ function routeOf(from: CopyEnd, to: CopyEnd): Route {
   throw new CopyUsageError(from.kind === 'local' ? 'Both ends are files on this machine: use cp' : 'Both ends are workspaces: a token opens one workspace, so copy the file out to this machine first, then into the other')
 }
 
-/** One local file into a workspace: hashed once, then sent from the same descriptor at each send. */
 async function upload(client: NodeClient, source: { path: string; name: string }, to: WorkspaceEnd): Promise<Copied> {
   const file = openLocal(source.path)
   try {
@@ -159,7 +153,6 @@ async function upload(client: NodeClient, source: { path: string; name: string }
   }
 }
 
-/** One workspace file to this machine: into a new file beside the target, renamed onto it once whole and matching. */
 async function download(client: NodeClient, from: WorkspaceEnd, to: LocalEnd): Promise<Copied> {
   const target = localTarget(to.path, workspaceName(from.path), client.platform)
   const requestId = randomUUID()
@@ -220,7 +213,6 @@ function instruction(input: { approvals: ApprovalRequest[]; workspace: string; n
 
 interface LocalFile { descriptor: number; size: number; sha256: string }
 
-/** A regular file here, opened once and hashed through that descriptor, which every send then reads from its start. */
 function openLocal(path: string): LocalFile {
   let descriptor: number
   try { descriptor = openSync(path, constants.O_RDONLY) } catch (error) {
@@ -258,7 +250,6 @@ async function* fromStart(file: LocalFile): AsyncGenerator<Buffer> {
   }
 }
 
-/** One PUT of the file, from its start. */
 async function putOnce(client: NodeClient, input: { workspace: string; path: string; requestId: string; file: LocalFile }): Promise<Attempt> {
   const body = () => Readable.from(fromStart(input.file))
   const exchange = await send({
@@ -270,7 +261,6 @@ async function putOnce(client: NodeClient, input: { workspace: string; path: str
   } finally { exchange.close() }
 }
 
-/** One GET of the file: its bytes into a new file beside the target, or the node's answer where it sends none. */
 async function getOnce(client: NodeClient, input: { workspace: string; path: string; requestId: string; target: string }): Promise<Attempt> {
   const exchange = await send({ url: filesUrl(client.node, input.workspace, input.path), method: 'GET', headers: credentials(client, input.requestId) })
   try {
@@ -351,7 +341,6 @@ function unwritable(target: string, error: unknown): CopyRefusal {
   return new CopyRefusal(`The file could not be written beside ${target} (${codeOf(error)}), so nothing was written`)
 }
 
-/** The new files of the downloads under way, which a signal that stops the copy removes. */
 const partials = new Set<string>()
 
 /**
@@ -364,7 +353,7 @@ function guardSignals(host: SignalHost, platform: NodeJS.Platform): () => void {
   const listeners = names.map((name) => {
     const listener = () => {
       for (const partial of partials) {
-        try { rmSync(partial, { force: true }) } catch { /* Gone, or not ours to remove; the process ends all the same. */ }
+        try { rmSync(partial, { force: true }) } catch {}
       }
       host.exit(128 + (osConstants.signals[name] ?? 0))
     }
@@ -516,7 +505,6 @@ function workspaceName(path: string): string {
   return name
 }
 
-/** The source's name inside a workspace folder the copy was sent to, in the spelling the folder was typed in. */
 function beneath(folder: string, name: string): string {
   if (folder === '.' || folder === '') return name
   return `${folder.replace(/[/\\]+$/, '')}/${name}`

@@ -164,7 +164,6 @@ export function renderTask(definition: ServiceDefinition & { userId: string }): 
 `
 }
 
-/** The text of an element's first occurrence inside `within` (or the whole document), or null. */
 function element(text: string, name: string, within?: string): string | null {
   const scope = within === undefined ? text : new RegExp(`<${within}\\b[^>]*>([\\s\\S]*?)</${within}>`).exec(text)?.[1]
   if (scope === undefined) return null

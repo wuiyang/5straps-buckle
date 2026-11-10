@@ -5,7 +5,6 @@ import { runInScope, useScope, type OperationScope } from '@5straps/runtime'
 const AUTH_TIMEOUT_MS = 2_000
 const CLOSE = Object.freeze({ unauthorized: 4401, authTimeout: 4408, shutdown: 1001, serverError: 1011 })
 
-// awaiting-auth -> authenticating (first frame being verified) -> ready | closed
 type Phase = 'awaiting-auth' | 'authenticating' | 'ready' | 'closed'
 
 // F26: browsers cannot send an Authorization header on upgrade, so the first frame authenticates.
@@ -15,7 +14,6 @@ export default defineWebSocketHandler(event => socketHooks(event))
 function socketHooks(event: H3Event): Partial<Hooks> {
   const { runtime, services, logger } = event.context
   let phase: Phase = 'awaiting-auth'
-  // Read through a function: close() can change the phase while authenticate() awaits.
   const currentPhase = (): Phase => phase
   let authenticating: Promise<void> | undefined
   let scope: OperationScope | undefined

@@ -39,7 +39,6 @@ async function node(packs = 'fs', extra: Record<string, string> = {}): Promise<{
 
 const errorOf = (response: InvokeResponse) => (response.outcome === 'error' ? response.error : null)
 
-/** What TypeScript says of one file, compiled strictly with its default library: the diagnostics' text. */
 function typeErrors(source: string): string[] {
   const options: ts.CompilerOptions = { strict: true, noEmit: true, target: ts.ScriptTarget.ES2022, lib: ['lib.es2022.d.ts'], types: [] }
   const host = ts.createCompilerHost(options)

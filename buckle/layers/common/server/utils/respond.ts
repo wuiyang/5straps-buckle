@@ -1,4 +1,3 @@
-/** A JSON body with an explicit status, for answers other than a plain 200. */
 export function json(body: unknown, init: { status?: number; headers?: Record<string, string> } = {}): Response {
   return new Response(JSON.stringify(body), { status: init.status ?? 200, headers: { 'content-type': 'application/json; charset=utf-8', ...init.headers } })
 }

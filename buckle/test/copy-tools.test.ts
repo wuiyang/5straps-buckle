@@ -44,7 +44,6 @@ async function grantWrites(runtime: CoreRuntime, folder: string): Promise<void> 
 
 const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 
-/** A body that hands its chunks over as they are read, and counts how many were read, so a test sees whether any was. */
 function body(chunks: Uint8Array[], options: { failAfter?: number } = {}): { file: IncomingFile; pulled: () => number } {
   let pulled = 0
   const stream = new ReadableStream<Uint8Array>({
@@ -82,7 +81,6 @@ function call(runtime: CoreRuntime, tool: string, args: JsonObject, file?: FileC
 
 const errorOf = (response: InvokeResponse) => (response.outcome === 'error' ? response.error : null)
 
-/** Every entry in a folder, the hidden partial a copy writes into included. */
 const entries = (folder: string) => readdirSync(folder).sort()
 
 describe('fs_receive and fs_send are offered to no caller', () => {

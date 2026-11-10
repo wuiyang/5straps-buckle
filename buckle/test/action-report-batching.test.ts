@@ -14,7 +14,6 @@ function entry(requestId: string): ActionReport {
   }
 }
 
-/** Captures each post, answering with the status the test asked for. */
 function endpoint(statuses: number[] = []) {
   const posts: Array<{ event: string; serverId: string; reports: ActionReport[] }> = []
   const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
@@ -71,7 +70,6 @@ describe('the batched action-log reporter', () => {
     await reporter.flush()
     expect(fetchMock).toHaveBeenCalledTimes(3)
 
-    // The dropped batch is gone from memory; the next flush carries only what came after it.
     posts.length = 0
     reporter.record(entry('req-2'))
     await reporter.flush()

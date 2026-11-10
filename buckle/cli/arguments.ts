@@ -97,10 +97,6 @@ function readProperties(capability: ToolCapability): Record<string, SchemaProper
   return properties as Record<string, SchemaProperty>
 }
 
-/**
- * Required fields come first in the order the schema declares them, then any array-typed
- * optional field, which is how a trailing argument list gets somewhere to land.
- */
 function positionalFields(capability: ToolCapability): string[] {
   const required = readRequired(capability)
   const trailing = Object.entries(readProperties(capability))

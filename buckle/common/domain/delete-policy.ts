@@ -134,7 +134,6 @@ export function recordRemovals(run: DeleteRun, effects: readonly ResolvedEffect[
   }
 }
 
-/** The folder directly in the workspace's folder that holds the path, or null for an entry directly in it. */
 function topFolderOf(path: string, root: string): string | null {
   const below = relative(root, path)
   const first = below.split('/')[0]

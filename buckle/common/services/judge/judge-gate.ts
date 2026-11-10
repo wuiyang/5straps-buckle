@@ -321,7 +321,6 @@ export function createJudgeGate(input: {
     return args[operandAt(args, run + 1, valueOptionsOf('bun'))] ?? null
   }
 
-  /** The real working directory a call names, its own `cwd` argument resolved in the view, else the workspace. */
   function workingDirectory(args: JsonObject): string {
     try { return paths.resolve(typeof args.cwd === 'string' ? args.cwd : '.') } catch { return paths.root }
   }
@@ -346,7 +345,6 @@ export function createJudgeGate(input: {
   }
   type Prepared = ReturnType<typeof prepared>
 
-  /** A rating finished: what the stages were shown, and that the Socket lookup failed where it did. */
   const finished = (judged: JudgedAsk, command: Prepared): JudgedAsk => ({ ...judged, input: command.shown(), ...(command.socketFailed() ? { socket: 'unavailable' as const } : {}) })
   async function thorough(command: Prepared, signal: AbortSignal | undefined): Promise<StageRating<JudgeResult>> {
     const { provider, model } = settings
@@ -523,7 +521,6 @@ function operandAt(args: readonly string[], from: number, values: readonly strin
   return -1
 }
 
-/** The command a subject names among a call's effects. */
 function execOf(effects: readonly ResolvedEffect[], subject: string): Exec | undefined {
   return effects.find((item): item is Exec => item.kind === 'exec' && commandSubject(item.command, item.args) === subject)
 }
@@ -563,7 +560,6 @@ export function announcePass(judged: JudgedAsk, waitingFor: readonly string[]): 
   logger.info(`The decision AI's ${judged.passedBy} stage rated a command ${level}, ${then}`, { stage: judged.passedBy, model, level, confidence, subject: judged.subject })
 }
 
-/** Names in prose: `a`, `a and b`, `a, b, and c`. */
 function listed(names: readonly string[]): string {
   return names.length < 3 ? names.join(' and ') : `${names.slice(0, -1).join(', ')}, and ${names.at(-1)}`
 }

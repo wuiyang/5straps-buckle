@@ -87,7 +87,6 @@ export function reviewableArguments(args: JsonObject): JsonValue {
   return reviewObject(args)
 }
 
-/** How a string is read: by a context, as a script shown as written, by its shape, or as a file's content. */
 type Reading = CredentialContext | 'script' | 'shape' | 'file'
 
 function review(value: JsonValue, reading: Reading): JsonValue {

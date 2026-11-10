@@ -14,7 +14,6 @@ interface WorkbenchCall {
   workbenches: WorkbenchManager
   /** The workbench the path names, which the guard authenticated the grant for. */
   workbenchId: string
-  /** Another path parameter, such as terminalId. */
   param(name: string): string
   /** The request body read up to 1 MiB and parsed by the schema; 400 when it is not JSON or not the schema. */
   body<T>(schema: z.ZodType<T>): Promise<T>

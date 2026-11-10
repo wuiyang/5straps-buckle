@@ -5,7 +5,6 @@ import type { CliResult } from './result.js'
 import type { CommandTarget, TargetError } from './target.js'
 import type { ChooseSave, Confirm } from './terminal-consumer.js'
 
-/** What an owner's command asks at this process's terminal: null for each where the process has none. */
 export interface OwnerPrompts { confirm: Confirm | null; chooseSave: ChooseSave | null }
 
 export interface NodeCommandInput {
@@ -58,7 +57,6 @@ export interface NodeCommandHandler {
   execute(input: NodeCommandInput): CliResult | Promise<CliResult>
 }
 
-/** The owner's commands on one workspace that are audited; reads such as `tools` are not. */
 interface CommandAudit {
   tool: string
   refusals: boolean
@@ -78,7 +76,6 @@ interface CommandPolicy {
   audit?: CommandAudit
 }
 
-/** The commands that act on the node rather than on one workspace: its registry and its trusted keys. */
 export interface NodeCommandDefinition extends CommandPolicy {
   target: 'node'
   audit: CommandAudit

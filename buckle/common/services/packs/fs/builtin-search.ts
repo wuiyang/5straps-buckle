@@ -264,7 +264,6 @@ function reasonOf(error: unknown, platform: NodeJS.Platform): SkipReason | null 
   return platform === 'win32' && isHeldOpen(error) ? 'held' : 'unreadable'
 }
 
-/** The code of an error of the system (`ENOENT`), undefined for any other error. */
 function errnoOf(error: unknown): string | undefined {
   const code = error instanceof Error && 'code' in error ? error.code : undefined
   return typeof code === 'string' && /^E[A-Z0-9]+$/.test(code) ? code : undefined

@@ -37,7 +37,6 @@ export function createResendJoin(options: { now?: () => number } = {}): ResendJo
       return calls.get(key)?.requestId
     },
     remember(key, requestId) {
-      // Moved to the end, so the oldest still goes first.
       calls.delete(key)
       calls.set(key, { requestId, expiresAt: now() + CALL_REPLAY_WINDOW_MS })
       for (const oldest of calls.keys()) {

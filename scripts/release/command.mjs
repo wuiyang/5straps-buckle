@@ -1,5 +1,3 @@
-// What the release scripts share to run a command and to run as a script. Each script takes its
-// command runner as an argument, so the tests answer for git, gh, npm, and pnpm without a network.
 import { spawnSync } from 'node:child_process'
 import { appendFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -33,10 +31,6 @@ export function writeStepOutputs(outputs, file = process.env.GITHUB_OUTPUT) {
   appendFileSync(file, Object.entries(outputs).map(([name, value]) => `${name}=${value}\n`).join(''))
 }
 
-/**
- * Runs `main` when the module is the script node started: prints what it returns, or a refusal's
- * message, and sets the exit code. Any other error keeps its stack trace.
- */
 export async function runAsScript(moduleUrl, main) {
   if (!isEntryPoint(moduleUrl)) return
   try {

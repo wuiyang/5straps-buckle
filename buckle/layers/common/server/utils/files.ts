@@ -120,7 +120,7 @@ export function outgoingFile(): { channel: OutgoingFile; ready: Promise<ReadyFil
       const ended = () => file.signal.removeEventListener('abort', cut)
       const cut = () => {
         ended()
-        try { responseStream?.error(file.signal.reason) } catch { /* Closed already. */ }
+        try { responseStream?.error(file.signal.reason) } catch {}
         reject(file.signal.reason)
         void chunks.return?.(undefined)
       }

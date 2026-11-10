@@ -43,7 +43,6 @@ afterEach(async () => {
   rmSync(base, { recursive: true, force: true })
 })
 
-/** An ask waiting in the workspace named `name`, as a call made there leaves one. */
 async function ask(name: string, path: string): Promise<string> {
   const { runtime } = await byName(manager, name)
   const [request] = (await runtime.approvals.ask({

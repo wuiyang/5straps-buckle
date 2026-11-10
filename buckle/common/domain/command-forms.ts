@@ -438,7 +438,6 @@ function readNested(forms: Reading, command: string[], depth: number, budget: Bu
   const before = forms.nested.length
   keep(forms.nested, nested.chain, budget)
   keep(forms.nested, nested.nested, budget)
-  // Every form a piece holds is a piece; a statement passes up the pieces read below it.
   const inner = new Set(nested.pieces)
   for (const form of forms.nested.slice(before)) if (piece || inner.has(form)) forms.pieces.push(form)
   for (const head of nested.heads) forms.heads.push(head)
@@ -1366,7 +1365,6 @@ function xargsReplace(options: readonly string[]): string | null {
  */
 interface Unwrapped { command: string[] | null | 'session'; unread: UnreadLimit | null; open?: true; unsure?: true }
 
-/** A prefix that runs `command`, all of it read. */
 const prefixRuns = (command: string[] | null): Unwrapped => ({ command, unread: null })
 
 /**
@@ -1428,7 +1426,6 @@ function reduced(words: readonly string[]): string[] {
  */
 const writtenPaths = new WeakMap<readonly string[], string>()
 
-/** `form`, its command word written as `command`, recorded for typedForm. */
 function spelled(form: string[], command: string): string[] {
   writtenPaths.set(form, command)
   return form
@@ -1449,7 +1446,6 @@ export function meetsPrefix(glob: CommandGlob, form: string[]): boolean {
   return glob.matchesPrefix(form) || (typed !== form && glob.matchesPrefix(typed))
 }
 
-/** A wrapper's reading, marked `unsure` when an expansion among its words may move the command it runs. */
 const marked = (unsure: boolean, inner: Unwrapped): Unwrapped => (unsure ? { ...inner, unsure: true } : inner)
 
 /**
@@ -1667,7 +1663,6 @@ function statementWords(tokens: readonly ShellToken[], clobber: boolean): { word
   return { words, heredoc, expanded: expanded ?? NO_WORDS, bare }
 }
 
-/** The text two strings start with. */
 function sharedStart(one: string, other: string): string {
   let length = 0
   while (length < one.length && length < other.length && one[length] === other[length]) length++

@@ -194,7 +194,6 @@ describe('review fixes: directories, journal mode, guarded view, non-blocking be
     await expect(rawA).rejects.toThrow('A1 rolls back')
     expect(await owner.run(noteTexts)).toEqual([])
 
-    // Both calls arrive after A's BEGIN succeeded; they queue behind A and survive its rollback.
     const guardedA = aborted('A2')
     await delay(1)
     const guarded = owner.guardedDb.sql`INSERT INTO notes (text) VALUES (${'guarded B'})`
@@ -401,7 +400,6 @@ describe('bounded owner waits (rulings 1 and 6)', () => {
     const [first, second] = settled as { error?: unknown }[]
     expect(isWaitTimeout(first!.error)).toBe(true)
     expect(isWaitTimeout(second!.error)).toBe(true)
-    // The failed factory is not cached: built outside the section it succeeds, and the rolled-back row is gone.
     expect(await settleWithin(registry.useSingleton(slow))).toBe('slow ready')
     expect(await owner.run(noteTexts)).toEqual(['factory'])
     await registry.dispose()
@@ -431,7 +429,6 @@ describe('bounded owner waits (rulings 1 and 6)', () => {
     const order: string[] = []
     const holder = owner.run(async () => { order.push('holder start'); await delay(400); order.push('holder end') })
     const timedOut = outcome(owner.run(async () => { order.push('timed-out waiter') }))
-    // The first waiter gives up at 200 ms; these two arrive at 300 ms and fit their own bound.
     await delay(300)
     const queued = [owner.run(async () => { order.push('next') }), owner.run(async () => { order.push('last') })]
     await Promise.all([holder, ...queued])

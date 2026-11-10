@@ -23,7 +23,6 @@ interface SetupRequest {
   views: SetupViews
   /** The request body as JSON, read up to 64 KiB (413 past it); undefined when it is not JSON. */
   body(): Promise<unknown>
-  /** The query string as plain values. */
   query(): Record<string, string>
   /** What the route did, for its audit result entry: hashed or public values only. */
   audit(args: Record<string, JsonValue>): void

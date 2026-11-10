@@ -35,7 +35,6 @@ function scratch(): string {
   return root
 }
 
-/** A runner that records every request and answers `stdout`, as a program that succeeded would. */
 function recorder(stdout: (request: ProcessRequest) => string = () => '') {
   const spawned: ProcessRequest[] = []
   const runProcess = async (request: ProcessRequest): Promise<ProcessResult> => {

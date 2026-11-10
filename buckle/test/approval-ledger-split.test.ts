@@ -20,9 +20,7 @@ import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 // The ledger commits a decision first and its grant after, under the approvals lock, and a grant owed at a crash is
 // written when the workspace opens again, before any call runs.
 
-// The renames of `rename` to fail: the first `skip` pass, then `count` fail.
 const failing = vi.hoisted(() => ({ rename: undefined as string | undefined, skip: 0, count: 1 }))
-// A rename onto `path` waits for `until`, once `reached` says it began.
 const holding = vi.hoisted(() => ({ path: undefined as string | undefined, reached: () => {}, until: Promise.resolve() }))
 vi.mock('../common/adapters/replace-file.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../common/adapters/replace-file.js')>()
@@ -317,7 +315,6 @@ describe('a revoke or a session end, against the decisions around it', () => {
     roots.push(root)
     return { approvals: join(root, 'approvals.json'), store: createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'workspace-id' }) }
   }
-  /** A gate a promise waits at until it opens, saying when the first one reached it. */
   const gate = () => {
     let reached!: () => void
     let open!: () => void

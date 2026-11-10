@@ -55,7 +55,6 @@ function call(runtime: BuckleRuntime, requestId: string, tool: string, args: Jso
   return runtime.invoke({ sessionId: 'chat-1', approvalWait: { mode: 'none' }, request: { requestId, tool, args, approvalTokens: [], ...(stageId ? { context: { stageId } } : {}) } })
 }
 
-/** The page a browser_command answer names, whether the agent made the call or a script returned what it got. */
 function page(response: InvokeResponse, fromScript: boolean): unknown {
   if (response.outcome !== 'ok') throw new Error(`expected ok, got ${JSON.stringify(response)}`)
   const answer = (fromScript ? (response.output as { value: unknown }).value : response.output) as { result: { data: { url: string } } }

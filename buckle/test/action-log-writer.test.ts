@@ -113,7 +113,6 @@ describe('the action log writer worker', () => {
     for (const round of [1, 2, 3]) {
       now += 10
       const rechecking = health.recheck()
-      // All three went out as the round began, before any could time out.
       expect({ round, probes: probes().sort() }).toEqual({ round, probes: [...broken].sort() })
       await rechecking
     }

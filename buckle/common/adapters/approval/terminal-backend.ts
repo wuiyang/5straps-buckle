@@ -27,11 +27,9 @@ const SAVE_ENDING_LEVELS: Readonly<Record<SaveEnding['ending'], 'info' | 'warn'>
 export function createTerminalBackend(options: TerminalBackendOptions): ApprovalBackend {
   let host: ApprovalHost | undefined
   const closing = new AbortController()
-  // By call and group while the submit still asks; `running` holds every unsettled submit, for close.
   const inFlight = new Map<string, Promise<SubmitResult>>()
   const running = new Set<Promise<SubmitResult>>()
   const questions = new Map<string, AbortController>()
-  // The tokens of the submits still asking, and those among them whose asks closed.
   const asking = new Set<string>()
   const closed = new Set<string>()
 

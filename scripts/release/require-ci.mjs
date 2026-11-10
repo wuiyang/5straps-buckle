@@ -74,7 +74,6 @@ export function blockingJobs({ sha, runs, required = REQUIRED_JOBS }) {
   })
 }
 
-/** `run(command, args)` returns stdout; injected so a test can answer for git and gh without a network. */
 export function requireCi({ run, repository = process.env.GITHUB_REPOSITORY, githubActions = process.env.GITHUB_ACTIONS === 'true', sourceOnly = false }) {
   if (run('git', ['status', '--porcelain']).trim() !== '') {
     return { ok: false, message: 'The working tree has uncommitted changes: a release publishes what CI checked, so commit or remove them first' }

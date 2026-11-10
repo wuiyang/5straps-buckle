@@ -39,7 +39,6 @@ const CODE_SCRIPT = 'const read = await tools.fs_read({ path: "demo.txt" }); tex
 
 let service
 let serviceOutput = ''
-// The whole log of the current start, for counting lines the truncated tail may have lost.
 let serviceLog = ''
 let entry
 let port
@@ -122,7 +121,6 @@ function walk(directory) {
   return readdirSync(directory, { recursive: true, encoding: 'utf8' }).map(path => join(directory, path)).filter(path => statSync(path).isFile())
 }
 
-/** Every installed copy of a package under node_modules, nested ones included. */
 function findPackages(modules, name) {
   return walk(modules).filter(path => path.endsWith(`/node_modules/${name}/package.json`)).map(path => dirname(path))
 }
@@ -240,7 +238,6 @@ async function checkApprovalAndAudit() {
   assert.match(cli(['log', '--json']), /fs_write/)
 }
 
-/** One code_run's output as the node returned it: the script ran, called fs_read once, and returned the file. */
 function assertCodeRun(output, expected) {
   assert.equal(output.ok, true, `code_run failed: ${JSON.stringify(output.error)}`)
   assert.equal(output.value, expected)
@@ -400,7 +397,6 @@ async function checkMcpStdio() {
     const [initialized, listed] = [1, 2].map(id => lines().find(message => message.id === id))
     assert(initialized.result?.serverInfo?.name, `initialize answered without server info: ${JSON.stringify(initialized)}`)
     assert(listed.result?.tools?.some(tool => tool.name === 'fs_write'), 'tools/list does not list fs_write')
-    // `buckle mcp`: the same script through MCP's tools/call.
     child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'code_run', arguments: { script: CODE_SCRIPT }, _meta: meta } })}\n`)
     while (!lines().some(message => message.id === 3)) {
       if (Date.now() > deadline || child.exitCode !== null) throw new Error(`buckle mcp did not answer code_run: ${stderr}`)

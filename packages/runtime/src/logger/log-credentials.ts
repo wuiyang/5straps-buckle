@@ -35,7 +35,6 @@ type UnitContext = 'word' | 'text'
 
 /** A URL with a scheme, or a request target: a `/` at the start or after whitespace, a bracket, a quote, `=`, `<` or `>`. */
 const URL_START = /\b[a-z][a-z0-9+.-]{0,63}:\/\/|(?<=^|[\s("'=<>])\//gi
-/** What may stand before a quote that opens a URL. */
 const OPENS_AFTER = /[\s=:([{,]/
 const BRACKET_CLOSER: Readonly<Record<string, string>> = { '(': ')', '[': ']', '{': '}', '<': '>' }
 const OPEN_BRACKETS = new Set(['(', '[', '{'])
@@ -64,14 +63,12 @@ const BEFORE_URL_FIELD = /[\s'"`;&|()<>${}\\]/
 const TRAILING_PUNCTUATION = new Set([')', '.', ',', ';', ':', '!', '?'])
 const JSON_DOCUMENT = /^\s*[[{]/
 
-/** How a URL opens: by a quote, which ends it at the closing quote (`limit`), by a bracket, or by neither. */
 interface Opening {
   limit: number
   quoted: boolean
   closer?: string
 }
 
-/** The first index of a character at or after `from`, remembered so scans that move forward stay linear. */
 type NextIndex = (character: string, from: number) => number
 
 function nextIndexIn(text: string): NextIndex {
@@ -89,7 +86,6 @@ function urlRanges(unit: string, context: UnitContext): Range[] {
   const ranges: Range[] = []
   const next = nextIndexIn(unit)
   const pattern = new RegExp(URL_START.source, URL_START.flags)
-  // Found once, so judging whether each URL is its word's whole unit stays linear.
   const beforeField = context === 'word' ? unit.search(BEFORE_URL_FIELD) : -1
   // A URL inside another's query was scanned with it; its own userinfo is still judged.
   let covered = 0
@@ -189,7 +185,6 @@ function parameterRanges(input: { text: string; from: number; end: number; range
   const { text, end } = input
   if (input.from >= end) return
   const { ends, substitution: substitutionEnds } = input.rule
-  // The last value end found, and where the scan for it began: a value starting between them ends there too.
   let knownFrom = -1
   let knownEnd = -1
   const named = new Map<string, boolean>()
@@ -235,7 +230,6 @@ function trailingPunctuation(value: string): string {
   return value.slice(end)
 }
 
-/** A JSON object or array with each string judged as a `word` and the rest as written; null when the text is not one. */
 function redactJson(text: string): string | null {
   if (!JSON_DOCUMENT.test(text)) return null
   try {
@@ -259,14 +253,12 @@ function redactJson(text: string): string | null {
   return shown + text.slice(cursor)
 }
 
-/** The index of the quote that closes the JSON string opened at `open`. */
 function closingQuote(text: string, open: number): number {
   let index = open + 1
   while (text[index] !== '"') index += text[index] === '\\' ? 2 : 1
   return index
 }
 
-/** The text with each range, overlapping or touching ones merged, replaced by `[redacted]`. */
 function redactRanges(text: string, ranges: Range[]): string {
   if (ranges.length === 0) return text
   const sorted = [...ranges].sort((left, right) => left.start - right.start || left.end - right.end)

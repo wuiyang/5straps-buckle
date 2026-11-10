@@ -9,7 +9,6 @@ import { BUILTIN_RESULT_DESCRIPTIONS } from '../results.js'
 export const DECLARATION_BUDGET_TOKENS = 4_500
 const CHARS_PER_TOKEN = 4
 
-/** One tool's comment: its own description, then what its call resolves to. */
 function described(tool: Pick<ToolCapability, 'name' | 'description'>): string {
   const returns = BUILTIN_RESULT_DESCRIPTIONS[tool.name]
   return `${tool.description.trim()}\nResolves to ${returns ?? 'the JSON its direct call returns'}.`
@@ -40,7 +39,6 @@ export function withinBudget(vm: ScriptVm, tools: readonly ToolCapability[], bud
   return { declared, named }
 }
 
-/** How a script is written, ahead of the declarations in code_run's description. */
 const GUIDE = [
   'Run a JavaScript script that calls this node\'s other tools, and get back only what it prints and returns. Use it to batch calls, chain them, or filter large results before you read them.',
   'The script is the body of an async function in a QuickJS sandbox: top-level `await` and `return` work. It has no files, network, processes, timers, or modules of its own; it reaches the machine only through `tools`.',

@@ -30,7 +30,6 @@ export function createSessionReads(): SessionReads {
   return {
     note(sessionId, path, now = Date.now()) {
       const known = sessions.get(sessionId) ?? new Map<string, number>()
-      // Re-inserted, so the order of each map is the order of use, and the first key is the one to forget.
       sessions.delete(sessionId)
       sessions.set(sessionId, known)
       known.delete(path)

@@ -44,7 +44,6 @@ export interface AskHeadline {
   approve?: string
 }
 
-/** A JSON text a question carries in one detail. */
 const jsonText = <T extends z.ZodType>(schema: T) => z.string().transform((value, context) => {
   try {
     return JSON.parse(value) as unknown
@@ -64,7 +63,6 @@ const DetailsSchema = z.object({
   judge: z.string().optional(),
 })
 
-/** The view as the requester carries it. */
 export function askViewDetails(view: AskView): Record<string, string> {
   const { call } = view
   return {
@@ -94,7 +92,6 @@ export function readAskView(details: QuestionDetails | undefined): AskView {
   }
 }
 
-/** The fields the pending log line names, read one by one. */
 export function readAskHeadline(details: QuestionDetails): AskHeadline {
   const text = (key: string) => (typeof details[key] === 'string' ? details[key] : undefined)
   const scopes = text('scopes')

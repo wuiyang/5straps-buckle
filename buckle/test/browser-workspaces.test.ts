@@ -45,7 +45,6 @@ function open(manager: WorkspaceManager, name: string, call: { command: string; 
   return byName(manager, name).then(({ runtime }) => runtime.invoke({ request: { requestId: `open-${randomUUID()}`, tool: 'browser_command', args: call, approvalTokens: [] }, sessionId: name }))
 }
 
-/** What the owner's setup status says of the browser in a workspace. */
 async function browserStatus(manager: WorkspaceManager, name: string) {
   const { config, runtime } = await byName(manager, name, { setup: true })
   return (await createSetupViews().status({ config, runtime })).browser as { mode: string; setting: string | null; withheld: string | null }

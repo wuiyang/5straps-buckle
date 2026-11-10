@@ -5,8 +5,6 @@ import { runCommand, writeStepOutputs } from '../scripts/release/command.mjs'
 import { changelogSection, compareVersions, isPlainVersion, tarballOf } from '../scripts/release/packages.mjs'
 import { scratchDirectory } from './support/release-repository'
 
-// What the release scripts share: plain versions and their order, the tarball names pnpm writes,
-// a changelog section, the step outputs file, and the command runner whose failures carry stderr.
 
 describe('release versions and names', () => {
   it('takes only plain MAJOR.MINOR.PATCH versions', () => {

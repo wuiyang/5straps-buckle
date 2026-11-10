@@ -33,12 +33,7 @@ const WIDER_KEYS: typeof SCOPE_KEYS = [
   { key: 'always-below', scope: 'always', label: 'always, folder and below', wider: true },
 ]
 
-/** One workspace's queue a watch asks from. */
 export interface WatchSource {
-  /**
-   * The asks waiting, each with the whole call it came from, the requests alone for the check a question on screen
-   * makes while it waits, and the decision and the skip of its save `buckle approve` makes.
-   */
   approvals: Pick<CoreApprovalApi, 'waiting' | 'pending' | 'decide' | 'skipSave'>
   workspaceId: string
   workspaceName?: string
@@ -102,7 +97,6 @@ export async function watchApprovals(options: ApprovalWatchOptions): Promise<Out
   options.output.write(`Watching ${watched(sources)} for approvals. Keys: o once, s session, the word always, d deny, n skip; Enter grants nothing. Ctrl-C stops.\n`)
   // An interrupt that came while the workspaces were first read fires no listener of its own.
   if (options.signal?.aborted) stop()
-  // By workspace and token, as a token is issued within one workspace's queue.
   const seen = new Set<string>()
   // Each request group's whole action is shown with the first of its asks asked here; the others name that ask
   // (review M1 of the slice 5 re-review).
@@ -126,7 +120,6 @@ export async function watchApprovals(options: ApprovalWatchOptions): Promise<Out
       wait = poll.first
       if (afterDrop) {
         afterDrop = false
-        // Read the queue again after the Enter: the request may have gone while the owner looked.
         if (await awaitEnter(readline, options.output, stopped.signal)) continue
         break
       }
@@ -153,7 +146,6 @@ export async function watchApprovals(options: ApprovalWatchOptions): Promise<Out
   }
 }
 
-/** False when the watch stopped instead. Keys typed before the note are already gone. */
 async function awaitEnter(readline: Interface, output: Writable, stopped: AbortSignal): Promise<boolean> {
   output.write('  Another request is waiting. Press Enter to see it.\n')
   for (;;) {
@@ -182,13 +174,11 @@ async function askOne(context: AskContext): Promise<Ending> {
   const question = { ...request, workspaceId: context.workspaceId, ...(context.workspaceName === undefined ? {} : { workspaceName: context.workspaceName }), ...(context.judgeApproves ? { approves: context.judgeApproves() } : {}), ...(shown ? { call: shown } : {}) }
   output.write(`${shown && context.shownWith !== undefined ? `\n${marked(question, describeAskOfShownCall(question, context.shownWith)).join('\n')}\n` : describeQuestion(question)}${marked(question, [`  token: ${request.token}`])[0]}\n`)
 
-  // The requests alone: a question on screen checks every poll that its ask still waits, and reads no call to do it.
   const dropped = new AbortController()
   const watcher = setInterval(() => {
     try {
       if (!context.approvals.pending().some(entry => entry.token === request.token)) dropped.abort()
     } catch {
-      // Unreadable for now: the next poll, the expiry or the person ends the question.
     }
   }, context.recheckMs)
   const remaining = remainingMs(request.expiresAt)
@@ -235,11 +225,6 @@ function decide(request: ApprovalRequest, answer: string, offered: typeof SCOPE_
   return { token: request.token, outcome: 'approve', scope: chosen.scope, ...(chosen.wider && request.widerSubject !== undefined ? { widen: 'below' as const } : {}) }
 }
 
-/**
- * The same decision `buckle approve` makes, through the core approval API: the owner's own process, so
- * the `cli` source. Core records each one in its workspace's log, so a session that grants several
- * leaves several. One whose grant did not save asks a save question next, as `buckle approve` does.
- */
 async function record(context: AskContext, decision: DecisionBody): Promise<SaveEnding | undefined> {
   const receipt = await context.approvals.decide({ source: 'cli', decision })
   const unsaved = unsavedOf({ decision, receipt })
@@ -266,7 +251,6 @@ async function record(context: AskContext, decision: DecisionBody): Promise<Save
   return ending
 }
 
-/** The save question, asked on the watch's own line as its questions are; Ctrl-C leaves it unanswered. */
 async function askSave(context: AskContext, unsaved: Unsaved): Promise<SaveAnswer | undefined> {
   context.output.write(`  ${unsaved.warning}.\n`)
   try {
@@ -279,7 +263,6 @@ async function askSave(context: AskContext, unsaved: Unsaved): Promise<SaveAnswe
   }
 }
 
-/** The workspace a source's commands name: its name where the source carries one, else its id. */
 function named(source: Pick<WatchSource, 'workspaceId' | 'workspaceName'>): { workspaceId: string; workspaceName?: string } {
   return { workspaceId: source.workspaceId, ...(source.workspaceName === undefined ? {} : { workspaceName: source.workspaceName }) }
 }
@@ -300,7 +283,6 @@ function askKey(source: WatchSource, key: string): string {
   return JSON.stringify([source.workspaceId, key])
 }
 
-/** Says which workspaces a watch started or stopped asking for since its last poll. */
 function announceChanges(output: Writable, before: WatchSource[], after: WatchSource[]): void {
   const held = (list: WatchSource[], source: WatchSource) => list.some(other => other.workspaceId === source.workspaceId)
   for (const source of after) if (!held(before, source)) output.write(`Now also watching workspace ${workspaceLabel(source.workspaceId, source.workspaceName)}.\n`)
@@ -312,7 +294,6 @@ function unreadableWorkspaces(options: ApprovalWatchOptions, error: unknown): Ou
   return { exitCode: 1 }
 }
 
-/** The workspaces a watch asks for, as its first and last lines name them. */
 function watched(sources: WatchSource[]): string {
   const labels = sources.map(source => workspaceLabel(source.workspaceId, source.workspaceName))
   return labels.length === 1 ? `workspace ${labels[0]}` : `workspaces ${labels.join(', ')}`

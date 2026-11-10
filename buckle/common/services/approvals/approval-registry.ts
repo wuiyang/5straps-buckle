@@ -405,7 +405,6 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
   // the store clears its own report, so a repair seen only by an ask, a decision or the sender still lets the next
   // outage log once (slice 7f review R7F-QV-1).
   let unreadableVersion: string | undefined
-  // How the asks this process dropped or withdrew left the queue, oldest first.
   const departedHere = new Map<string, Departure>()
   function departed(tokens: readonly string[], departure: Departure): void {
     for (const token of tokens) {

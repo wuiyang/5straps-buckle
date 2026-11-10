@@ -16,7 +16,6 @@ export function ignoresWarning(event: H3Event): boolean {
 /** The resources the setup face names in its audit entries; any other path is `unknown`. */
 const RESOURCE = /^(?:policy|history|history-stages|approvals|grants|audit|status|files|workbenches|tools|sessions)$/
 
-/** The first path segment below /setup/ that names a resource, as the setup face named its entries. */
 export function resourceOf(event: H3Event): string {
   const segments = event.url.pathname.split('/')
   return segments.slice(segments.indexOf('setup') + 1).find(segment => RESOURCE.test(segment)) ?? 'unknown'

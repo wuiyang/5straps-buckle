@@ -35,7 +35,6 @@ function attempt(auditId: string): ActionLogEntry {
   return queued({ requestId: auditId, auditId, event: 'attempt', outcome: 'started' })
 }
 
-/** The file's whole lines, parsed; a torn line is left out. */
 function written(path: string): Array<Record<string, unknown>> {
   return readFileSync(path, 'utf8').split('\n').filter(Boolean).flatMap((line) => {
     try { return [JSON.parse(line) as Record<string, unknown>] } catch { return [] }

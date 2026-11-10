@@ -6,7 +6,6 @@ import type { CreateScopeOptions, OperationContext, OperationContextInput, Opera
 const DEFAULT_MAX_BACKGROUND_WORK = 64
 export const DEFAULT_DRAIN_TIMEOUT_MS = 10_000
 
-// Hooks only the service registry supplies; not part of the public scope API.
 interface ScopeControl {
   // Aborts the scope signal even while it drains (runtime close); never detached.
   closeSignal?: AbortSignal

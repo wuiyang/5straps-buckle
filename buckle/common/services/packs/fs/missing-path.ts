@@ -33,7 +33,6 @@ export function parentRefusal(error: unknown, named: string): unknown {
   return error
 }
 
-/** Runs an open, and throws what `refuse` makes of its error. */
 export function refusing<T>(operation: () => T, refuse: (error: unknown) => unknown): T {
   try { return operation() } catch (error) { throw refuse(error) }
 }

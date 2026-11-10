@@ -180,7 +180,6 @@ describe('the live forms check', () => {
 
 const denied = () => Object.assign(new Error('EACCES: permission denied, open \'/state/grants.json\''), { code: 'EACCES' })
 
-/** The store, its first `failing` grant writes refused as a locked grants file refuses them. */
 function failingGrants(store: GrantStore, failing: number): GrantStore {
   let left = failing
   return { ...store, grant: async (input) => {
@@ -255,7 +254,6 @@ describe('a form answer in the ledger once the setting is off', () => {
 /** No terminal, a hold only while this process asks: a gated call answers at once. */
 const NOBODY: Interaction = { requestCli: NO_INTERACTION.requestCli, hold: 'prompt' }
 
-/** A node whose workspace's own settings say whether MCP forms decide, written to workspace.json before it opens. */
 async function stdioNode(input: { forms: boolean }) {
   const root = scratch()
   const workspace = join(root, 'workspace')

@@ -78,12 +78,10 @@ function reachedFrom(file: string, follow: 'own' | 'all' = 'own'): string[] {
 const importing = (paths: string[], target: RegExp): string[] => sourceFiles(...paths)
   .filter(file => importsOf(file).some(specifier => target.test(specifier)))
   .map(file => relative(PACKAGE_ROOT, file))
-// The modules under `paths` that import the module `target` (package-relative), under any name, each import resolved.
 const importersOf = (paths: string[], target: string): string[] => sourceFiles(...paths)
   .filter(file => importsOf(file).some(specifier => specifier.startsWith('.') && relative(PACKAGE_ROOT, resolve(dirname(file), specifier)).replace(/\.js$/, '.ts') === target))
   .map(file => relative(PACKAGE_ROOT, file))
 
-// The modules under `paths`, besides `target` itself, whose text names `target`'s file, by its name without the extension.
 const naming = (paths: string[], target: string): string[] => {
   const name = target.replace(/^.*\//, '').replace(/\.ts$/, '')
   return sourceFiles(...paths)

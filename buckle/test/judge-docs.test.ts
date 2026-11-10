@@ -94,7 +94,6 @@ const PINNED: PinnedLine[] = [
   { page: 'known-limits-07.md', what: 'the F4 residue clause on a write from another workspace through a shared mount', text: '(a process still running from an earlier call, or another workspace writing through a shared mount) can land after that check.' },
 ]
 
-/** The pins whose sentence its page does not hold exactly once. */
 function notHeld(held: ReadonlyArray<{ name: string; text: string }>, lines: readonly PinnedLine[]): PinnedLine[] {
   return lines.filter(line => held.find(page => page.name === line.page)?.text.split(line.text).length !== 2)
 }

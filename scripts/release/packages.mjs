@@ -1,5 +1,3 @@
-// What a release is made of: the three packages, the version they share, its tag, its tarballs, and
-// its changelog section. The prepare, plan, and GitHub release scripts read them from here.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Refusal } from './command.mjs'
@@ -23,7 +21,6 @@ export function isPlainVersion(value) {
   return typeof value === 'string' && PLAIN_VERSION.test(value)
 }
 
-/** Negative, zero, or positive as `left` is lower than, equal to, or greater than `right`, both plain versions. */
 export function compareVersions(left, right) {
   const [a, b] = [left, right].map(version => version.split('.').map(BigInt))
   const index = a.findIndex((part, at) => part !== b[at])

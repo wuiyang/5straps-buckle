@@ -19,7 +19,6 @@ const RELEASE = read('release.yml')
 const PREPARE = read('release-prepare.yml')
 const CHECK = read('release-check.yml')
 
-/** The lines under `key:` at `indent` spaces, up to the next line at that indentation or less. */
 function block(text: string, key: string, indent: number): string[] {
   const lines = text.split('\n')
   const start = lines.findIndex(line => line === `${' '.repeat(indent)}${key}:`)
@@ -30,9 +29,7 @@ function block(text: string, key: string, indent: number): string[] {
 
 const job = (text: string, name: string) => block(text, name, 2)
 const permissions = (text: string, name: string) => block(job(text, name).join('\n'), 'permissions', 4).map(line => line.trim())
-/** The actions a job uses, each named without its `@` and what follows. */
 const actions = (lines: string[]) => lines.flatMap(line => /^\s*(?:- )?uses:\s*(\S+)/.exec(line)?.[1]?.split('@')[0] ?? [])
-/** The trimmed lines of the first `key: |` block scalar in a job. */
 function scalar(lines: string[], key: string): string[] {
   const start = lines.findIndex(line => line.trim() === `${key}: |`)
   if (start === -1) throw new Error(`no ${key}: | block`)
@@ -41,7 +38,6 @@ function scalar(lines: string[], key: string): string[] {
   return lines.slice(start + 1, end === -1 ? undefined : end).map(line => line.trim())
 }
 
-/** Each run script: a one-line value, or the lines of a block scalar indented under its key. */
 function runScripts(text: string): string[] {
   const lines = text.split('\n')
   return lines.flatMap((line, index) => {
@@ -54,7 +50,6 @@ function runScripts(text: string): string[] {
   })
 }
 
-/** The YAML keys of a job's lines, leaving out the shell lines of its run scripts. */
 function keys(lines: string[]): string[] {
   const found: string[] = []
   let scalar = -1
@@ -69,7 +64,6 @@ function keys(lines: string[]): string[] {
   return found
 }
 
-/** A job's steps, each its trimmed lines from its `- ` to the next step. */
 function steps(lines: string[]): string[][] {
   const found: string[][] = []
   for (const line of lines) {
@@ -128,7 +122,6 @@ function allowedStageLine(raw: string): boolean {
   return line === '' || line.startsWith('#') || STAGE_COMMANDS.includes(line) || SHELL_CONTROL.some(pattern => pattern.test(line))
 }
 
-/** What the stage job holds beyond its allowlist; empty when it runs nothing else. */
 function stageProblems(workflow: string): string[] {
   const stage = job(workflow, 'stage')
   const used = actions(stage)
@@ -335,7 +328,6 @@ interface StageAnswers {
   version?: string
 }
 
-/** What each fake tarball holds, and the integrity npm would record for it. */
 const tarball = (name: string) => `the ${name} tarball`
 const integrityOf = (name: string) => `sha512-${createHash('sha512').update(tarball(name)).digest('base64')}`
 

@@ -134,10 +134,6 @@ function noteScratchOverFolder(context: Pick<Context, 'config' | 'workspaces'>, 
   if (holding !== null) process.stdout.write(`${scratchOverFolderNote({ scratchRoot: holding, workspace: workspace.name })}\n`)
 }
 
-/**
- * Runs `create` with the name given, then with each name the owner types in place of one that is taken; `refusal`
- * says how to name it where nobody can be asked (--yes, or no terminal).
- */
 export async function createNamed<T>(prompt: NamePrompt, input: { name?: string; yes: boolean; refusal: string }, create: (name: string | undefined) => Promise<T>): Promise<T> {
   let name = input.name
   for (;;) {
@@ -396,7 +392,6 @@ export function typedMount(spec: string, input: { readOnly: boolean; cwd: string
   return { ...parsed, source: isAbsolute(parsed.source) ? parsed.source : resolve(input.cwd, parsed.source) }
 }
 
-/** Why a text names no mount, as `buckle workspace mount add` says it. */
 export function unnamedMount(spec: string): string {
   return `${spec} names no mount: write it as <local>:<sandbox>, such as ./data:/data, with :ro to share it read-only`
 }
@@ -517,12 +512,10 @@ function targeted(context: Context): WorkspaceDescriptor {
   return handle(context, context.workspaces.target({ ...context.target, cwd: context.cwd }))
 }
 
-/** The workspace a name or id names, refused with the names where none does. */
 function handle(context: Context, named: string): WorkspaceDescriptor {
   return context.workspaces.lookup(context.workspaces.target({ workspace: named, cwd: context.cwd }))!
 }
 
-/** The one name a verb names. */
 function onlyHandle(words: readonly string[], verb: string): string {
   const [name, ...extra] = words
   if (!name || extra.length > 0) throw new WorkspaceError(`Usage: buckle workspace ${verb} <name>`)

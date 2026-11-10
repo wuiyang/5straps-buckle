@@ -17,10 +17,8 @@ export function createAuditHealth(options: { now?: () => number; probeIntervalMs
   const failing = new Map<string, Failing>()
   const lastFailure = new Map<string, number>()
   let probedAt = -Infinity
-  // One probe round at a time: concurrent polls share it.
   let probing: Promise<void> | undefined
 
-  // At once, so a round takes as long as its slowest probe, however many logs fail.
   async function probeAll(): Promise<void> {
     await Promise.all([...failing].map(([log, entry]) => probeOne(log, entry)))
   }

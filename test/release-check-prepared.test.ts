@@ -12,7 +12,6 @@ import { CHANGELOG, DIRECTORIES, NAMES, type Run, readChangelog, scratchReposito
 const SECTION = '\n## v0.1.1\n\n[compare changes](https://github.com/wuiyang/5straps-buckle/compare/v0.1.0...v0.1.1)\n\n### Fixes\n\n- Something new ([c0ffee1](https://github.com/wuiyang/5straps-buckle/commit/c0ffee1))\n\n'
 const MODIFIED = RELEASE_FILES.map(file => ` M ${file}`)
 
-/** A clone at 0.1.0 whose four files then hold 0.1.1 as the prepare job writes them, and git answering as it would there. */
 function prepared(status: readonly string[] = MODIFIED, versions: string | Partial<Record<PackageName, string>> = '0.1.0') {
   const root = scratchRepository({ versions })
   const head = Object.fromEntries(RELEASE_FILES.map(file => [file, readFileSync(join(root, file), 'utf8')]))

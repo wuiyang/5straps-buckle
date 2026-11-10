@@ -16,15 +16,9 @@ const jobUrl = (workflowRun: number, id = 1) => `https://github.com/owner/repo/a
 const run = (name: string, conclusion: string | null, extra: Partial<Run> = {}): Run => ({ id: 1, name, head_sha: SHA, status: conclusion === null ? 'in_progress' : 'completed', conclusion, started_at: '2026-09-29T10:00:00Z', details_url: jobUrl(7, extra.id), ...extra })
 
 interface WorkflowRun { path: string; event: string; head_branch: string; head_sha: string; conclusion: string | null }
-/** Workflow run 7 is release-check.yml on a push to main, at SHA, and it succeeded. */
 const RELEASE_CHECK: WorkflowRun = { path: '.github/workflows/release-check.yml', event: 'push', head_branch: 'main', head_sha: SHA, conclusion: 'success' }
-/** A check run as requireCi counts it: read from a workflow run that succeeded. */
 const counted = (check: Run) => ({ ...check, workflow_run: { id: 7, conclusion: 'success' } })
 
-/**
- * Answers git and gh as a repository on master whose HEAD is SHA would, recording every gh call. A
- * workflow run lists as its jobs the check runs whose details_url names it, unless `jobs` says otherwise.
- */
 function fake(input: { onOrigin?: boolean; originAt?: string; dirty?: boolean; detached?: boolean; runs?: Run[]; workflowRuns?: Record<string, WorkflowRun>; jobs?: Record<string, number[]>; origin?: string; gh?: Error; workflowRunGh?: Error }) {
   const calls: string[][] = []
   const answer = (command: string, args: string[]): string => {

@@ -45,7 +45,6 @@ function node(environment: NodeJS.ProcessEnv = {}): BuckleConfig {
   })
 }
 
-/** A judge that answers as `answer` says and records what it was shown. */
 function fakeJudge(answer: (input: JudgeInput) => JudgeResult = () => verdict('safe', 0.93)): Judge & { shown: JudgeInput[] } {
   const shown: JudgeInput[] = []
   return { shown, judge: vi.fn(async (input: JudgeInput) => { shown.push(input); return answer(input) }) }
@@ -539,7 +538,6 @@ describe('the verdict cache', () => {
     const kept = () => (JSON.parse(readFileSync(judgeCachePath(config.stateDirectory), 'utf8')) as { entries: unknown[] }).entries.length
     expect(kept()).toBe(2)
     await withPolicy(runtime, { allow: [], destructive: ['terraform destroy *'] })
-    // A new policy empties the cache, so only what is rated under it is kept.
     expect(kept()).toBe(0)
     await call(runtime, 'python3', ['job.py'])
     expect(judge.judge).toHaveBeenCalledTimes(3)

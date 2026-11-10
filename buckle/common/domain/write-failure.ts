@@ -9,7 +9,6 @@ const WRITE_FAILURES: Readonly<Record<string, string>> = {
 }
 const SYSTEM_CODE = /^E[A-Z0-9]{1,15}$/
 
-/** An error's code, where it carries one as a node error does. */
 export function errorCode(error: unknown): string | undefined {
   return error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : undefined
 }

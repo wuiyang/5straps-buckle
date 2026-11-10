@@ -152,7 +152,7 @@ function finishNativeTransaction<T>(connection: DatabaseSync, body: (connection:
 // SQLite may already have rolled back (constraint or I/O error, or the body did it); the body's error stays primary.
 function rollbackKeepingError(connection: DatabaseSync): void {
   if (!connection.isTransaction) return
-  try { connection.exec('ROLLBACK') } catch { /* the caller rethrows the original failure */ }
+  try { connection.exec('ROLLBACK') } catch {}
 }
 
 type Guard = <T>(operation: () => Promise<T>) => Promise<T>

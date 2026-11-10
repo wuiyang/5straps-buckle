@@ -101,7 +101,6 @@ afterAll(async () => { await settleAuditLogs(); for (const root of roots.splice(
 
 interface Output { matches: JsonObject[]; truncated: boolean; excludedFiles: number; skipped?: Array<{ path: string; reason: string }>; skippedMore?: number }
 
-/** A folder of three small files that all hold `hello`. */
 function folder(files: Record<string, string | Buffer> = {}): string {
   const root = mkdtempSync(join(tmpdir(), 'buckle-search-faults-'))
   roots.push(root)

@@ -18,7 +18,6 @@ const askInput = z.object({
   timeoutMs: z.number().int().positive().max(600_000).optional(),
 })
 
-// Framework-free: the HTTP route and the stdio entry both build servers from this factory.
 export function createFixtureMcpServer(deps: McpDependencies): McpServer {
   const server = new McpServer({ name: 'runtime-fixture', version: deps.version })
   const inScope = <T>(operation: () => Promise<T>): Promise<T> => deps.openScope ? withOperationScope(deps.openScope(), operation) : operation()

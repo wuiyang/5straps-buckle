@@ -13,7 +13,6 @@ const SECTION = (version: string, from: string) => `\n## v${version}\n\n[compare
 
 interface Answers { tags?: readonly string[]; npm?: Partial<Record<string, readonly string[]>>; npmFails?: boolean; dirty?: boolean; versionSet?: 'two'; changelogen?: 'insert' | 'nothing' | 'rewrite' | 'alter' | 'retitle' }
 
-/** Answers git, npm, and pnpm as a clone at `root` would, doing what version:set and changelogen do to its files. */
 function fake(root: string, answers: Answers = {}) {
   const calls: string[][] = []
   const run: Run = (command, args) => {

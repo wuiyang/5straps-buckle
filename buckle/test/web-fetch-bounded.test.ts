@@ -11,7 +11,6 @@ const CAP = 32 * CHUNK
 
 interface Fetched { status: number; body: string; truncated: boolean }
 
-/** A chunk of CHUNK bytes of one letter, so a result shows which chunks it holds and in what order. */
 function block(index: number): Uint8Array {
   return new Uint8Array(CHUNK).fill(97 + (index % 26))
 }
@@ -61,7 +60,6 @@ async function fetched(body: ReadableStream<Uint8Array>, headers: Record<string,
   return webFetch('http://decoy.example.test/data', 'decoy.example.test')
 }
 
-/** A local server answering every request with `reply`, closed by the caller. */
 function serving(reply: (response: ServerResponse) => void): Promise<{ server: Server; host: string }> {
   return new Promise(resolve => {
     const server = createServer((_request, response) => reply(response))

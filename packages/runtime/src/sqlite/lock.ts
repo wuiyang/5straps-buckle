@@ -7,7 +7,6 @@ import { beginImmediateWithinDeadline } from './begin.js'
 import { isSqliteBusy } from './busy.js'
 import { openSqlite, rawConnection, type SqliteDatabase } from './database.js'
 
-// Same defaults as Buckle's history execution lock (buckle/common/services/history/journal.ts).
 export const DEFAULT_LOCK_DEADLINE_MS = 300_000
 export const DEFAULT_LOCK_POLL_MS = 25
 // No journal_mode: a lock connection keeps whatever mode the file already has.

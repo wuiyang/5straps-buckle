@@ -79,7 +79,6 @@ describe('F24 Foundation gate: request-hook failures cannot bypass handler guard
       const health = await send(fixture, { name: 'liveness', path: '/health' })
       expect(health).toEqual({ status: 200, body: { status: 'ok' } })
       await logBarrier(fixture, scenario.faults ? refusedProbes().length + 1 : 0)
-      // Without faults the barrier itself is one authorised operation.
       expect(operations(fixture)).toBe(scenario.faults ? 0 : 1)
       expect(capturedHookErrors(fixture)).toBe(scenario.faults ? refusedProbes().length + 1 : 0)
     })

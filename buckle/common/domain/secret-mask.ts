@@ -57,7 +57,6 @@ export function maskForms(value: string): string[] {
 
 export function createMasker(values: readonly SecretValue[]): Masker {
   let forms: Form[] = values.flatMap(({ name, value }) => maskForms(value).map(text => ({ text, label: maskLabel(name) })))
-  // The longest first, so a form holding another is masked whole.
   forms.sort((left, right) => right.text.length - left.text.length)
   const text = (input: string, cut = false): string => {
     if (forms.length === 0 || input.length === 0) return input
@@ -153,7 +152,6 @@ function decodedView(text: string, plusIsBlank: boolean): View | null {
   return { text: parts.join(''), from: from.subarray(0, shown), to: to.subarray(0, shown) }
 }
 
-/** The text as it is. */
 function identityView(text: string): View {
   const from = new Int32Array(text.length)
   const to = new Int32Array(text.length)
@@ -297,7 +295,6 @@ function maskTail(text: string, forms: readonly Form[], shortest: number): strin
   const body = text.replace(/\uFFFD+$/, '')
   for (const form of forms) {
     const from = Math.max(0, body.length - (form.text.length - 1))
-    // Each place the form's first character stands in the last characters, the earliest (the longest start) first.
     for (let index = body.indexOf(form.text[0]!, from); index >= 0; index = body.indexOf(form.text[0]!, index + 1)) {
       if (body.length - index < shortest) break
       if (form.text.startsWith(body.slice(index))) return `${body.slice(0, index)}${form.label}${text.slice(body.length)}`

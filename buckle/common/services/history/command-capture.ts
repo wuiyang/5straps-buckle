@@ -332,7 +332,6 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   function shadowIndex(git: string): IndexEntry[] | undefined {
     try { return parseIndex(readFileSync(join(git, 'index')))?.entries } catch { return undefined }
   }
-  /** Those entries by name; none where it does not read. */
   function shadowEntries(git: string): Map<string, IndexEntry> {
     return new Map((shadowIndex(git) ?? []).map(entry => [entryKey(entry), entry]))
   }
@@ -729,7 +728,6 @@ function listedInside(baseline: CommandBaseline, name: string): boolean {
   return [baseline.unstored, baseline.untrackedFolders, baseline.unknown].some(names => [...names].some(listed => listed.startsWith(inside)))
 }
 
-/** `name` itself, or the nearest folder above it, where `folders` holds one. */
 function enclosing(folders: Set<string>, name: string): string | undefined {
   for (let at = name; at; at = at.includes('/') ? at.slice(0, at.lastIndexOf('/')) : '') if (folders.has(at)) return at
   return undefined

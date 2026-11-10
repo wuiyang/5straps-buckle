@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createLogBudget, createLogQueue, type LogDrops } from '../../src/index.js'
 
-// A writer that takes every batch and never finishes one, as a disk that stopped answering.
 function stuckWriter<T>(): { batches: T[][]; write: (batch: readonly T[]) => Promise<void> } {
   const batches: T[][] = []
   return { batches, write: batch => { batches.push([...batch]); return new Promise<void>(() => {}) } }

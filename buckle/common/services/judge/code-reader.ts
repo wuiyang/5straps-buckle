@@ -179,7 +179,6 @@ function planOf(input: Pick<CodeInput, 'forms' | 'chain' | 'typed' | 'pieces' | 
     if (statement === undefined) statement = textStatement(chain.at(-1))
     if (statement === null) return SHELL_TEXT_REFUSAL
     if (sameWords(statement.form, form)) {
-      // The same statement read once more (another reading of its redirections) is read once.
       if (matched) continue
       // Each program of the statement's own chain, a wrapper's as much as the interpreter's (fix brief 7, B11).
       if (statement.typed.some(mayBePlaced)) return CODE_REFUSALS.localInterpreter
@@ -1366,7 +1365,6 @@ function tomlPath(key: string): string {
   return key.split(/[ \t]*\.[ \t]*(?=(?:[^"']|"[^"]*"|'[^']*')*$)/).map(part => part.replace(/^["']|["']$/g, '')).join('.')
 }
 
-/** The index past blanks and comments, and newlines too where `lines` is true. */
 function skipToml(source: string, from: number, lines: boolean): number {
   let at = from
   while (at < source.length) {
@@ -1544,7 +1542,6 @@ function languageOfFile(real: string, content: string): Language {
 type Found = Array<{ real: string; language: Language }>
 type Packages = Map<string, Set<string | null>>
 
-/** A package imported, kept with each folder an importer reads it from; null where no version is looked up (Python). */
 function named(packages: Packages, name: string, from: string | null): void {
   const folders = packages.get(name) ?? new Set<string | null>()
   folders.add(from)
@@ -1817,7 +1814,6 @@ function shellSources(code: string, place: Place): Found | string {
   return found
 }
 
-/** The real file a name lands on, or null where it lands on none. */
 function fileAt(view: CodeView, name: string, base: string): string | null {
   const located = view.locate(name, base)
   return typeof located === 'object' ? located.real : null

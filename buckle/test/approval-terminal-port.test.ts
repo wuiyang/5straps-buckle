@@ -21,7 +21,6 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-/** A backend that records what core hands it and decides as each test says, once its asks arrive. */
 function recordingBackend(decide: (host: ApprovalHost, asks: FullAsk[]) => Promise<DecisionReceipt[]>) {
   const seen: { host?: ApprovalHost; asks: FullAsk[]; events: LifecycleEvent[]; receipts: DecisionReceipt[]; closed: boolean } = { asks: [], events: [], receipts: [], closed: false }
   const backend: ApprovalBackend = {
@@ -49,12 +48,10 @@ function setUp(backend: ApprovalBackend, graceMs: number | null = 200, hold: App
   return { registry, grants, service, root }
 }
 
-/** The same ledger as a second process opens it. */
 function otherProcess(root: string) {
   return createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' }), join(root, 'approvals.json'), 15_000)
 }
 
-/** A terminal that holds each question until it is withdrawn, recording what it showed and what it withdrew. */
 function heldTerminal() {
   const shown: string[] = []
   const withdrawn: string[] = []
@@ -225,7 +222,6 @@ describe('the terminal backend port, core side', () => {
   })
 })
 
-/** A backend that keeps asking until core stops it, recording each event core sends. */
 function holdingBackend() {
   const events: LifecycleEvent[] = []
   const backend: ApprovalBackend = {

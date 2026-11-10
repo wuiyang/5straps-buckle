@@ -20,7 +20,6 @@ export function readBuildInfo({ cwd, version, now = () => new Date() }) {
   return { commit, dirty, builtAt: now().toISOString() }
 }
 
-/** Writes the stamp into the build's output folder, or removes an earlier one where there is none. */
 export function writeBuildInfo(outDir, info) {
   const file = join(outDir, BUILD_INFO_FILE)
   if (info === null) rmSync(file, { force: true })

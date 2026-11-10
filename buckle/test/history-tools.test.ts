@@ -50,7 +50,6 @@ async function approveAll(runtime: CoreRuntime, asked: InvokeResponse): Promise<
   return tokens
 }
 
-/** Three writes, each its own checkpoint: a.txt made, b.txt made, a.txt changed. */
 async function threeWrites(runtime: CoreRuntime): Promise<void> {
   expect((await call(runtime, 'w-1', 'fs_write', { path: 'a.txt', content: 'one' })).outcome).toBe('ok')
   expect((await call(runtime, 'w-2', 'fs_write', { path: 'b.txt', content: 'two' })).outcome).toBe('ok')

@@ -20,7 +20,6 @@ function parsedLine(line: string): unknown {
   try { return JSON.parse(line) as unknown } catch { return undefined }
 }
 
-/** The field of a parsed line, when the line is an object that holds it as a string. */
 export function stringField(value: unknown, field: string): string | undefined {
   if (!value || typeof value !== 'object') return undefined
   const found: unknown = Reflect.get(value, field)

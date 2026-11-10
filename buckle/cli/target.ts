@@ -32,5 +32,4 @@ export function takeTarget(argv: readonly string[]): { target: CommandTarget; ar
   return { target, argv: kept }
 }
 
-/** A target flag the command cannot use, refused before anything runs. */
 export class TargetError extends Error {}

@@ -426,7 +426,6 @@ describe('the admin layer with its experimental flag off (owner decision D8)', (
       }
       expect(answered).toEqual([])
       expect((await auditEntries(off.runtime.actions, 1))[0]?.auditId).toBe(before)
-      // The agent's face still serves.
       expect((await off.request('/v1/manifest', { headers: bearer(NODE_AGENT) })).status).toBe(200)
       // A closing node answers an admin path as an unmatched one too, not 503 (review L9 of B23-B25).
       const held = Promise.withResolvers<void>()

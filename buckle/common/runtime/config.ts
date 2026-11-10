@@ -618,7 +618,6 @@ function defined<K extends string, V>(key: K, value: V | undefined): Partial<Rec
   return value === undefined ? {} : { [key]: value } as Record<K, V>
 }
 
-/** A compile that refuses, said as the variable the value came from. */
 function refusedAs(key: string, compile: () => unknown): void {
   try { compile() } catch (error) {
     if (error instanceof PolicyError) throw new Error(`Invalid ${key}: ${error.message}`)
@@ -696,7 +695,6 @@ export function sandboxBinds(mounts: readonly TableMount[]): SandboxBind[] {
   return mounts.filter(mount => !mount.scratch).map(mount => ({ source: mount.source, target: mount.target, readOnly: mount.access === 'ro', ...(mount.node ? { node: true as const } : {}) }))
 }
 
-/** A workspace's own state directory, the node's when they differ, and the node's environment files. */
 type StateDirectories = Pick<BuckleConfig, 'stateDirectory'> & Partial<Pick<BuckleConfig, 'nodeStateDirectory' | 'environmentFile' | 'recordedEnvironmentFiles'>>
 
 /**

@@ -137,7 +137,6 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
   const runtimes = new Map<string, Promise<ManagedWorkspace>>()
   /** The workspaces this process opened a runtime of since it started: a face session ends at the first open alone. */
   const opened = new Set<string>()
-  /** The registration each runtime was opened for: its folder as stored, and when it was made. */
   const registrations = new WeakMap<ManagedWorkspace, Pick<StoredWorkspace, 'dir' | 'createdAt'>>()
   const settingsOf = (id: string) => openSettingsFile({ filePath: settingsPath(node.stateDirectory, id), lockDeadlineMs })
   /** Whether records of a workspace by this id are still on disk, from one removed without --purge (Q7): its settings, or its removal marker, not a stray log. */
@@ -730,7 +729,6 @@ function checkedName(raw: string, source: 'folder' | 'given'): string {
   return parsed.data
 }
 
-/** The workspaces' names as a refusal lists them, so the owner can name one. */
 function names(state: Registry): string {
   return state.workspaces.map(workspace => workspace.name).join(', ')
 }
@@ -786,7 +784,6 @@ async function earlierHasWork(runtime: BuckleRuntime): Promise<boolean> {
   }
 }
 
-/** Shutdown's steps for one workspace removed while the node runs. */
 async function closeRuntime(runtime: BuckleRuntime): Promise<void> {
   runtime.closeWatchers()
   await runtime.closeApprovals()

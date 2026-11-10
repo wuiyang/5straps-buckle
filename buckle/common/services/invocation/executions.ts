@@ -100,7 +100,6 @@ export interface ExecutionBudget {
 }
 
 export function createExecutionBudget(limitBytes = NODE_EXECUTION_BYTES): ExecutionBudget {
-  // Insertion order is age: the first slot is the node's oldest kept response.
   const slots = new Set<BudgetSlot>()
   let bytes = 0
   const budget: ExecutionBudget = {
@@ -227,7 +226,6 @@ export function createExecutions(options: { now?: () => number; budget?: Executi
   }
 }
 
-/** Drops a store's oldest stubs past `limit`; insertion order is age. */
 function trim(stubs: Map<string, Stub>, limit: number): void {
   for (const oldest of stubs.keys()) {
     if (stubs.size <= limit) break

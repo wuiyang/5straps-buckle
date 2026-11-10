@@ -83,7 +83,6 @@ async function call(pack: ReturnType<ReturnType<typeof node>['open']>, input: Re
   return pack.tools[0]!.prepare(input as never).execute(context(overrides)) as Promise<{ result?: unknown; notice?: string }>
 }
 
-/** What each call launched, as the stand-in counts it. */
 async function launchesOf(browser: StandIn, run: () => Promise<unknown>): Promise<number> {
   const before = browser.launches
   await run()
@@ -221,7 +220,6 @@ describe('the key a browser session is kept under (F4 item 3)', () => {
   })
 })
 
-/** Marks every record in the store as written by `pid`, as another Buckle process would have left it. */
 function writtenBy(sessionDirectory: string, pid: number): void {
   const file = join(sessionDirectory, 'sessions.json')
   const state = JSON.parse(readFileSync(file, 'utf8')) as { browsers?: Record<string, { writer: { pid: number; instance: string } }> }
@@ -234,7 +232,6 @@ function stoppedPid(): number {
   return spawnSync(process.execPath, ['-e', '']).pid!
 }
 
-/** Rewrites the records the store holds, as another process, a stop, or the clock would have left them. */
 function rewrite(sessionDirectory: string, change: (record: Record<string, unknown>, name: string) => void): void {
   const file = join(sessionDirectory, 'sessions.json')
   const state = JSON.parse(readFileSync(file, 'utf8')) as { browsers: Record<string, Record<string, unknown>> }
@@ -354,7 +351,6 @@ async function listening(): Promise<{ port: number; close: () => Promise<void> }
   return { port: (server.address() as AddressInfo).port, close: () => new Promise(resolve => server.close(() => resolve())) }
 }
 
-/** The values a call of this context is masked by, by NAME. */
 async function heldFor(pack: ReturnType<ReturnType<typeof node>['open']>, overrides: Partial<ToolContext> = {}, args: Record<string, unknown> = { command: 'snapshot', args: [] }): Promise<string[]> {
   return (await pack.filled!.list({ context: context(overrides), args: args as never })).map(entry => entry.name)
 }
@@ -621,7 +617,6 @@ describe('a close while a call runs on the browser (Codex review L3)', () => {
   })
 })
 
-/** Whether a gated command reached the stand-in yet. */
 function reaching(gate: { arrived: Promise<void> }): () => boolean {
   let reached = false
   void gate.arrived.then(() => { reached = true })

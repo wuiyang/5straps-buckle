@@ -21,9 +21,7 @@ import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 // settling pass each run under the approvals lock, so one goes first: a skip first leaves nothing for the pass to write,
 // and a pass first leaves a grant the skip removes by the id its decision kept.
 
-// A rename onto `path` waits for `until`, once `reached` says it began.
 const holding = vi.hoisted(() => ({ path: undefined as string | undefined, reached: () => {}, until: Promise.resolve() }))
-// The renames onto `rename` to fail: the first `skip` pass, then `count` fail.
 const failing = vi.hoisted(() => ({ rename: undefined as string | undefined, skip: 0, count: 1 }))
 vi.mock('../common/adapters/replace-file.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../common/adapters/replace-file.js')>()
@@ -66,12 +64,10 @@ function files(): { approvals: string; store: GrantStore } {
   return { approvals: join(root, 'approvals.json'), store: createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'workspace-id' }) }
 }
 
-/** The same ledger and grants files, as a second process opens them. */
 const secondOf = (approvals: string) => ({ approvals, grants: join(dirname(approvals), 'grants.json'), workspace: 'workspace-id' })
 
 const denied = (path: string) => Object.assign(new Error(`EACCES: permission denied, open '${path}'`), { code: 'EACCES' })
 
-/** The store, with its first `grant` writes, `revoke`s, and `list` reads failing as a locked grants file does. */
 function flaky(store: GrantStore, fails: { grant?: number; revoke?: number; list?: number }): GrantStore & { revokes: string[] } {
   const left = { grant: fails.grant ?? 0, revoke: fails.revoke ?? 0, list: fails.list ?? 0 }
   const revokes: string[] = []
@@ -117,7 +113,6 @@ async function owedApproval(input: { fails?: { grant?: number; revoke?: number; 
   return { approvals, store, grants, registry, token, kept: keptGrant(approvals, token)! }
 }
 
-/** A gate a promise waits at until it opens, saying when the first one reached it. */
 function gate() {
   let reached!: () => void
   let open!: () => void

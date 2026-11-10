@@ -13,7 +13,6 @@ export const BLOB_BASE = 'https://github.com/wuiyang/5straps-buckle/blob/main/'
 export const RAW_BASE = 'https://raw.githubusercontent.com/wuiyang/5straps-buckle/main/'
 
 const FENCE = /^\s*(?:```|~~~)/
-// The optional first group is the `![alt` that opens an image; a plain link has none.
 const INLINE_LINK = /(!\[[^\]]*)?\]\(([^)\s]+)((?:\s+"[^"]*")?)\)/g
 // A scheme (https:, mailto:) or a bare #anchor is not a path in this repository.
 const NOT_A_PATH = /^(?:[a-z][a-z0-9+.-]*:|#|\/\/)/i

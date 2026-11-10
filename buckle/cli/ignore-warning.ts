@@ -26,7 +26,6 @@ export function ignoreWarningRefused(command: string): string {
 /** `ignoreWarning`: the owner's --ignore-warning, which runs a command whose record cannot be written. */
 export interface OwnerChoice { ignoreWarning?: boolean }
 
-/** A command that stopped because its record could not be written answers as such, with the error and how to run it anyway. */
 export async function stopsForRecord(command: Promise<CliResult>): Promise<CliResult> {
   try { return await command } catch (error) {
     if (error instanceof OwnerRecordError) return stoppedForRecord(error)

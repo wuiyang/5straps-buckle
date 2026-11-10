@@ -296,7 +296,6 @@ describe('buckle cp against this node', () => {
   })
 })
 
-/** Resolves once `condition` holds. */
 async function until(condition: () => boolean): Promise<void> {
   const deadline = Date.now() + 10_000
   while (!condition()) {

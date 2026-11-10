@@ -51,10 +51,6 @@ export async function runApproverCommand(input: ApproverCommandInput): Promise<C
   return input.nodeAudited(() => approvalsAcross({ runtimes, workspaces: input.workspaces, config: input.config, argv: input.argv }))
 }
 
-/**
- * Every online workspace's runtime; one that will not open is named with its reason, once for each `told`, and the
- * rest are answered.
- */
 async function onlineRuntimes(workspaces: WorkspaceManager, told = new Set<string>()): Promise<BuckleRuntime[]> {
   const runtimes: BuckleRuntime[] = []
   for (const workspace of workspaces.list().filter(item => item.online)) {
@@ -66,7 +62,6 @@ async function onlineRuntimes(workspaces: WorkspaceManager, told = new Set<strin
   return runtimes
 }
 
-/** The workspace whose queue holds `token` waiting, or why none is chosen: none or several hold it. */
 function holderOfAsk(runtimes: BuckleRuntime[], token: string): BuckleRuntime | string {
   const holding = runtimes.filter(runtime => runtime.approvalApi.waitingAsk(token) !== undefined)
   if (holding.length === 1) return holding[0]!
@@ -86,10 +81,6 @@ function approvalsArguments(argv: string[]) {
   return parseArgs({ args: argv, options: { json: { type: 'boolean' }, watch: { type: 'boolean' }, 'approve-if-safe': { type: 'boolean' } }, allowPositionals: true })
 }
 
-/**
- * Why an approver command's words are refused before it runs: the option parseArgs does not know, then the command's
- * usage, so the person reads a refusal and not a stack; null where they parse.
- */
 function refusedArguments(command: string, argv: string[]): string | null {
   try {
     if (command === 'approve') approveArguments(argv)
@@ -101,7 +92,6 @@ function refusedArguments(command: string, argv: string[]): string | null {
   }
 }
 
-/** Why the arguments name no listing, no watch and no single ask, or null. */
 function approvalsRefusal({ values, positionals }: ReturnType<typeof approvalsArguments>): string | null {
   const [action, token, ...extra] = positionals
   if (action !== undefined && ((action !== 'show' && action !== 'judge') || token === undefined || extra.length > 0 || values.watch)) return APPROVALS_USAGE
@@ -136,8 +126,6 @@ async function approvalsAcross(input: { runtimes: BuckleRuntime[]; workspaces: W
   if (refusal) return fail(refusal)
   if (parsed.values.watch) {
     const told = new Set<string>()
-    // Each poll reads the online workspaces again, and closes the runtime this process opened for one taken offline or
-    // removed since, once it has no work, as `buckle serve` does at each look at the registry (closeUnserved).
     return watch({ runtimes: async () => {
       const online = await onlineRuntimes(input.workspaces, told)
       await input.workspaces.closeUnserved().catch((error: unknown) => { logger.error('Could not close a workspace this watch no longer follows', { error }) })
@@ -331,12 +319,9 @@ export async function approve(input: CommandInput & OwnerPrompts): Promise<CliRe
   return approveUnsaved({ unsaved, sent, runtime, chooseSave: input.chooseSave, ...(recorded?.detail === undefined ? {} : { detail: recorded.detail }) })
 }
 
-/** The decision `buckle approve` sends, as it sends it again on a retry. */
 type CliDecision = Extract<CoreDecisionInput, { source: 'cli' }>
 
-/** What `buckle approve` prints of a recorded decision, and the line its audit entry keeps of a widened one. */
 function recordedLine(input: { receipt: Exclude<CoreDecisionReceipt, { status: 'refused' }>; decision: DecisionBody; workspaceName: string }): { line: string; detail?: string } {
-  /** For the command's audit entry: what a widened approval covers. */
   const { decision: { token, scope }, workspaceName } = input
   const applied = input.receipt.status === 'applied' ? input.receipt : undefined
   if (applied?.granted !== undefined) return { line: `Approved ${token} (${scope}) for ${printable(applied.granted)}, every delete in that folder and its subfolders, in workspace ${workspaceName}`, detail: `write_scope ${scope} approval widened to the folder and its subfolders` }
@@ -347,7 +332,6 @@ function recordedLine(input: { receipt: Exclude<CoreDecisionReceipt, { status: '
   return { line: `${input.decision.outcome === 'deny' ? 'Denied' : 'Approved'} ${token} in workspace ${workspaceName}` }
 }
 
-/** The exit a save question's ending gives `buckle approve`. */
 const SAVE_ENDING_EXITS: Readonly<Record<SaveEnding['ending'], number>> = { saved: 0, skipped: 0, dropped: SAVE_FAILED_EXIT, denied_once: 0, left: SAVE_FAILED_EXIT, refused: 1 }
 
 /**
@@ -380,7 +364,6 @@ async function approveUnsaved(input: { unsaved: Unsaved; sent: CliDecision; runt
   return { exitCode: SAVE_ENDING_EXITS[ending.ending], detail: noted(line), ...applied }
 }
 
-/** Where `buckle approve` had no terminal to ask at: a retry is the same command, and a lasting denial's skip a once denial. */
 function untakenSave(input: { unsaved: Unsaved; decision: DecisionBody; workspaceName: string }): string {
   const { token, scope } = input.decision
   if (input.unsaved.kind === 'removal') return 'The next decision or the workspace opening again removes it; the same command sent again retries now.'
@@ -423,7 +406,6 @@ function noTerminal(workspaceName?: string): string {
   return `At a terminal, answer asks in buckle approvals --watch${named}, or approve one with buckle approve <token>${named}, which shows the action and asks to confirm. Without one, list them with buckle approvals${named} and deny one with buckle approve <token> --deny${named}. Where the node sets BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true, a person's enrolled device approves with buckle client approve <node-url> <token>${named}.`
 }
 
-/** One waiting ask, followed by its whole action before a decision. */
 function describeWaitingAsk(input: { ask: PendingAsk; node: string; runtime: BuckleRuntime }): string[] {
   const { request, call } = input.ask
   return describeAsk({ ...request, workspaceId: input.runtime.workspaceId, workspaceName: input.runtime.workspaceName(), node: input.node, approves: input.runtime.judgeApproves(), ...(call?.complete ? { call } : {}) })

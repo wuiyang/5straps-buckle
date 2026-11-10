@@ -80,7 +80,6 @@ function stateOf(input: JudgeInput): { [key: string]: ContentValue } {
   return JSON.parse(JSON.stringify(input).replaceAll('<image:', '<image :')) as { [key: string]: ContentValue }
 }
 
-/** The answers a body holds, keyed by question name, or null where it is no object holding them. */
 function answersOf(body: unknown): Record<string, unknown> | null {
   if (body === null || typeof body !== 'object') return null
   const { answers } = body as { answers?: unknown }

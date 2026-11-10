@@ -83,7 +83,6 @@ interface SettingsContext {
   merged: NodeJS.ProcessEnv
   cwd: string
   home?: string
-  /** How the node restarts, so the restart hint names what restarts it. */
   restart: RestartRoute
 }
 
@@ -175,7 +174,6 @@ async function write(context: SettingsContext, name: string, raw: string | null)
   process.stdout.write(`${restartLine(context.restart)}\n`)
   const note = AFTER_CHANGE.get(setting.key)
   if (note !== undefined) process.stdout.write(`${note}\n`)
-  /** For the command's audit entry: the key written and the value it now holds. */
   return { exitCode: 0, detail: next === null ? `${setting.key} unset` : setting.logsValue === false ? `${setting.key} set` : `${setting.key}=${next}` }
 }
 

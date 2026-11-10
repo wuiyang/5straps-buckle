@@ -75,7 +75,6 @@ function call(runtime: CoreRuntime, tool: string, args: JsonObject): Promise<Inv
 }
 const codeRun = (runtime: CoreRuntime, script: string) => call(runtime, 'code_run', { script })
 
-/** What code_run returned, once it ran. */
 function ran(response: InvokeResponse): { ok: boolean; value?: JsonValue; output: string; calls: Array<{ tool: string; status: string }> } {
   if (response.outcome !== 'ok') throw new Error(`expected code_run to run, got ${JSON.stringify(response)}`)
   return response.output as never
@@ -88,13 +87,11 @@ function secretAsk(response: InvokeResponse): ApprovalRequest {
   return ask
 }
 
-/** Every file Buckle keeps under its state folder, its replay records and audit log among them, as text. */
 function stateText(root: string): string {
   const directory = join(root, 'state')
   return readdirSync(directory, { recursive: true, encoding: 'utf8' }).map(name => join(directory, name)).filter(path => statSync(path).isFile()).map(path => readFileSync(path, 'utf8')).join('\n')
 }
 
-/** What the process logs to stderr while `run` runs. */
 async function logged(run: () => Promise<void>): Promise<string> {
   let text = ''
   const write = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => { text += String(chunk); return true })

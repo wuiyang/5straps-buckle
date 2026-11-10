@@ -131,7 +131,6 @@ const COMMANDS: readonly CommandDefinition[] = [
   },
 ]
 
-/** The commands that run no tool. Any other command resolves to one: `call`, and every `<group> <verb>`. */
 const TOOL_COMMAND: CommandDefinition = {
   name: '*', target: 'workspace', offline: false, runsTool: true,
   load: async () => {
@@ -140,7 +139,6 @@ const TOOL_COMMAND: CommandDefinition = {
   },
 }
 
-/** The usage each audited owner command prints for a help request. */
 export function commandUsage(command: string, argv: readonly string[]): string | undefined {
   const definition = COMMANDS.find(definition => definition.name === command && (definition.matches?.(argv) ?? true))
   const help = definition?.help
