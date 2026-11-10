@@ -1,5 +1,12 @@
 import type { JsonValue } from '@5straps/protocol'
-import type { AppendOptions } from './log-service.js'
+
+/**
+ * `untrusted`: a record anyone can make Buckle write, such as the refusal of a caller with no credential or of the
+ * agent's own malformed request; it gives way to every other held entry, so a flood of them pushes none of those out.
+ */
+export interface AppendOptions {
+  untrusted?: boolean
+}
 
 /** A standing grant a call used, as its audit entry names it. */
 export interface GrantUse {

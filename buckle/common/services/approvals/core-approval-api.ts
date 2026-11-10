@@ -3,14 +3,14 @@ import { ApprovalDecisionSchema, GrantScopeSchema, SignedApprovalDecisionSchema,
 import type { ApprovalChallenge, ShownApprovalCall } from '@5straps/protocol/signed-request'
 import { rightsOf } from '../../domain/approval/assurance.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
-import { redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
+import { redactedSubject } from '../../domain/redact.js'
 import type { ApprovalError, ApprovalErrorCode, DecisionBody, DecisionReceipt, GrantSave, SkipReceipt } from '../../types/ports/approval-backend.js'
 import { SOURCES, type Assurance } from '../../types/ports/approval-source.js'
 import type { DecisionRefusal, OpenedDecision } from './approval-envelope.js'
 import { isDeviceProof, spendDeviceProof, type DeviceProof } from './device-proof.js'
 import type { ListedApproval } from './approval-listing.js'
 import type { GroupSelector, GroupWithdrawal, PendingAsk, Resolution, SkipResolution } from './approval-registry.js'
-import type { ApprovalAnswer } from './approval-service.js'
+import type { ApprovalAnswer } from '../../domain/approval/answer.js'
 
 /** What a core client sends. Core holds the source its tag names, and the decision guard checks it as any backend's. */
 export type CoreDecisionInput =

@@ -4,7 +4,7 @@ import { outsideMountReason, readOnlyMountReason, type PathView } from '../../pa
 import { isInside, isInsideAny, isInsideComparable } from '../../paths.js'
 import type { PermissionRule } from '../decision.js'
 import { allowedVia, ask, deny, PLAIN_MARKS } from '../decision.js'
-import { isFloorSubject } from './destructive-path-rule.js'
+import { isFloorSubject } from '../subjects.js'
 
 export interface WriteScopeOptions {
   /** The roots the agent may name. Scratch directories among them are writable without asking. */

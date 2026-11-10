@@ -1,8 +1,8 @@
-import { createHash } from 'node:crypto'
-import type { InvokeRequest, InvokeResponse, JsonValue } from '@5straps/protocol'
+import type { InvokeResponse } from '@5straps/protocol'
+import { CALL_REPLAY_WINDOW_MS, callIdentityKey, type CallIdentity } from '../../domain/call-identity.js'
 
 /** How long a finished call answers a re-send: the time an ask it made stays answerable (approval-registry.ts). */
-export const EXECUTION_TTL_MS = 10 * 60_000
+export const EXECUTION_TTL_MS = CALL_REPLAY_WINDOW_MS
 /** How many finished calls a workspace keeps; the oldest goes first. */
 export const EXECUTION_LIMIT = 256
 /** A finished response kept whole up to this size; a larger one is answered with a stub that names its audit entry. */
@@ -31,33 +31,9 @@ export const REQUEST_ID_REUSED = 'REQUEST_ID_REUSED'
  * asks for, so a requestId reused for a different call is refused instead of answered with another's
  * outcome.
  */
-export interface ExecutionKey {
-  sessionId: string
-  actor?: string
-  requestId: string
+export interface ExecutionKey extends CallIdentity {
   /** The tool and its arguments, hashed (requestFingerprint). */
   fingerprint: string
-}
-
-/**
- * The key a requestId joins and dedupes under: a hash of the whole id, so two ids that share a
- * prefix never meet, and a long id stores as 64 characters (review L2 of B18-B19).
- */
-export function requestIdKey(requestId: string): string {
-  return createHash('sha256').update(requestId).digest('hex')
-}
-
-/** The same call's fingerprint whatever order its arguments' keys arrive in. */
-export function requestFingerprint(request: Pick<InvokeRequest, 'tool' | 'args'>): string {
-  return createHash('sha256').update(JSON.stringify([request.tool, canonical(request.args)])).digest('hex')
-}
-
-/**
- * The key a script's calls are named under, `code:<key>:<call number>` (owner decision D82, point 4), and its replay
- * journal is filed under: the session, the actor, and the outer call's tool and what names its script, hashed.
- */
-export function nestedCallKey(key: Pick<ExecutionKey, 'sessionId' | 'actor' | 'fingerprint'>): string {
-  return createHash('sha256').update(JSON.stringify([key.sessionId, key.actor ?? null, key.fingerprint])).digest('hex')
 }
 
 /** The one execution of a key: started once the tool itself runs, settled with what the caller was answered. */
@@ -212,7 +188,7 @@ export function createExecutions(options: { now?: () => number; budget?: Executi
   }
 
   function earlier(key: ExecutionKey): Earlier | undefined {
-    const id = executionId(key)
+    const id = callIdentityKey(key)
     const done = finishedFor(id)
     const found = done ? { fingerprint: done.fingerprint, outcome: Promise.resolve(done.outcome), at: done.at } : running.get(id)
     if (!found) return undefined
@@ -222,11 +198,11 @@ export function createExecutions(options: { now?: () => number; budget?: Executi
 
   return {
     earlier,
-    forget: key => forget(executionId(key)),
+    forget: key => forget(callIdentityKey(key)),
     claim(key) {
       const found = earlier(key)
       if (found) return found
-      const id = executionId(key)
+      const id = callIdentityKey(key)
       let started = false
       const settled = Promise.withResolvers<InvokeResponse>()
       running.set(id, { fingerprint: key.fingerprint, outcome: settled.promise })
@@ -257,16 +233,6 @@ function trim(stubs: Map<string, Stub>, limit: number): void {
     if (stubs.size <= limit) break
     stubs.delete(oldest)
   }
-}
-
-function executionId(key: Pick<ExecutionKey, 'sessionId' | 'actor' | 'requestId'>): string {
-  return JSON.stringify([key.sessionId, key.actor ?? null, key.requestId])
-}
-
-function canonical(value: JsonValue): JsonValue {
-  if (Array.isArray(value)) return value.map(canonical)
-  if (value === null || typeof value !== 'object') return value
-  return Object.fromEntries(Object.keys(value).sort().map(name => [name, canonical(value[name]!)]))
 }
 
 function responseBytes(response: InvokeResponse): number {

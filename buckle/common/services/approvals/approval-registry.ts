@@ -8,8 +8,8 @@ import { alreadyReported, createJsonFileStore, fileVersion, StateFileError } fro
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
-import { endsSession, endsWithSessions, holderKey, servesHolder, sessionOf, type GrantHolder } from '../../domain/permission/grant-holder.js'
-import type { GrantStore, LedgerGrants, SessionEnding } from '../../types/ports/grant-store.js'
+import { endsSession, endsWithSessions, holderKey, servesHolder, sessionOf, type GrantHolder, type SessionEnding } from '../../domain/permission/grant-holder.js'
+import type { GrantStore, LedgerGrants } from '../../types/ports/grant-store.js'
 import type { CallAttempt } from '../../types/ports/action-log.js'
 import { askedCallSchema, type AskedCall } from '../../domain/approval/asked-call.js'
 import { guardDecision, guardSkip, screenDecision, screenSkip, type DecisionClaim, type LedgerView, type LiveSettings } from '../../domain/approval/decision-guard.js'
@@ -21,7 +21,8 @@ import { isPlainName } from '../../domain/paths.js'
 import { dropOnces, liveOnces, onceSchema, spendOnces, unspentOnces, type OnceEntry, type OnceSpend, type UnspentOnce } from './once-store.js'
 import { ActionTooLargeError, ApprovalConflictError, ApprovalLimitError, RequestIdReusedError } from './approval-errors.js'
 import { saveFailure } from './grant-save.js'
-import { heldAskName } from './full-ask.js'
+import { heldAskName } from '../../domain/approval/call-identity.js'
+import { CALL_REPLAY_WINDOW_MS } from '../../domain/call-identity.js'
 
 export const APPROVAL_OUTBOX_COUNT_MAX = 4096
 export const APPROVAL_OUTBOX_BYTES_MAX = 4 * 1024 * 1024
@@ -31,7 +32,7 @@ export const APPROVAL_OUTBOX_RETENTION_MS = 24 * 60 * 60 * 1000
  * How long an ask stays answerable past the hold of the call that made it, and how long one nobody holds any more lasts:
  * the join window, the replay window's ten minutes (invocation/executions.ts).
  */
-export const PENDING_TTL_MS = 10 * 60_000
+export const PENDING_TTL_MS = CALL_REPLAY_WINDOW_MS
 /** How long after a failed background prune an ordinary call tries it again. */
 const PRUNE_RETRY_MS = 5_000
 /**

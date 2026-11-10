@@ -1,11 +1,5 @@
 import type { GrantRecord, GrantScope, PermissionRuleId } from '@5straps/protocol'
-import type { GrantHolder } from '../../domain/permission/grant-holder.js'
-
-/**
- * Which sessions end: every caller's under one id, as a face ends its own; the sessions named, each its id under its actor,
- * as each ends at its own idle window; or any, which only a revocations file that cannot be read stands for.
- */
-export type SessionEnding = { sessionId: string } | { sessions: readonly GrantHolder[] } | { allSessions: true }
+import type { GrantHolder, SessionEnding } from '../../domain/permission/grant-holder.js'
 
 /**
  * `sessionApprovalsSuspended`: where true, a session approval clears nothing, as while the session's activity cannot be

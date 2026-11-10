@@ -1,7 +1,10 @@
 import { isNamedCredentialKey, redactCredentials, type CredentialContext } from '@5straps/runtime'
-import type { JsonObject, JsonValue } from '@5straps/protocol'
+import type { JsonObject, JsonValue, PermissionRuleId } from '@5straps/protocol'
 import { baseCommand, shellBodyIndexes, SHELL_COMMANDS } from './argv.js'
 import { isSecretName } from './environment.js'
+
+/** A command subject keeps its executable only: its arguments can carry a credential. */
+const MAX_SUBJECT_LENGTH = 200
 
 const MAX_STRING_LENGTH = 200
 /** The audit log's bound on caller-chosen ids; the join and dedupe keys hash the whole requestId instead. */
@@ -182,4 +185,10 @@ function parses(value: string): boolean {
   } catch {
     return false
   }
+}
+
+/** What the audit keeps of a subject: a path or host as written (capped), a command line as its executable and its length. */
+export function redactedSubject(rule: PermissionRuleId, subject: string): string {
+  if (rule === 'destructive_command') return `${subject.split(' ', 1)[0]!.slice(0, MAX_SUBJECT_LENGTH)} [${subject.length} characters]`
+  return subject.length > MAX_SUBJECT_LENGTH ? `[${subject.length} characters]` : subject
 }

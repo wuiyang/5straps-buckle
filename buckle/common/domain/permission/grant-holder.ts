@@ -1,5 +1,4 @@
 import type { GrantRecord } from '@5straps/protocol'
-import type { SessionEnding } from '../../types/ports/grant-store.js'
 
 /** Whose standing grants a lookup reads: an always grant serves every actor, a session grant the actor that asked in it. */
 export interface GrantHolder {
@@ -7,6 +6,12 @@ export interface GrantHolder {
   /** The identity the call's transport authenticated; absent for the node's own process. */
   actor?: string
 }
+
+/**
+ * Which sessions end: every caller's under one id, as a face ends its own; the sessions named, each its id under its actor,
+ * as each ends at its own idle window; or any, which only a revocations file that cannot be read stands for.
+ */
+export type SessionEnding = { sessionId: string } | { sessions: readonly GrantHolder[] } | { allSessions: true }
 
 export function servesHolder(grant: Pick<GrantRecord, 'sessionId' | 'actor'>, holder: GrantHolder): boolean {
   return grant.sessionId === null || (grant.sessionId === holder.sessionId && grant.actor === (holder.actor ?? null))

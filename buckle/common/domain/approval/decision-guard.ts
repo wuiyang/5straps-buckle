@@ -6,7 +6,7 @@ import { RECORDED_BEFORE_NOTE } from './recorded-before-note.js'
 import { routeOf, type RecordedRoute } from './routes.js'
 import type { AskMarks } from '../permission/decision.js'
 import { FLOOR_POLICY, type FloorPolicy } from '../permission/floor-policy.js'
-import { isSecretFileSubject } from '../permission/rules/sensitive-path-rule.js'
+import { isSecretFileSubject } from '../permission/subjects.js'
 import { compileHostPattern, UrlPatternError } from '../url-pattern.js'
 
 export type GuardRefusalCode = Extract<ApprovalErrorCode,

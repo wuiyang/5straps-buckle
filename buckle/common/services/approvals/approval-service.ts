@@ -1,8 +1,9 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto'
 import { useScopeSafe } from '@5straps/runtime'
-import type { ApprovalDecision, ApprovalRequest, ApprovalSkipReason, ApprovalWait } from '@5straps/protocol'
+import type { ApprovalRequest, ApprovalSkipReason, ApprovalWait } from '@5straps/protocol'
 import { callDigestOf, canonicalJson, challengeBytes, shownCallDigestOf, SIGNED_REQUEST_VERSION, WORKSPACE_NAME_MAX, type ApprovalChallenge, type ShownApprovalCall } from '@5straps/protocol/signed-request'
-import { requestIdKey } from '../invocation/executions.js'
+import { callIdentityKey, requestIdKey } from '../../domain/call-identity.js'
+import { heldAskName } from '../../domain/approval/call-identity.js'
 import type { ApprovalKey } from '@5straps/protocol/envelope'
 import type { NonceClaims } from '../../types/ports/nonce-claims.js'
 import { MAX_TIMER_MS, remainingMs } from '../../domain/approval/expiry.js'
@@ -10,17 +11,17 @@ import { reachOf, rightsOf } from '../../domain/approval/assurance.js'
 import type { AnswerSender, ApprovalBackend, ApprovalHold, ApprovalHost, DecisionBody, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent, SkipReceipt } from '../../types/ports/approval-backend.js'
 import { FORMS_SOURCES, SOURCES, type ApprovalSource, type FormsFace } from '../../types/ports/approval-source.js'
 import type { CallAttempt } from '../../types/ports/action-log.js'
-import type { AuditedWidening, DecisionAudit, DecisionEnding, DecisionProofKind, SessionEndCause } from '../../types/ports/decision-audit.js'
+import type { AuditedWidening, DecisionAudit, DecisionEnding, SessionEndCause } from '../../types/ports/decision-audit.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { GrantHolder } from '../../domain/permission/grant-holder.js'
-import type { CodeBinding } from '../../domain/permission/judged.js'
 import { logger, withoutCause } from '../../runtime/log.js'
 import { openApprovalDecision } from './approval-envelope.js'
 import { listedApprovals } from './approval-listing.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
 import { backendDecisionOf, backendReceipt, decisionOf, decisionRecord, INVALID_BACKEND_DECISION, readInput, receiptOf, skipReceiptOf, type ChallengeListing, type CoreApprovalApi } from './core-approval-api.js'
-import { fullAskOf, heldAskName, joinKey, ledgerAskOf, type AskSetting } from './full-ask.js'
+import { fullAskOf, ledgerAskOf, type AskSetting } from './full-ask.js'
 import type { AskedCall } from '../../domain/approval/asked-call.js'
+import type { ApprovalAnswer } from '../../domain/approval/answer.js'
 import type { ApprovalRegistry, Departure, EndedSession, PendingAsk, Resolution, SessionEndRequest, SkipResolution } from './approval-registry.js'
 import { maskHeld, maskHeldJson, masksHeld } from '../secrets/mask.js'
 
@@ -89,26 +90,6 @@ export interface ApprovalWaitResult {
   approvals: ApprovalRequest[]
   answered: string[]
   superseded?: true
-}
-
-export interface ApprovalAnswer {
-  decision: ApprovalDecision
-  source: ApprovalSource
-  /** `BUCKLE-D18`: a host pattern, which only `buckle approve --host` passes. */
-  widenTo?: string
-  /** The digest of the challenge a person's key decided on: it must be the ask's own (B24). */
-  challenge?: string
-  /** key:<fingerprint> for a decision a person's enrolled key signed; recorded with it and its grant. */
-  decidedBy?: string
-  consumeNotAfter?: number
-  /** The code an approved `once` binds to, where the decision AI's thorough stage approved it on request (fix brief 9, B31). */
-  code?: CodeBinding
-  /** Grant the ask's wider subject in place of its own, as the ledger records it. */
-  widen?: 'below'
-  /** What carried it beyond its route, whose nonce reading it already claimed; none when absent. */
-  proof?: Exclude<DecisionProofKind, 'none'>
-  /** The sender's caller, which core takes from a forms host alone. */
-  caller?: string
 }
 
 export interface ApprovalService extends CoreApprovalApi {
@@ -316,7 +297,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       let handedOff = false
       try {
         const hold = (await options.hold()) ?? UNBOUND_HOLD
-        const key = joinKey({ ...input, actor })
+        const key = callIdentityKey({ ...input, actor })
         const ownHold = holdFor({ hold, graceMs: options.graceMs, hint: input.wait })
         // The hold the asks are recorded with: an ask that states no deadline lapses ten minutes after it where the face sends the call again (the MCP asks brief, item 5).
         const issued = await options.registry.ask({ tool: input.tool, sessionId: input.sessionId, asks: input.asks, requestId: input.requestId, waitMs: askLifetime(options.graceMs, input.wait), ...(input.resends ? { holdMs: ownHold } : {}), ...(actor === undefined ? {} : { actor }), ...(input.fingerprint === undefined ? {} : { fingerprint: input.fingerprint }), ...(input.call === undefined ? {} : { call: input.call }), ...(input.attempt === undefined ? {} : { attempt: input.attempt }) })

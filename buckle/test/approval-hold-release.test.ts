@@ -7,7 +7,7 @@ import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, type ApprovalAskInput, type ApprovalService } from '../common/services/approvals/approval-service.js'
-import { heldAskName } from '../common/services/approvals/full-ask.js'
+import { heldAskName } from '../common/domain/approval/call-identity.js'
 import { createExecutingMark, executingMarks } from '../common/services/workspaces/active-work.js'
 import type { ApprovalBackend, ApprovalHold } from '../common/types/ports/approval-backend.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'

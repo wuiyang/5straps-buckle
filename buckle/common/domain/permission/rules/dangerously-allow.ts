@@ -3,14 +3,10 @@ import { isDangerouslyAllowOnMode, type DangerouslyAllowMode, type DangerouslyAl
 import { isInside } from '../../paths.js'
 import { type PermissionDecision, unreadCodeCause } from '../decision.js'
 import type { PermissionEngine } from '../engine.js'
-import { floorSubjectPath, isFloorSubject, isRestoreSubject } from './destructive-path-rule.js'
-import { isSecretFileSubject, SECRET_FILE_PREFIX } from './sensitive-path-rule.js'
+import { floorSubjectPath, isFloorSubject, isRestoreSubject, isSecretFileSubject, SECRET_FILE_PREFIX } from '../subjects.js'
 
 /** How an ask the switch let through reads in allowedBy and approvedBy: `dangerously_allow:<mode>:<rule>:<subject>`. */
 export const DANGEROUSLY_ALLOW = 'dangerously_allow'
-
-/** A command subject keeps its executable only: its arguments can carry a credential. */
-const MAX_SUBJECT_LENGTH = 200
 
 /** What the switch covers, as the owner said it (decision D7): bound to the workspace root, or its mount when one is set. */
 export const DANGEROUSLY_ALLOW_SCOPE = 'bound to the workspace root, or its mount when one is set'
@@ -103,10 +99,4 @@ export function dangerousUses(allowedBy: readonly string[]): Array<{ mode: Dange
     const [prefix, mode, rule, ...subject] = key.split(':')
     return prefix === DANGEROUSLY_ALLOW && isDangerouslyAllowOnMode(mode) && rule ? [{ mode, rule: rule as PermissionRuleId, subject: subject.join(':') }] : []
   })
-}
-
-/** What the audit keeps of a subject: a path or host as written (capped), a command line as its executable and its length. */
-export function redactedSubject(rule: PermissionRuleId, subject: string): string {
-  if (rule === 'destructive_command') return `${subject.split(' ', 1)[0]!.slice(0, MAX_SUBJECT_LENGTH)} [${subject.length} characters]`
-  return subject.length > MAX_SUBJECT_LENGTH ? `[${subject.length} characters]` : subject
 }

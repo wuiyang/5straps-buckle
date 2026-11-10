@@ -4,6 +4,7 @@ import { wordList } from '../../word-list.js'
 import type { GrantScope } from '@5straps/protocol'
 import type { PermissionDecision, PermissionRule, RuleInput } from '../decision.js'
 import { allowedVia, ask, deny, PLAIN_MARKS } from '../decision.js'
+import { isSecretFileSubject, secretFileSubject, SECRET_FILE_PREFIX } from '../subjects.js'
 
 /** Directory names whose entire subtree holds credentials. */
 const SENSITIVE_DIRECTORIES = new Set([
@@ -44,21 +45,6 @@ const SENSITIVE_FILENAME_PATTERNS = [
   /^secrets?\.(json|ya?ml|toml|ini)$/,
   /_rsa$/,
 ]
-
-/**
- * The subject a secret file's use is asked and granted under (docs/user/how-to/secrets.md): never a path, so a grant to read the
- * file into a command's argument list never opens the file to the agent, nor a read of it the other way round.
- */
-export const SECRET_FILE_PREFIX = 'secret-file:'
-
-export function secretFileSubject(path: string): string {
-  return `${SECRET_FILE_PREFIX}${path}`
-}
-
-/** Whether a sensitive_path subject is a secret file's use, which may be granted for a session or always. */
-export function isSecretFileSubject(subject: string): boolean {
-  return subject.startsWith(SECRET_FILE_PREFIX)
-}
 
 export interface SensitivePathOptions {
   /**

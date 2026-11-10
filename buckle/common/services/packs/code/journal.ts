@@ -7,7 +7,7 @@ import { replaceFile } from '../../../adapters/json-file-store.js'
 import { setMode } from '../../../adapters/file-modes.js'
 import { workspaceStateKey } from '../../../domain/workspace-key.js'
 import { logger } from '../../../runtime/log.js'
-import { EXECUTION_TTL_MS } from '../../invocation/executions.js'
+import { CALL_REPLAY_WINDOW_MS } from '../../../domain/call-identity.js'
 
 /**
  * The replay journal of a script that stopped at an ask (owner decision D82, point 7): its clock start, seed, the
@@ -16,7 +16,7 @@ import { EXECUTION_TTL_MS } from '../../invocation/executions.js'
  * run twice; under the workspace's state directory, which every sandbox hides, because results may hold file
  * contents. One file per script, `<key>.json`, the key naming the session, the actor, and the script.
  */
-export const JOURNAL_TTL_MS = EXECUTION_TTL_MS
+export const JOURNAL_TTL_MS = CALL_REPLAY_WINDOW_MS
 /**
  * The most one journal holds; a script whose results pass it cannot be resumed, and its journal keeps its calls as
  * stubs, their results dropped, so none runs again (final review of 0.1.4, finding docs code-mode-02.md:19).

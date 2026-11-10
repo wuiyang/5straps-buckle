@@ -1,6 +1,6 @@
-import { createHash } from 'node:crypto'
 import type { ApprovalRequest } from '@5straps/protocol'
 import type { AskedCall } from '../../domain/approval/asked-call.js'
+import { callIdentityKey } from '../../domain/call-identity.js'
 import type { ApprovalHold, FullAsk } from '../../types/ports/approval-backend.js'
 import type { PendingAsk } from './approval-registry.js'
 
@@ -42,21 +42,8 @@ export function ledgerAskOf(ask: PendingAsk, setting: { workspace: FullAsk['work
   const { request } = ask
   const requestId = ask.requestId ?? request.token
   return fullAskOf(request, {
-    workspace: setting.workspace, group: ask.callRef ?? request.token, idempotencyKey: setting.idempotencyKey(joinKey({ sessionId: ask.sessionId, actor: ask.actor, requestId })),
+    workspace: setting.workspace, group: ask.callRef ?? request.token, idempotencyKey: setting.idempotencyKey(callIdentityKey({ sessionId: ask.sessionId, actor: ask.actor, requestId })),
     correlationId: requestId, requestId, actor: ask.actor ?? null, sessionId: ask.sessionId, hold: null,
     ...(ask.call?.complete ? { call: ask.call } : {}),
   })
-}
-
-/** The in-process twin of the registry's join: the same requestId, session and actor. */
-export function joinKey(input: { sessionId: string; requestId: string; actor?: string }): string {
-  return JSON.stringify([input.sessionId, input.actor ?? null, input.requestId])
-}
-
-/**
- * The name a call's hold gives its asks in the executing mark, which every process reads: the join key, hashed, so the
- * mark names the asks a re-send would join and holds no requestId.
- */
-export function heldAskName(input: { sessionId: string; requestId: string; actor?: string }): string {
-  return createHash('sha256').update(joinKey(input)).digest('base64url')
 }

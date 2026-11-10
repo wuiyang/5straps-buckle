@@ -1,5 +1,5 @@
 import type { LogDrops, LogQueueStats } from '@5straps/runtime'
-import type { ActionLogEntry } from './action-log.js'
+import type { ActionLogEntry, AppendOptions } from './action-log.js'
 
 /** One log the service writes: entries of one name share one queue, written in batches by the destination last handed in. */
 export interface LogDestination {
@@ -9,14 +9,6 @@ export interface LogDestination {
   dropped(drops: LogDrops): ActionLogEntry
   /** Hears each entry the service drops unwritten, as it drops. */
   lost(entries: readonly ActionLogEntry[]): void
-}
-
-/**
- * `untrusted`: a record anyone can make Buckle write, such as the refusal of a caller with no credential or of the
- * agent's own malformed request; it gives way to every other held entry, so a flood of them pushes none of those out.
- */
-export interface AppendOptions {
-  untrusted?: boolean
 }
 
 export interface LogServiceStats {

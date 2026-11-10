@@ -1,5 +1,6 @@
 import type { JsonObject } from '@5straps/protocol'
-import { EXECUTION_LIMIT, EXECUTION_TTL_MS, requestFingerprint } from '../common/services/invocation/executions.js'
+import { CALL_REPLAY_WINDOW_MS, requestFingerprint } from '../common/domain/call-identity.js'
+import { EXECUTION_LIMIT } from '../common/services/invocation/executions.js'
 
 /**
  * What makes two MCP tool calls the same call (the MCP asks brief, item 2), defined here alone: the same tool, the same
@@ -38,7 +39,7 @@ export function createResendJoin(options: { now?: () => number } = {}): ResendJo
     remember(key, requestId) {
       // Moved to the end, so the oldest still goes first.
       calls.delete(key)
-      calls.set(key, { requestId, expiresAt: now() + EXECUTION_TTL_MS })
+      calls.set(key, { requestId, expiresAt: now() + CALL_REPLAY_WINDOW_MS })
       for (const oldest of calls.keys()) {
         if (calls.size <= EXECUTION_LIMIT) break
         calls.delete(oldest)
