@@ -91,7 +91,7 @@ The script's deadline, its end, and a shutdown leave its asks pending, and the s
 again joins them. Buckle withdraws them when the caller itself cancels, and when the script cannot
 be resumed, with `CODE_REPLAY_TOO_LARGE` or `CODE_REPLAY_DIVERGED`, since no call would spend them.
 A withdrawal that fails, such as one behind a busy approvals file, is logged, the answer keeps its
-code, and the asks expire on their own.
+code, and the asks run out on their own, [skipped](approvals-09.md) with no response.
 
 Once the person answers, the agent sends the same script again, and Buckle replays what already
 ran: [Code mode, part two](code-mode-02.md) has how.

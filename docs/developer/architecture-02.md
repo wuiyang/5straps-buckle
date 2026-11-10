@@ -19,7 +19,7 @@ directory:
 
 | File | Holds |
 |---|---|
-| `approvals.json` | pending asks, recent decisions with each lasting approval's grant id and save state, unspent `once` approvals, and undelivered webhook notices |
+| `approvals.json` | pending asks, recent decisions with each lasting approval's grant id and save state, unspent `once` approvals, recent asks skipped with no response, and undelivered webhook notices |
 | `approval-calls/<uuid>.json` | the whole call of each request group, written once however many asks it made |
 | `approval-revocations.json` | revokes and session ends not yet finished: made while `approvals.json` was unreadable, or whose grants still stand. Approvals they name clear nothing; the next decision, ask, spent once, or opening finishes them, then deletes it. While it is damaged, those are refused and no session approval clears a call |
 | `grants.json` | `session` and `always` grants and remembered denials (`common/adapters/grant-store/file-grant-store.ts`) |
@@ -62,8 +62,8 @@ an `unavailableReason` contributes no tools, so the registry, the manifest, and 
 runs. Plugins load through `common/adapters/plugin-registry.ts` from modules that export
 `createPack(options)`, recorded in `plugins.json`. `defineTool` refuses a name Buckle writes its
 own records under (`isRecordTool` in `common/domain/record-tools.ts`): `approval_decision`,
-`log_dropped`, `approval_session_ended`, and any starting `cli_`, `setup_`, `workspace_`, or
-`policy_`. A plugin with such a tool fails to load, shows as an unavailable pack, and the node's
+`log_dropped`, `approval_session_ended`, `approval_skipped`, and any starting `cli_`, `setup_`,
+`workspace_`, or `policy_`. A plugin with such a tool fails to load, shows as an unavailable pack, and the node's
 log names the tool.
 
 **Pack metadata:** `common/services/packs/catalogue.ts` defines built-in ids, order, summaries,

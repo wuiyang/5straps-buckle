@@ -71,8 +71,9 @@ anything is asked or run.
 
 - A client that closes its connection while its call waits leaves the call unrun, audited
   `CALLER_LEFT`. Its ask, once no other Buckle process holds it, is marked abandoned: it stays
-  answerable for ten minutes, the time a call sent again can join it, then lapses. An explicit
-  cancel over stdio withdraws the asks, audited `CALLER_CANCELLED`.
+  answerable for ten minutes, the time a call sent again can join it, then [is
+  skipped](approvals-09.md). An explicit cancel over stdio withdraws the asks, audited
+  `CALLER_CANCELLED`.
 - At `approvalWaitMs` `0` an ask from an MCP call or a copy states no deadline, and lapses ten
   minutes after the last hold on it, in any Buckle process, ended. The same call sent again joins
   it and can only push the ten minutes back. An ask on `/v1/invoke` waits until it is answered,
@@ -86,8 +87,7 @@ anything is asked or run.
 - When a session's 50 waiting asks, or the workspace's 500, are full, the oldest abandoned asks
   are withdrawn first to make room, and told cancelled. A cap full of asks someone still holds,
   or re-sent, refuses as before.
-- With no terminal attached, `buckle serve` logs `Approval pending` for each ask a call made,
-  not only its first.
+- With no terminal attached, `buckle serve` logs `Approval pending` for each ask a call made.
 
 ## Copies
 
@@ -95,8 +95,8 @@ anything is asked or run.
 120 seconds at most, `0` included, so the node answers before node:http cuts a request at 300
 seconds. `buckle cp` prints the node's instruction once per ask and one line naming the asks it
 waits on, never a token, then sends the same request again under the same requestId, which joins
-them. It treats an HTTP 408, from a node that holds longer, the same way, and an ask that expired
-is asked again by the next send. It stops once the copy runs or is refused, or at Ctrl-C (exit
-130).
+them. It treats an HTTP 408, from a node that holds longer, the same way, and an ask skipped
+unanswered is asked again by the next send. It stops once the copy runs or is refused, or at
+Ctrl-C (exit 130).
 
 [Known limits, part nine](../caveats/known-limits-09.md#asks-over-mcp) lists what this still leaves out.

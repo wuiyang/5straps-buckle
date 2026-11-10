@@ -9,7 +9,9 @@ asks out and decisions in, and enforces nothing. Paths are in `buckle/`.
 
 - **`ApprovalBackend`:** core calls `open(host)`, which answers with the backend's
   capabilities, then `submit(asks, context)` for one call's asks, `notify(events)` when an ask
-  leaves the queue (`session_ended` where [its session ended](approval-backend-07.md)), and `close()`. A submit is `accepted` or `declined`, never a decision.
+  leaves the queue (`session_ended` where [its session ended](approval-backend-07.md), `no_response`
+  where [nobody answered](approval-backend-10.md)), and `close()`. A submit is `accepted` or
+  `declined`, never a decision.
 - **`ApprovalHost`:** handed over at open. `decide` is the one way a decision enters,
   `skipSave` gives up an approval's grant; `pending` and `ask` give the asks routed to the
   backend; `log` writes the node's log. Core binds `host.source` and `host.reach`, whose asks
@@ -52,8 +54,8 @@ schema, a service, or the node's logger.
 4. Under the lock, in order: that screen again, [the caller](approval-backend-04.md#the-caller),
    a repeat, the ask waiting, the source routed, a device's challenge matching, the call kept
    whole, a floor approval from a person at `local` or above, the scope offered, no `always` on
-   a destructive command or where the floor policy forbids it, a wider subject from the terminal
-   or `cli` alone, sensitive files, lasting denials for sensitive files alone, a signed `once`
+   a destructive command or where the floor policy forbids it, a wider subject from a person
+   ([any route](approval-backend-11.md)), sensitive files, lasting denials for sensitive files alone, a signed `once`
    inside its deadline, and the host pattern covering the host that asked.
 5. An approval commits, then its grant; a lasting denial is written first, and withdrawn if its
    decision cannot commit. [Grant saves](approval-backend-02.md) covers a write that fails.
@@ -65,7 +67,7 @@ schema, a service, or the node's logger.
 
 | Source | Assurance | Approves |
 |---|---|---|
-| `terminal`, `cli` | `local` | Any ask, and the wider subject; `cli` alone takes a host pattern |
+| `terminal`, `cli` | `local` | Any ask; `cli` alone takes a host pattern |
 | `forms` | `local` | Any ask, lasting and floor included, while forms are on |
 | `http-forms` | `local` | As `forms`, for the asks its own caller raised |
 | `devices` | `key` | Any ask it signed the challenge of |

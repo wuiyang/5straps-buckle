@@ -58,6 +58,7 @@ that reads it. Paths are in `buckle/`.
   as when its writer resumed, and read as fresh. `executingSessions` splits the sessions into
   `running` and `stalled`. `asksHeldElsewhere` gives the asks other runtimes hold; with this
   runtime's own (`heldAsks`), the registry's `held` reads them in `holdEnded`: an ask's lapse
-  starts only once no hold on it remains anywhere. A folder not made yet reads as none; any other
+  starts only once no hold on it remains anywhere. An ask that lapses is skipped with no
+  response, never denied ([an ask nobody answers](approval-backend-10.md)). A folder not made yet reads as none; any other
   read error, or a fresh mark that does not parse, throws.
 - **Kept apart:** `activeElsewhere`, which `disable`, `remove`, and `prune` read, skips them.

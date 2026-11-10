@@ -52,12 +52,13 @@ A question that ends with no answer says why on its row:
 
 | Row ends with | Why |
 |---|---|
-| `[timeout]` | the ask expired |
-| `[no longer waiting]` | it was answered elsewhere, or the agent's call withdrew it |
+| `[skipped: no response]` | nobody answered before the ask ran out ([when nobody answers](approvals-09.md)) |
+| `[no longer waiting]` | it was answered elsewhere, the agent's call withdrew it, or the ask lapsed before its stated expiry |
 | `[stopped]` | the node is stopping |
 
 Ctrl-C at a question stops the node, as it does with no question open.
-A question whose ask expired while it waited its turn is not shown.
+A question whose ask ran out while it waited its turn is not shown. The node log names each ask
+skipped with no response, a lapsed one included.
 
 ### When a grant cannot be saved
 

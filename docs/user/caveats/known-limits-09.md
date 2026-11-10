@@ -65,10 +65,10 @@
   it again. A client whose own timeout is under 30 seconds, and
   that sends no shorter `5straps/approvalWait`, can still miss an answer and ask twice.
 - An ask answered `approval_required` that the agent never sends again counts against the
-  session's 50 until it lapses or expires; only abandoned asks make room.
+  session's 50 until it is [skipped](../how-to/approvals-09.md); only abandoned asks make room.
 - An ask at `approvalWaitMs` `0` from an MCP call or a copy still states no deadline in its
   `expiresAt`, since a person's device signs that field in its challenge; the lapse is kept
-  beside it. A decision on a lapsed ask is refused as unknown or expired. `/v1/invoke` asks do
+  beside it. A decision on a lapsed ask is refused as skipped with no response. `/v1/invoke` asks do
   not lapse at wait `0`: it stays until answered, keeping its
   [session](../how-to/approvals-07.md) from ending at idle.
 - An ask held until answered keeps no lapse when the last node process holding it is killed
@@ -84,8 +84,7 @@
   deletes 100 entries in each of many direct calls is never asked by it; each call meets the write
   gate alone. A script that stopped at an ask and is sent again counts from that send, as the calls
   it replays do not run again. A folder moved whole is not counted, as nothing of it is removed.
-- The wider subject, `delete-below:<folder>`, is not part of the challenge a device key signs, so a
-  person's device cannot grant it yet. The serve terminal, `buckle approve --below`, and `buckle approvals --watch` grant it.
-- An MCP form answers for the ask's own subject, and offers no wider choice.
+- A device sees the wider subject, `delete-below:<folder>`, only where it asks the node for it, as
+  this build's `buckle client` does; a device from an earlier build cannot grant it.
 - The shell is outside the policy: `rm`, `find -delete`, and the other commands at the command floor
   ask inside the workspace's folder as they did, whatever `files.deleteInWorkspace` says.

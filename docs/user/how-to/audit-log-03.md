@@ -11,8 +11,8 @@ workspace's log, whichever route it came by: the serve terminal, `buckle approve
 The attempt is written as Buckle receives the answer, and the result once it applied (`ok`) or was
 refused (`error`, its detail the refusal's code, such as `scope_not_offered`). An answer that
 stopped on an error ends with an `error` result and no code. A device's or an envelope's answer
-refused while Buckle reads it (its proof, its envelope, a device naming a subject, or a body that
-does not parse) writes none: the setup POST's `setup_post_approvals` entries record it, beside
+refused while Buckle reads it (its proof, its envelope, or a body that does not parse) writes
+none: the setup POST's `setup_post_approvals` entries record it, beside
 `setup_approval_proof_refused` or `setup_approval_envelope_refused` for a refused proof or envelope.
 
 Their `args` hold the `token`, the `outcome` (`approve` or `deny`), the `scope`, the `source` (its
@@ -21,9 +21,10 @@ enrolled key or the decision AI decided. A result adds the `assurance`, `repeate
 `session` or `always` approval, `save`: where its grant stands (`owed`, `saved`, `skipping`,
 `skipped`, or `dropped`), or the refusal's `code`. A refusal's reason is not kept, since it can name a path.
 
-- **`widening`:** its `kind`, `none`, `below` (a folder and its subfolders, as `buckle approve
-  --below` grants), or `host` (a host pattern, as `--host` grants, its `subject` the pattern). A
-  result that applied a widening names the `subject` the grant took in place of the ask's own.
+- **`widening`:** its `kind`, `none`, `below` (a delete's folder and its subfolders, as every
+  route's folder and below choice grants), or `host` (a host pattern, as `buckle approve --host`
+  grants, its `subject` the pattern). A result that applied a widening names the `subject` the
+  grant took in place of the ask's own.
 - **`call`:** on a result, the call the answer met: the `requestId` and `auditId` of that call's
   attempt entry, which find it in this log, and the ask's `rule` and `subject`. A subject is kept
   as written, a command line as its program and its length, a credential in a path hidden. An
@@ -49,9 +50,14 @@ serve first opens the workspace after it starts), and how many
 asks it `withdrawn`, unspent `onces` it dropped, `owed` grants it kept from being written, and
 session `grants` and `denials` it removed. A session with none of these writes none.
 
+Each ask nobody answered before it ran out ([when nobody answers](approvals-09.md)) writes one
+`approval_skipped` result entry, `ok`, with the `detail` `no_response`. It names no actor, as nobody
+answered. Its `args` hold the `token`, the `reason` `no_response`, and the `call`, as a decision's
+result names it. The process whose update dropped the ask writes it.
+
 No tool takes a name Buckle writes its own records under: `approval_decision`, `log_dropped`,
-`approval_session_ended`, and those starting `cli_`, `setup_`, `workspace_`, or `policy_`. An agent's call naming one is refused
-as an unknown tool, and leaves no entry.
+`approval_session_ended`, `approval_skipped`, and those starting `cli_`, `setup_`, `workspace_`, or
+`policy_`. An agent's call naming one is refused as an unknown tool, and leaves no entry.
 
 `buckle approve` also keeps its `cli_approve` entries, whose result reads `ok` for a decision that
 applied though its grant did not save, and `buckle approvals --watch` its

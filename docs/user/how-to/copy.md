@@ -87,8 +87,8 @@ count and digest, and the node refuses a body whose digest does not match.
 While the copy waits, the CLI sends the same request again 2 seconds after each answer, and the node
 holds each send for its own wait first. Each send joins the same pending ask, so the copy does not
 start over. An approved copy runs; a denied one stops and exits
-1. An ask that expires before anyone answers is asked again by the next send, which shows the fresh
-ask. A node that holds a copy past node:http's 300 seconds answers HTTP 408; the CLI says so on one
+1. An ask nobody answers before it runs out is [skipped](approvals-09.md), and the next send asks
+again, showing the fresh ask. A node that holds a copy past node:http's 300 seconds answers HTTP 408; the CLI says so on one
 line and sends the same request again too. Ctrl-C stops the wait, exit 130, and nothing is copied
 ([approvals over MCP, and copies](approvals-03.md#copies)).
 

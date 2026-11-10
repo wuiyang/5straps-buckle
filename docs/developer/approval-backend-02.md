@@ -91,5 +91,5 @@ Written before its decision commits, so a denial is never recorded without being
   recorded, and the ask waits. A step after the update that fails still answers that refusal.
 - **No skip:** nothing was recorded, so refusing just the call is a `once` denial.
 - **A commit that fails:** the denial is taken back. A step that fails once the decision is
-  recorded, such as waking the webhook sender or reporting an expired ask, leaves the decision
-  applied and its denial in force.
+  recorded, such as waking the webhook sender or reporting an ask skipped with no response,
+  leaves the decision applied and its denial in force.

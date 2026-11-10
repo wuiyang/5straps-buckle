@@ -33,5 +33,6 @@ session grant in `grants.json` counts as its last activity, so an old grant stil
   call may run on the grant it read just before, or ask again.
 - A tool whose process stalls for more than 5 minutes can read as idle to another process
   meanwhile, so its sessions can end sooner, never later.
-- An ask held until answered whose last holding process was killed keeps no lapse, so it keeps its
-  session from ending at idle until you answer it, a denial included.
+- An ask held until answered whose last holding process was killed keeps no lapse, so it is never
+  [skipped](approvals-09.md) and keeps its session from ending at idle until you answer it, a
+  denial included.

@@ -39,7 +39,8 @@ So a question you are still reading stays answerable, however long you take: the
 withdraws it. With the approval wait at `0`, which you set on purpose, its call waits until you
 answer. Over HTTP MCP once its call's 30 seconds are up, and with [forms](approvals-06.md) on, no
 call waits on it, and it lapses ten minutes after its call returned ([asks nobody
-holds](approvals-03.md#asks-nobody-holds)). An answer starts the window again. Once none of its
+holds](approvals-03.md#asks-nobody-holds)), skipped with no response ([when nobody
+answers](approvals-09.md)). An answer starts the window again. Once none of its
 asks waits and none of its tools runs, a session whose last activity is older than the window can
 end at the next check.
 

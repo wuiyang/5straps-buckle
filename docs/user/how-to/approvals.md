@@ -86,15 +86,15 @@ and `buckle approve` take the [workspace](workspaces.md) holding the current dir
 `--workspace <name>`, or every online one with `--all`.
 
 Nothing the agent token reaches can decide, save an MCP form while you have [forms](approvals-06.md)
-on: the agent's own app draws and answers it. With the experimental
+on: the agent's app draws and answers it. With the experimental
 `BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true`, `POST /workspaces/<name>/setup/approvals` takes a denial
 under the admin credential, and an approval only when a device key enrolled with `buckle keys
 enroll` signed it, as `buckle client approve <node-url> <token> --workspace <name>` does.
 
 `BUCKLE_APPROVAL_WEBHOOK` names a URL each new ask is posted to, carrying the node (`serverId`), the
 workspace, and per ask the token, tool, rule, subject, reason, expiry, scopes, and the answering
-commands. Later posts say how each ask ended. A post times out after 5 seconds; a failure is
-logged, never failing the call. It never decides.
+commands. Later posts say how each ask ended ([skipped](approvals-09.md) where unanswered). A post
+times out after 5 seconds; a failure, logged, never fails the call. It never decides.
 
 ## Timeouts
 
