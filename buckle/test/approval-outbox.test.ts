@@ -12,7 +12,7 @@ import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-
 import { createApprovalNotices, type ApprovalNotices } from '../common/services/approvals/approval-notices.js'
 import { APPROVAL_OUTBOX_BYTES_MAX, APPROVAL_OUTBOX_COUNT_MAX, APPROVAL_OUTBOX_RETENTION_MS, createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { logger } from '../common/runtime/log.js'
-import { NoticeRefusedError } from '../common/services/approvals/approval-errors.js'
+import { NoticeRefusedError } from '../common/domain/approval/notice-refused.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 

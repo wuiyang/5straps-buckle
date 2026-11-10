@@ -3,7 +3,7 @@ import { SEALED_REPORT_PATHS, sealedReport, type ApprovalKey } from '@5straps/pr
 import { shownCall, type AskedCall } from '../../domain/approval/asked-call.js'
 import { approveCommand, judgeCommand, judgeNoteFor, reviewCommand, workspaceLabel } from '../../domain/approval-instruction.js'
 import type { RatingNote } from '../../types/ports/approval-backend.js'
-import { NoticeRefusedError } from '../../services/approvals/approval-errors.js'
+import { NoticeRefusedError } from '../../domain/approval/notice-refused.js'
 import { logger } from '../../runtime/log.js'
 
 const NOTIFY_TIMEOUT_MS = 5_000

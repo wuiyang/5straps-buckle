@@ -1,7 +1,7 @@
 import type { ApprovalNotice, ApprovalSkipReason, GrantScope } from '@5straps/protocol'
 import type { ApprovalRegistry } from './approval-registry.js'
 import type { ApprovalDelivery } from '../../domain/approval/ledger-state.js'
-import { NoticeRefusedError } from './approval-errors.js'
+import { NoticeRefusedError } from '../../domain/approval/notice-refused.js'
 import { alreadyReported } from '../../adapters/json-file-store.js'
 import { logger } from '../../runtime/log.js'
 
