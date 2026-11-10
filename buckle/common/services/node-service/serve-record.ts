@@ -182,8 +182,17 @@ export async function waitForStop(stateDirectory: string, timeoutMs: number, ori
 }
 
 function processHasExited(pid: number): boolean {
-  try { process.kill(pid, 0); return false }
+  try { process.kill(pid, 0) }
   catch (error) { return error instanceof Error && 'code' in error && error.code === 'ESRCH' }
+  if (process.platform !== 'linux') return false
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    const commandEnd = stat.lastIndexOf(')')
+    return commandEnd !== -1 && stat.slice(commandEnd + 1).startsWith(' Z ')
+  } catch {
+    // Without readable proc state, retain the conservative signal-0 result.
+    return false
+  }
 }
 
 /**
