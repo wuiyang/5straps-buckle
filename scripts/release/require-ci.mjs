@@ -2,6 +2,7 @@
 import { execFileSync } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isEntryPoint } from '../entry-point.mjs'
 import { preparedSource } from './check-prepared.mjs'
 import { Refusal } from './command.mjs'
 
@@ -161,7 +162,7 @@ function run(command, args) {
   return execFileSync(command, args, { cwd: resolve(dirname(fileURLToPath(import.meta.url)), '../..'), encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   const args = process.argv.slice(2)
   const result = args.length > 1 || args.some(arg => arg !== '--source')
     ? { ok: false, message: 'Usage: node scripts/release/require-ci.mjs [--source]' }

@@ -8,6 +8,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
+import { isEntryPoint } from '../entry-point.mjs'
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const DEFAULT_BUNDLED = [join(repository, 'buckle', '.output', 'bundled-packages.json')]
@@ -84,4 +85,4 @@ function main() {
   return 1
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) process.exitCode = main()
+if (isEntryPoint(import.meta.url)) process.exitCode = main()

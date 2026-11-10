@@ -3,16 +3,23 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { scratchDirectory } from './support/release-repository'
+import { linkedScriptPath, scratchDirectory } from './support/release-repository'
 
 const command = pathToFileURL(join(import.meta.dirname, '../scripts/release/command.mjs')).href
-function execute(body: string) {
+function execute(body: string, linked = false) {
   const script = join(scratchDirectory('release-command-'), 'main.mjs')
   writeFileSync(script, `import { Refusal, runAsScript } from ${JSON.stringify(command)}; await runAsScript(import.meta.url, ${body})`)
-  return spawnSync(process.execPath, [script], { encoding: 'utf8' })
+  return spawnSync(process.execPath, [linked ? linkedScriptPath(script) : script], { encoding: 'utf8' })
 }
 
 describe('release script entry point', () => {
+  it('runs a linked entry point and reports its refusal', () => {
+    const result = execute('() => { throw new Refusal("stop linked release") }', true)
+    expect(result.status).toBe(1)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toBe('stop linked release\n')
+  })
+
   it.each(['() => "sync result"', 'async () => "async result"'])('prints the result of %s', main => {
     const result = execute(main)
     expect(result.status).toBe(0)

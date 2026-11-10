@@ -1,10 +1,11 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { bundledAdvisories, checkedAudit, readBundled } from '../scripts/release/audit-bundled.mjs'
+import { linkedScriptPath } from './support/release-repository'
 
 // B21 (plan section G): an advisory for a package the Buckle build bundled into .output fails the
 // release audit, which `pnpm audit --prod` cannot see. Fixtures only: no network.
@@ -39,6 +40,18 @@ afterEach(() => {
 })
 
 describe('the bundled-package audit', () => {
+  it('reports a bundled advisory through a linked entry point', () => {
+    const directory = tempDirectory()
+    const bundled = join(directory, 'bundled.json')
+    const affected = join(directory, 'affected.json')
+    writeFileSync(bundled, JSON.stringify(BUNDLED))
+    writeFileSync(affected, JSON.stringify(audit([{ id: 7, module_name: 'srvx', versions: ['1.0.5'] }])))
+    const result = spawnSync(process.execPath, [linkedScriptPath(SCRIPT), '--bundled', bundled, '--audit', affected], { encoding: 'utf8' })
+    expect(result.status).toBe(1)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toContain('srvx@1.0.5 is bundled into .output and has advisory 7 (high)')
+  })
+
   it('names each advisory for a bundled package at its bundled version', () => {
     expect(bundledAdvisories({ audit: audit([{ id: 1, module_name: 'srvx', versions: ['1.0.5'] }]), bundled: BUNDLED })).toEqual([
       { package: 'srvx@1.0.5', id: 1, severity: 'high', title: 'srvx fixture advisory', url: 'https://github.com/advisories/GHSA-fixture-1' },

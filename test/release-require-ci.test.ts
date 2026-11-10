@@ -1,5 +1,8 @@
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { blockingJobs, isReleaseCheckRun, repositoryOf, requireCi, workflowRunId } from '../scripts/release/require-ci.mjs'
+import { linkedScriptPath } from './support/release-repository'
 
 // Source CI must pass in release-check.yml on main. A tagged metadata release may reuse only its
 // strictly validated source parent's checks; release-source.test.ts covers that exemption.
@@ -56,6 +59,14 @@ function fake(input: { onOrigin?: boolean; originAt?: string; dirty?: boolean; d
 }
 
 describe('the CI requirement before publishing', () => {
+  it('refuses invalid arguments through a linked entry point', () => {
+    const script = linkedScriptPath(fileURLToPath(new URL('../scripts/release/require-ci.mjs', import.meta.url)))
+    const result = spawnSync(process.execPath, [script, '--invalid'], { encoding: 'utf8' })
+    expect(result.status).toBe(1)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toBe('Usage: node scripts/release/require-ci.mjs [--source]\n')
+  })
+
   it('allows a release when verify and package-arm64 both succeeded on HEAD', () => {
     const git = fake({ runs: [run('verify', 'success'), run('package-arm64', 'success', { id: 2 })] })
     expect(requireCi({ run: git.run, repository: '' })).toEqual({ ok: true, message: expect.stringContaining('verify and package-arm64 succeeded') })

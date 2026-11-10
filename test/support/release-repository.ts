@@ -1,6 +1,6 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { afterEach } from 'vitest'
 
 // A scratch repository shaped like this one for the release script tests: the three package.json
@@ -35,6 +35,12 @@ export function scratchDirectory(prefix: string): string {
   const directory = mkdtempSync(join(tmpdir(), prefix))
   made.push(directory)
   return directory
+}
+
+export function linkedScriptPath(script: string): string {
+  const link = join(scratchDirectory('release-script-link-'), 'scripts')
+  symlinkSync(dirname(script), link, 'junction')
+  return join(link, basename(script))
 }
 
 /** A scratch repository whose packages hold `versions` (one version for all, or one each) and whose changelog is `changelog`. */

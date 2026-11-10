@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { appendFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isEntryPoint } from '../entry-point.mjs'
 
 export const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 
@@ -37,7 +38,7 @@ export function writeStepOutputs(outputs, file = process.env.GITHUB_OUTPUT) {
  * message, and sets the exit code. Any other error keeps its stack trace.
  */
 export async function runAsScript(moduleUrl, main) {
-  if (!process.argv[1] || resolve(process.argv[1]) !== fileURLToPath(moduleUrl)) return
+  if (!isEntryPoint(moduleUrl)) return
   try {
     process.stdout.write(`${await main()}\n`)
   } catch (error) {
