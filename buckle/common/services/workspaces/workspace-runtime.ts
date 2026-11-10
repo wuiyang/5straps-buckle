@@ -1,7 +1,6 @@
 import { mountSourceState, refuseChangedFolder, validateSandboxMounts } from '../../domain/sandbox-mounts.js'
 import { protectedSettingsFiles, protectedStateRoots } from '../../runtime/config.js'
 import { recordedEnvironmentFilesReader } from '../../runtime/environment-files.js'
-import { serviceInstalled } from '../node-service/installed.js'
 import { createWorkbenchManager } from '../workbench/manager.js'
 import { WorkbenchError, workbenchesDirectory, workbenchHash } from '../workbench/storage.js'
 import { spawnPtyProcess } from '../../adapters/pty-process.js'
@@ -21,7 +20,6 @@ import { PROTOCOL_VERSION, emptyWorkspacePolicy, type HarnessManifest, type Invo
 import { createFileActionLog } from '../../adapters/action-log/file-action-log.js'
 import { createPluginRegistry, type PluginRegistry } from '../../adapters/plugin-registry.js'
 import { createFileGrantStore } from '../../adapters/grant-store/file-grant-store.js'
-import { runProcess } from '../../adapters/process-runner.js'
 import { createWebhookReporter } from '../../adapters/report/webhook-reporter.js'
 import { resolveSandbox, type SandboxResolution } from '../../adapters/sandbox/create-sandbox.js'
 import { actionsPath, approvalNoncesPath, approvalsPath, dangerouslyAllowPath, grantsPath, pluginsPath, sandboxBinds, scratchSources, workspaceFields, type BuckleConfig } from '../../runtime/config.js'
@@ -67,10 +65,7 @@ import { nullPackageScanner, type PackageScanner } from '../../types/ports/packa
 import { createJudgeGate, JUDGE_OFF, type JudgedAsk, type JudgeGate } from '../judge/judge-gate.js'
 import { resolveEffects } from '../invocation/resolve-effects.js'
 import type { PendingAsk } from '../../domain/approval/ledger-state.js'
-import { createBuiltinPacks } from '../packs/index.js'
-import { unmetPackPrerequisite } from '../packs/catalogue.js'
-import { allowedDomainsKey, browserAllowedDomains } from '../packs/browser/allowed-domains.js'
-import { FRESH_BROWSER, modeFingerprint, type BrowserMode } from '../packs/browser/mode.js'
+import { createPackRuntime } from '../packs/runtime.js'
 import { journalDirectory, scriptOfAsk } from '../packs/code/journal.js'
 import { loadRootSkill } from '../packs/pack-skill.js'
 import type { ActionLog, AuditHealth, OwnerRecordChoice } from '../../types/ports/action-log.js'
@@ -103,7 +98,8 @@ import type { SecretSettings } from '../secrets/places.js'
 import { logCallFeedback } from '../invocation/call-feedback.js'
 import { unavailableToolReason } from '../invocation/owner-remediation.js'
 import { listedSecretFile } from '../secrets/secret-file.js'
-import { parseCidr, type AddressRange, type NodeListener } from '../../domain/ip.js'
+import type { AddressRange } from '../../domain/ip.js'
+import { listenerOf, privateRangesOf } from '../../runtime/network-settings.js'
 
 const TOOL_DISABLED = 'Disabled by workspace tool policy'
 
@@ -505,16 +501,11 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
   const manifestTools = (): ToolCapability[] => registry.capabilities().filter(tool => toolDenial(tool.name) === null)
   const browserHeldBy = input.browserHeldBy
   const workspaceName = () => config.serverName
-  const initial = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy, browserInstance: instance, workspaceName })
-  let packs = initial.packs
-  // The browser pack packs.enabled leaves out, kept for the owner's buckle browser close and this runtime's shutdown
-  // alone, as the browsers the workspace recorded outlive the setting that turned the pack off (Codex review L7).
-  let offBrowser = initial.offBrowser
-  let registry = createToolRegistry(availableTools(packs))
+  const initialSettings = resolveSettings(applied, config.workspaceDefaults)
+  const packRuntime = await createPackRuntime({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy, browserInstance: instance, workspaceName, mounts: [initialSettings.mount, initialSettings.mounts] })
+  let registry = createToolRegistry(availableTools(packRuntime.packs))
 
   let activeInvocations = 0
-  /** Packs a rebuild replaced while calls ran on them, closed when the last of those calls ends. */
-  const retiring: Pack[] = []
   const activity = createActiveWorkMark({ directory: marks, workspaceId })
   const executionBudget = input.executionBudget ?? createExecutionBudget()
   const executions = createExecutions({ budget: executionBudget })
@@ -577,7 +568,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
     hasActiveWork: async () => activeInvocations > 0 || await workbenches.hasActiveWork() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
     browserHeldBy: () => browserHeldBy?.() ?? null,
     inspectActiveWork: () => activeInvocations > 0 || workbenches.inspectActive() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
-    manifest: () => ({ history: history.capability(), ...buildManifest({ config, packs, registry, sandbox, paths, skills: allSkills(), copies: toolDenial('fs_receive') === null, searches: toolDenial('fs_search_content') === null }), tools: manifestTools() }),
+    manifest: () => ({ history: history.capability(), ...buildManifest({ config, packs: packRuntime.packs, registry, sandbox, paths, skills: allSkills(), copies: toolDenial('fs_receive') === null, searches: toolDenial('fs_search_content') === null }), tools: manifestTools() }),
     toolCatalog: () => ({ tools: registry.capabilities(), unavailable: registry.capabilities().flatMap(tool => {
       const reason = toolDenial(tool.name)
       return reason ? [{ name: tool.name, reason }] : []
@@ -699,13 +690,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
       await Promise.allSettled([...inFlight])
     },
 
-    closeSessions: () => closePacks([...packs, ...retiring.splice(0), ...(offBrowser ? [offBrowser] : [])]),
-
-    async closeBrowsers() {
-      const browser = packs.find(pack => pack.id === BROWSER_PACK) ?? offBrowser
-      if (!browser?.closeBrowsers) throw new WorkspaceError(`Workspace ${config.serverName} has no browser pack, so it recorded no browsers`, 409)
-      return browser.closeBrowsers()
-    },
+    closeSessions: () => packRuntime.close(),
+    closeBrowsers: () => packRuntime.closeBrowsers(),
 
     /** The owner's own write (a policy, a plugin): every pack rebuilt from workspace.json as it stands, with no wait. */
     async reload() {
@@ -837,8 +823,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
     // none of them to be open. A process holding no workbenches (another runs them) has none to wait for or stop.
     if (input.waitForWork && (reshaped ? await runtime.hasActiveWork() : policyMoved && await workbenches.hasActiveWork())) throw new WorkspaceError(RESHAPE_WAITS, 409)
     const nextPermissions = buildPermissionEngine({ config: nextConfig, compiled: nextCompiled, paths: nextPaths, dangerouslyAllowMode })
-    const built = rebuild ? await buildPacks({ config: nextConfig, sandbox, plugins, compiled: nextCompiled, paths: nextPaths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy, browserInstance: instance, workspaceName }) : null
-    const next = built ? carryPacks({ built: built.packs, current: packs, carried: id => id === BROWSER_PACK && browserInputs({ config: nextConfig, compiled: nextCompiled, mounts: [resolved.mount, resolved.mounts] }) === browserInputs({ config, compiled, mounts: [before.mount, before.mounts] }) }) : null
+    const next = rebuild ? await packRuntime.prepare({ config: nextConfig, sandbox, plugins, compiled: nextCompiled, paths: nextPaths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy, browserInstance: instance, workspaceName, mounts: [resolved.mount, resolved.mounts] }) : null
     if (policyMoved) await workbenches.policyChanged()
     // A verdict was given under the policy in force, which its key names too; a new policy rates every call afresh.
     if (policyMoved) await judgeCache.clear().catch((error: unknown) => { logger.warn('The decision AI\'s kept verdicts could not be cleared after a policy change', { workspaceId, error }) })
@@ -852,10 +837,9 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
     paths = nextPaths
     permissions = nextPermissions
     if (next) {
-      packs = next.packs
-      offBrowser = built?.offBrowser
-      registry = createToolRegistry(availableTools(packs))
-      await retire(next.replaced)
+      packRuntime.install(next)
+      registry = createToolRegistry(availableTools(packRuntime.packs))
+      await packRuntime.retire(next.replaced, activeInvocations > 0)
     }
     for (const listener of listeners) listener()
   }
@@ -878,11 +862,9 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
   /** The settings a call runs under: those in force as it starts, which a later pickup does not change for it. */
   function inForce(): InForce {
     const policy = compiled.policy
-    const packView = packs.map(packDescriptor)
+    const packView = packRuntime.packs.map(packDescriptor)
     const features = { enabledPacks: config.enabledPacks, enableShell: config.enableShell, allowCode: config.allowCode, allowHistory: config.allowHistory, allowHostGit: config.allowHostGit, allowHostLsp: config.allowHostLsp }
-    // The values this workspace's browsers were filled with, by file and NAME, as its browser packs record them beside
-    // their sessions, so every Buckle process on the workspace masks by them, after a restart too (docs/user/how-to/secrets.md).
-    const filledSecrets = packs.find(pack => pack.id === BROWSER_PACK)?.filled
+    const filledSecrets = packRuntime.filledSecrets()
     return { toolPolicy: policy, unavailableTool: tool => unavailableToolReason({ tool, workspaceId, packs: packView, config: features }), registry, permissions, deletes: deletePolicyOf(config), paths, toolDenial: tool => (isToolAllowed(policy, tool) ? null : TOOL_DISABLED), judge: judgeGate({ compiled, paths, permissions, cache: judgeCache }), secrets: { enabled: config.secretsEnabled ?? true }, filledSecrets }
   }
 
@@ -950,25 +932,11 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
     } finally {
       if (--activeInvocations === 0) {
         activity.stop()
-        if (retiring.length > 0) void closePacks(retiring.splice(0), 'retire')
+        packRuntime.settled()
       }
     }
   }
 
-  /** Packs replaced retire once no call still runs on them: a script started before keeps its own tools to its end. */
-  async function retire(replaced: Pack[]): Promise<void> {
-    if (activeInvocations === 0) await closePacks(replaced, 'retire')
-    else retiring.push(...replaced)
-  }
-
-  /**
-   * Each pack closes what it opened; one that fails to is logged, and the rest still close. A pack replaced by one
-   * built from other settings retires instead, where it tells the two apart: what its successor carries on stays.
-   */
-  async function closePacks(closing: Pack[], step: 'close' | 'retire' = 'close'): Promise<void> {
-    const results = await Promise.allSettled(closing.map(async pack => (step === 'retire' ? pack.retire ?? pack.close : pack.close)?.call(pack)))
-    for (const result of results) if (result.status === 'rejected') logger.warn('A pack could not close what it opened', { error: result.reason })
-  }
 
   // A stored entry a later grammar refuses names the file and the repair (StoredPolicyError).
   function compileStartupPolicy(settings: WorkspaceSettings): CompiledPolicy {
@@ -1005,7 +973,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
   }
 
   function allSkills(): LoadedSkill[] {
-    return [...availableSkills(packs), ...localSkills]
+    return [...availableSkills(packRuntime.packs), ...localSkills]
   }
 
   function toolDenial(tool: string): string | null {
@@ -1016,81 +984,6 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
   return runtime
 }
 
-async function buildPacks(input: {
-  config: BuckleConfig
-  sandbox: SandboxResolution
-  plugins: PluginRegistry
-  compiled: CompiledPolicy
-  paths: PathView
-  browserStateDirectory: string
-  history: ChangeHistory
-  untrusted: () => UntrustedRoots
-  reachableTools: () => ToolCapability[]
-  browserHeldBy?: (() => string | null) | undefined
-  browserInstance: string
-  /** The workspace's name as the runtime holds it, which a rename changes in place. */
-  workspaceName: () => string
-}): Promise<{ packs: Pack[]; offBrowser?: Pack }> {
-  const builtin = createBuiltinPacks({
-    cwd: input.config.cwd,
-    paths: input.paths,
-    untrusted: input.untrusted,
-    runProcess,
-    sandbox: input.sandbox.sandbox,
-    sandboxUnavailableReason: input.sandbox.unavailableReason,
-    writableRoots: [input.config.cwd, ...scratchSources(input.config.mounts)],
-    hiddenPaths: protectedStateRoots(input.config),
-    settingsFiles: protectedSettingsFiles(input.config),
-    mountReadOnlyPaths: input.config.mountReadOnlyPaths,
-    sandboxMounts: sandboxBinds(input.config.mounts),
-    approvedUrls: input.compiled.network,
-    privateRanges: privateRangesOf(input.config),
-    listener: listenerOf(input.config),
-    approvedLists: input.compiled.network ? [{ name: 'workspace' as const, entries: input.compiled.network.patterns }] : [],
-    braveSearchApiKey: input.config.braveSearchApiKey,
-    forge: { token: input.config.forgeGithubToken, apiUrl: input.config.forgeApiUrl, author: input.config.forgeGitAuthor },
-    stateDirectory: input.config.stateDirectory,
-    agentBrowserCommand: input.config.agentBrowserCommand,
-    browserStateDirectory: input.browserStateDirectory,
-    maxTimeoutMs: input.config.maxTimeoutMs,
-    browserHeaded: input.config.browserHeaded,
-    browserCdp: input.config.browserCdp,
-    browserProfile: input.config.browserProfile,
-    browserArgs: input.config.browserArgs,
-    browserIdleTimeoutMs: input.config.browserIdleTimeoutMs,
-    browserSettingNames: input.config.browserSettingNames,
-    ...(input.browserHeldBy ? { browserHeldBy: input.browserHeldBy } : {}),
-    browserInstance: input.browserInstance,
-    workspaceName: input.workspaceName,
-    serviceInstalled: () => serviceInstalled(input.config.nodeStateDirectory ?? input.config.stateDirectory),
-    enableShell: input.config.enableShell,
-    allowCode: input.config.allowCode,
-    allowHistory: input.config.allowHistory,
-    reachableTools: input.reachableTools,
-    maxRequestBytes: input.config.maxRequestBytes,
-    maxTransferBytes: input.config.maxTransferBytes,
-    allowHostGit: input.config.allowHostGit,
-    allowHostLsp: input.config.allowHostLsp,
-    shellNetwork: input.config.shellNetwork,
-    commandEnvironment: input.config.commandEnvironment,
-    filesystemPolicy: { policy: input.compiled.policy },
-    history: input.history,
-    shellIsolation: input.config.isolateShell ? { directory: join(input.config.stateDirectory, 'isolated-shell', workspaceStateKey(input.config.cwd)), maxBytes: input.config.isolationMaxBytes, history: input.history } : undefined,
-    environmentValidator: input.config.environmentValidator,
-  })
-  const selected = input.config.enabledPacks
-  if (selected) {
-    const unknown = selected.filter(id => !builtin.some(pack => pack.id === id))
-    if (unknown.length) {
-      const named = unknown.map(id => { const reason = unmetPackPrerequisite(id, input.config); return reason ? `${id} (${reason})` : id })
-      throw new Error(`The workspace's packs.enabled names packs this node cannot build: ${named.join(', ')}`)
-    }
-    const offBrowser = selected.includes(BROWSER_PACK) ? undefined : builtin.find(pack => pack.id === BROWSER_PACK)
-    return { packs: builtin.filter(pack => selected.includes(pack.id)), ...(offBrowser ? { offBrowser } : {}) }
-  }
-  const filesystemRestricted = Boolean(input.compiled.policy.filesystem?.rules.length)
-  return { packs: [...builtin, ...(filesystemRestricted ? [] : await input.plugins.load())] }
-}
 
 /** The compiled policy as workbenches record it, so a change to it stops their terminals and nothing else does. */
 function policyHash(compiled: CompiledPolicy): string {
@@ -1116,30 +1009,6 @@ function swapInputs(settings: ResolvedSettings): string {
   return JSON.stringify([settings.policy, settings.env, settings.browser, settings.network])
 }
 
-const BROWSER_PACK = 'browser'
-
-/**
- * What the browser pack alone is handed (fix brief 2, R2, and its recheck): the allowed domains its approved list
- * comes to as agent-browser reads them, the workspace's mode, window, and idle timeout it launches under, and the
- * mounts its paths resolve against. Not the stored list: a rebuild for anything else, the variables, or a list changed
- * in order, port, or path only, carries the pack over with the browsers it runs, so an agent's tabs and cookies survive it.
- */
-function browserInputs(input: { config: BuckleConfig; compiled: CompiledPolicy; mounts: [ResolvedSettings['mount'], ResolvedSettings['mounts']] }): string {
-  const { config } = input
-  const mode: BrowserMode = config.browserCdp ? { kind: 'attached', endpoint: config.browserCdp } : config.browserProfile ? { kind: 'profile', directory: config.browserProfile } : FRESH_BROWSER
-  const domains = browserAllowedDomains(input.compiled.network ? [{ name: 'workspace', entries: input.compiled.network.patterns }] : [])
-  return JSON.stringify([allowedDomainsKey(domains), modeFingerprint(mode, { ...(config.browserArgs === undefined ? {} : { launchArgs: config.browserArgs }), headed: config.browserHeaded, idleTimeoutMs: config.browserIdleTimeoutMs }), input.mounts])
-}
-
-/**
- * The packs a rebuild ends with: those built anew, except where `carried` names a pack the current set holds, which
- * keeps its place and what it runs; its twin built beside it ran nothing yet and is dropped. The rest of the current
- * set is what the rebuild replaced.
- */
-function carryPacks(input: { built: Pack[]; current: Pack[]; carried: (id: string) => boolean }): { packs: Pack[]; replaced: Pack[] } {
-  const packs = input.built.map(pack => (input.carried(pack.id) ? input.current.find(item => item.id === pack.id) : undefined) ?? pack)
-  return { packs, replaced: input.current.filter(pack => !packs.includes(pack)) }
-}
 
 /** The policy a workspace.json holds, its own lists alone, with its own mount table's target as `mount` (null where it names none). */
 function storedPolicy(settings: WorkspaceSettings): WorkspacePolicy {
@@ -1175,14 +1044,6 @@ function networkEgressRule(compiled: CompiledPolicy, config: BuckleConfig): Perm
   return createNetworkEgressRule({ approved: compiled.network, privateRanges: privateRangesOf(config), listener: listenerOf(config) })
 }
 
-function listenerOf(config: BuckleConfig): NodeListener {
-  return { host: config.host, port: config.port }
-}
-
-/** The ranges in force, each checked when its setting was written or read, so parsing cannot fail here. */
-function privateRangesOf(config: BuckleConfig): AddressRange[] {
-  return config.networkPrivateRanges.map(parseCidr)
-}
 
 /**
  * Order is the security model: floor rules run before scope rules, so a granted directory

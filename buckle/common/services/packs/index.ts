@@ -17,8 +17,7 @@ import type { ProcessRunner } from '../../types/ports/process-runner.js'
 import type { Sandbox, SandboxBind } from '../../types/ports/sandbox.js'
 import type { ApprovedList } from './browser/allowed-domains.js'
 import { createBrowserPack } from './browser/index.js'
-import { chooseBrowser } from './browser/mode.js'
-import type { BrowserSettingNames } from '../../runtime/config.js'
+import { browserPackOptions, type BrowserSettings } from './browser/inputs.js'
 import { createDevPack } from './dev/index.js'
 import { createForgePack } from './forge/index.js'
 import { createFsPack } from './fs/index.js'
@@ -30,7 +29,7 @@ import { createWebPack } from './web/index.js'
 import type { AddressRange, NodeListener } from '../../domain/ip.js'
 import { BUILTIN_PACKS, unmetPackPrerequisite, type BuiltinPackId } from './catalogue.js'
 
-export interface BuiltinPackOptions {
+export interface BuiltinPackOptions extends BrowserSettings {
   /** The workspace's mounts as the shell binds them (sandboxBinds). */
   sandboxMounts?: SandboxBind[]
   filesystemPolicy?: { policy: WorkspacePolicy }
@@ -58,30 +57,6 @@ export interface BuiltinPackOptions {
   forge: { token?: string; apiUrl: string; author: { name: string; email: string } }
   /** Buckle's own state directory, which holds the empty hooks directory every git call runs with. */
   stateDirectory: string
-  agentBrowserCommand: string
-  /** Protected browser configuration and daemon identities for this workspace. */
-  browserStateDirectory: string
-  /** The longest a call may run, which bounds how long a browser transfer directory can be in use; the node's default when absent. */
-  maxTimeoutMs?: number
-  browserHeaded: boolean
-  /** BUCKLE_BROWSER_CDP: the owner's own Chrome, which every browser command attaches to. */
-  browserCdp?: string
-  /** BUCKLE_BROWSER_PROFILE: the profile folder a launched browser keeps, judged where it lies (chooseBrowser). */
-  browserProfile?: string
-  /** BUCKLE_BROWSER_ARGS: Chromium arguments for a browser Buckle launches. */
-  browserArgs?: string
-  /** browser.idleTimeoutMs: how long an idle browser lives; five minutes when absent. */
-  browserIdleTimeoutMs?: number
-  /** How a refusal of the browser settings names each: the workspace's own by its key, the node's by its variable. */
-  browserSettingNames?: BrowserSettingNames | undefined
-  /** Which other workspace holds the profile folder or the attached Chrome, read at each browser call (Q10). */
-  browserHeldBy?: () => string | null
-  /** The runtime that writes the browser's sessions, beside the process's pid (Slice F4, item 4); the process's own when absent. */
-  browserInstance?: string
-  /** The workspace's name, which the browser's refusals name in the owner's buckle browser close (Slice F4, item 7). */
-  workspaceName?: () => string
-  /** Whether a service runs this node, for the browser's restart hint. */
-  serviceInstalled?: () => boolean
   allowHostGit?: boolean
   allowHostLsp?: boolean
   enableShell: boolean
@@ -151,28 +126,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       unavailableReason: forgeUnavailableReason(options, git),
     }),
     dev: () => createDevPack({ cwd: options.cwd, paths: options.paths, runProcess: options.runProcess, allowHostLsp: options.allowHostLsp, resolveProgram: program, environment }),
-    browser: () => createBrowserPack({
-      cwd: options.cwd,
-      paths: options.paths,
-      runProcess: options.runProcess,
-      agentBrowserCommand: options.agentBrowserCommand,
-      sessionDirectory: options.browserStateDirectory,
-      headed: options.browserHeaded,
-      // A profile folder is judged as the agent-browser program is, against every root an agent can write, and Buckle's state.
-      browser: chooseBrowser({ cdp: options.browserCdp, profile: options.browserProfile, args: options.browserArgs, headed: options.browserHeaded, ...(options.browserSettingNames ? { names: options.browserSettingNames } : {}), untrusted: untrusted(), protectedRoots: options.hiddenPaths, ...(options.programSearch?.platform ? { platform: options.programSearch.platform } : {}) }),
-      ...(options.browserArgs ? { launchArgs: options.browserArgs } : {}),
-      agentBrowser: program(options.agentBrowserCommand),
-      environment,
-      approvedLists: options.approvedLists,
-      protectedRoots: options.hiddenPaths,
-      ...(options.maxTimeoutMs === undefined ? {} : { maxTimeoutMs: options.maxTimeoutMs }),
-      ...(options.browserIdleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.browserIdleTimeoutMs }),
-      ...(options.browserHeldBy ? { heldBy: options.browserHeldBy } : {}),
-      ...(options.serviceInstalled ? { serviceInstalled: options.serviceInstalled } : {}),
-      ...(options.programSearch?.platform ? { platform: options.programSearch.platform } : {}),
-      ...(options.browserInstance ? { instance: options.browserInstance } : {}),
-      ...(options.workspaceName ? { workspaceName: options.workspaceName } : {}),
-    }),
+    browser: () => createBrowserPack(browserPackOptions(options, { untrusted, program, environment })),
 
     // Always present, so `buckle manifest` explains an absent shell rather than silently omitting it.
     shell: () => createShellPack({

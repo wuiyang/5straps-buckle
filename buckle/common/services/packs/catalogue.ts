@@ -1,3 +1,11 @@
+interface PackPrerequisites { environmentValidator?: string }
+
+interface PackCatalogueEntry {
+  id: string
+  summary: string
+  prerequisite?: { key: keyof PackPrerequisites; reason: string }
+}
+
 /**
  * The built-in packs by id, in manifest order, for `buckle init` and `buckle settings`, which
  * name them without building any. Factories follow this order.
@@ -12,16 +20,10 @@ export const BUILTIN_PACKS = [
   { id: 'browser', summary: 'drive a browser through agent-browser, fresh for each session by default' },
   { id: 'shell', summary: 'run commands in the sandbox (needs the shell on)' },
   { id: 'code', summary: 'run a script that calls the other tools, each call judged as a direct one' },
-  { id: 'environment', summary: 'validate environment configuration (needs BUCKLE_ENV_VALIDATOR_COMMAND)' },
-] as const
+  { id: 'environment', summary: 'validate environment configuration (needs BUCKLE_ENV_VALIDATOR_COMMAND)', prerequisite: { key: 'environmentValidator', reason: 'BUCKLE_ENV_VALIDATOR_COMMAND is not set' } },
+] as const satisfies readonly PackCatalogueEntry[]
 
 export type BuiltinPackId = typeof BUILTIN_PACKS[number]['id']
-
-interface PackPrerequisites { environmentValidator?: string }
-
-const PREREQUISITES: Partial<Record<BuiltinPackId, { key: keyof PackPrerequisites; reason: string }>> = {
-  environment: { key: 'environmentValidator', reason: 'BUCKLE_ENV_VALIDATOR_COMMAND is not set' },
-}
 
 /**
  * Why a built-in pack cannot be built from this configuration, or null when it can. `createBuiltinPacks`
@@ -29,8 +31,8 @@ const PREREQUISITES: Partial<Record<BuiltinPackId, { key: keyof PackPrerequisite
  * call unknown at start is never written to `BUCKLE_PACKS`.
  */
 export function unmetPackPrerequisite(id: string, options: PackPrerequisites): string | null {
-  const pack = BUILTIN_PACKS.find(pack => pack.id === id)
-  const prerequisite = pack === undefined ? undefined : PREREQUISITES[pack.id]
+  const pack: PackCatalogueEntry | undefined = BUILTIN_PACKS.find(pack => pack.id === id)
+  const prerequisite = pack?.prerequisite
   if (prerequisite && !options[prerequisite.key]) return prerequisite.reason
   // The code pack is always built: packs.code off withholds it with a reason, as packs.shell off does the shell.
   return null
