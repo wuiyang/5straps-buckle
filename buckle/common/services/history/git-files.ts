@@ -1,5 +1,6 @@
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs'
 import { dirname, join, resolve } from 'pathe'
+import { openNoFollow } from '../../adapters/beneath.js'
 
 /** Git reads every file as raw bytes: no line ending, filter, ident, or encoding change, so a blob id is the file's own. */
 export const RAW_ATTRIBUTES = '* -text -filter -ident -working-tree-encoding\n**/* -text -filter -ident -working-tree-encoding\n'
@@ -47,6 +48,33 @@ export function readGitMetadata(path: string): string | undefined {
   } catch { return undefined }
   finally { if (descriptor !== undefined) closeSync(descriptor) }
 }
+
+/** Generated metadata is bounded by its expected bytes; untrusted Git pointers keep their separate cap. */
+export function matchesGitMetadata(input: { path: string; expected: string }): boolean {
+  const { path, expected } = input
+  const wanted = Buffer.from(expected)
+  let descriptor: number | undefined
+  try {
+    const seen = lstatSync(path, { bigint: true, throwIfNoEntry: false })
+    if (!seen?.isFile() || seen.nlink !== 1n || seen.size !== BigInt(wanted.length)) return false
+    descriptor = openNoFollow(path, constants.O_RDONLY | constants.O_NONBLOCK)
+    const opened = fstatSync(descriptor, { bigint: true })
+    if (!opened.isFile() || opened.nlink !== 1n || opened.size !== seen.size || opened.ino !== seen.ino || opened.dev !== seen.dev || opened.mtimeNs !== seen.mtimeNs || opened.ctimeNs !== seen.ctimeNs) return false
+    const content = Buffer.alloc(wanted.length + 1)
+    let bytes = 0
+    while (bytes < content.length) {
+      const read = readSync(descriptor, content, bytes, content.length - bytes, null)
+      if (!read) break
+      bytes += read
+    }
+    const final = fstatSync(descriptor, { bigint: true })
+    const current = lstatSync(path, { bigint: true, throwIfNoEntry: false })
+    if (!current?.isFile() || current.nlink !== 1n || current.ino !== opened.ino || current.dev !== opened.dev || current.size !== opened.size || current.mtimeNs !== opened.mtimeNs || current.ctimeNs !== opened.ctimeNs) return false
+    return final.isFile() && final.nlink === 1n && final.size === opened.size && final.mtimeNs === opened.mtimeNs && final.ctimeNs === opened.ctimeNs && bytes === wanted.length && content.subarray(0, bytes).equals(wanted)
+  } catch { return false }
+  finally { if (descriptor !== undefined) closeSync(descriptor) }
+}
+
 export function regularFile(path: string, size?: number): boolean {
   const stat = lstatSync(path, { throwIfNoEntry: false })
   return stat?.isFile() === true && stat.nlink === 1 && (size === undefined || stat.size === size)

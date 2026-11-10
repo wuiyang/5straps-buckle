@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { closeSync, copyFileSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync, type Stats } from 'node:fs'
-import { join, relative } from 'pathe'
+import { dirname, join, relative } from 'pathe'
 import { replaceFile } from '../../adapters/replace-file.js'
 import type { Program, UntrustedRoots } from '../../domain/executable.js'
 import { childPath, isInside, isPlainName } from '../../domain/paths.js'
 import { gitOperation, HistoryGitError, historyGitProgram, isolatedGit, runProgram } from './git-process.js'
-import { escapeIgnore, ownerGitDirectory, RAW_ATTRIBUTES, readGitMetadata, regularFile } from './git-files.js'
+import { escapeIgnore, matchesGitMetadata, ownerGitDirectory, RAW_ATTRIBUTES, regularFile } from './git-files.js'
 import { logger } from '../../runtime/log.js'
 import { blobId, type ObjectStore } from './object-store.js'
 import { modeOf } from './file-mode.js'
@@ -116,6 +116,32 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
     return runProgram({ program: found, operation: gitOperation(args), args: [...safety, ...options.extra ?? [], ...args], cwd: folder, environment: { ...environment, GIT_DIR: state.git, GIT_WORK_TREE: state.root, GIT_INDEX_FILE: options.index ?? join(state.git, 'index'), GIT_OBJECT_DIRECTORY: options.objects ?? input.objects.root, ...(options.magic ? { GIT_LITERAL_PATHSPECS: '0' } : {}), ...(options.errors ? { LC_ALL: 'C' } : {}) }, ...(options.data === undefined ? {} : { data: options.data }), ...(timeoutMs === undefined ? {} : { timeoutMs }), ...(options.budget?.signal ? { signal: options.budget.signal } : {}), ...(options.errors ? { errors: options.errors } : {}) })
   }
 
+  function prepareInfoDirectory(path: string): void {
+    const seen = lstatSync(path, { throwIfNoEntry: false })
+    if (seen?.isDirectory()) return
+    if (seen) {
+      try { rmSync(path, { force: true }) }
+      catch (error) {
+        // Another prepare may already have replaced the link with a real directory.
+        if (!lstatSync(path, { throwIfNoEntry: false })?.isDirectory()) throw error
+      }
+    }
+    mkdirSync(path, { recursive: true, mode: 0o700 })
+    if (!lstatSync(path, { throwIfNoEntry: false })?.isDirectory()) throw new Error('History command metadata needs a real directory')
+  }
+
+  async function writeCommandMetadata(input: { path: string; expected: string }): Promise<void> {
+    const { path, expected } = input
+    prepareInfoDirectory(dirname(path))
+    if (matchesGitMetadata(input)) return
+    const temporary = `${path}.tmp-${randomUUID()}`
+    const descriptor = openSync(temporary, 'wx', 0o600)
+    try {
+      try { writeFileSync(descriptor, expected) } finally { closeSync(descriptor) }
+      await replaceFile(temporary, path)
+    } finally { rmSync(temporary, { force: true }) }
+  }
+
   /**
    * The shadow repository for `root`, made once; its excludes name Buckle's own state and the protected paths, which no
    * capture records. `protect` names those inside the root, each excluded from every pathspec too, as a workspace
@@ -124,23 +150,20 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
    */
   async function prepare(found: Program, root: string, budget: CaptureBudget): Promise<{ root: string; git: string; extra: string[]; protect: string[] }> {
     const state = { root, git: gitDirectory(root) }
-    const attributes = join(state.git, 'info', 'attributes')
-    if (!regularFile(join(state.git, SETUP_MARKER)) || !regularFile(join(state.git, 'HEAD')) || !regularFile(attributes, Buffer.byteLength(RAW_ATTRIBUTES)) || readGitMetadata(attributes) !== RAW_ATTRIBUTES) {
+    const info = join(state.git, 'info')
+    prepareInfoDirectory(info)
+    const attributes = join(info, 'attributes')
+    if (!regularFile(join(state.git, SETUP_MARKER)) || !regularFile(join(state.git, 'HEAD')) || !matchesGitMetadata({ path: attributes, expected: RAW_ATTRIBUTES })) {
       rmSync(join(state.git, SETUP_MARKER), { force: true })
-      mkdirSync(state.git, { recursive: true, mode: 0o700 }); mkdirSync(input.objects.root, { recursive: true, mode: 0o700 })
+      mkdirSync(input.objects.root, { recursive: true, mode: 0o700 })
       await git(found, state, ['init', '--quiet', `--template=${empty}`, state.git], { budget })
-      mkdirSync(join(state.git, 'info'), { recursive: true, mode: 0o700 })
-      rmSync(attributes, { force: true })
-      writeFileSync(attributes, RAW_ATTRIBUTES, { mode: 0o600, flag: 'wx' })
+      prepareInfoDirectory(info)
+      await writeCommandMetadata({ path: attributes, expected: RAW_ATTRIBUTES })
       writeFileSync(join(state.git, SETUP_MARKER), '', { mode: 0o600 })
     }
     const protect = input.excluded().filter(path => isInside(root, path) && path !== root).map(path => relative(root, path))
     const excludes = protect.map(name => `/${escapeIgnore(name)}`).join('\n') + '\n'
-    const file = join(state.git, 'info', 'exclude')
-    if (!regularFile(file, Buffer.byteLength(excludes)) || readGitMetadata(file) !== excludes) {
-      rmSync(file, { force: true })
-      writeFileSync(file, excludes, { mode: 0o600, flag: 'wx' })
-    }
+    await writeCommandMetadata({ path: join(info, 'exclude'), expected: excludes })
     const owner = ownerGitDirectory(root)
     const own = owner === undefined ? undefined : join(owner, 'info', 'exclude')
     return { ...state, protect, extra: own !== undefined && regularFile(own) ? ['-c', `core.excludesFile=${own}`] : [] }
