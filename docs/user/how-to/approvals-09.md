@@ -67,3 +67,17 @@ and the node log line names it. The process whose update dropped the ask writes 
 - **The terminals:** the serve terminal said `[timeout]`, `--watch` said `expired; dropped.`, and a
   passed deadline read `expired (<time>)`.
 - **An unknown token:** read "Approval token is unknown or expired".
+
+## Receivers and older builds
+
+- **Update the receiver first:** a receiver that checks each notice with an older
+  `@5straps/protocol` refuses `skipped` with `no_response`, because the reason is new. It answers
+  HTTP 400 for the whole post, the notices beside it included.
+- **What the node does:** it sends a refused post again in halves until the refused notice is
+  alone, takes the rest, and holds that one for five minutes before it tries again. The notice
+  stays queued until a receiver takes it or 24 hours pass. The node log warns once.
+- **Rolling back:** a build from before this one reports `approvals.json` as unreadable while a
+  `no_response` notice waits in its queue. A receiver that takes notices empties the queue in
+  seconds. If yours refuses them, update it first, or keep this build running until the 24 hours
+  pass.
+

@@ -35,6 +35,14 @@ replaces a wait notice queued for its token, and a wait notice never replaces an
 end, and `WaitSkipReason` types the reasons a wait notice takes. `expired` stays in
 `ApprovalLifecycleEventSchema`, so an entry an older node queued still parses and is sent.
 
+A receiver on an older `@5straps/protocol` refuses the new reason and answers the whole post HTTP
+400. `createApprovalNoticeSender` throws `NoticeRefusedError` for 400, 413, and 422; any other
+failure stays a plain error. On that error the queue sends the batch in halves until the refused
+notice is alone, acknowledges the rest, and holds that one in memory for five minutes. The outbox
+keeps it until a receiver takes it or its 24 hours pass. An outage or a 401, 403, 404, 429, or
+5xx never splits a batch. A build from before this ruling cannot read an outbox that holds a
+`no_response` notice, so `approvals.json` reads as invalid there until the notice leaves.
+
 ## The port
 
 `EventType` loses `expired`: a backend's `notify` hears `skipped` with `reason: 'no_response'`.
