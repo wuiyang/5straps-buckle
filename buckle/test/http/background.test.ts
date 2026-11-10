@@ -39,7 +39,15 @@ function buckle(node: Node, args: string[]) {
 }
 
 function alive(pid: number): boolean {
-  try { process.kill(pid, 0); return true } catch { return false }
+  try { process.kill(pid, 0) } catch { return false }
+  if (process.platform !== 'linux') return true
+  try {
+    const status = readFileSync(`/proc/${pid}/status`, 'utf8')
+    return !/^State:\s+Z(?:\s|$)/m.test(status)
+  } catch {
+    // Retain the successful probe when proc status cannot be read.
+    return true
+  }
 }
 
 function logLines(node: Node): Array<{ level: string; message: string; fields?: Record<string, unknown>; error?: { message: string } }> {
