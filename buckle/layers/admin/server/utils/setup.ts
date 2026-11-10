@@ -1,5 +1,6 @@
 import { getRouterParam, type H3Event } from 'h3'
 import type { JsonValue } from '@5straps/protocol'
+import type { ActionLog } from '../../../../common/types/ports/action-log.js'
 import type { DeviceProof } from '../../../../common/services/approvals/device-proof.js'
 import type { SetupViews } from '../../../../common/services/setup/setup-views.js'
 import type { ManagedWorkspace, WorkspaceManager } from '../../../../common/services/workspaces/workspace-manager.js'
@@ -13,15 +14,12 @@ import { isMutation } from '../../../common/server/utils/guards.js'
 import { ignoresWarning, withRegistryAudit, withSetupAudit } from './audit.js'
 import { REGISTRY_REFUSED, registryTransportTool, requireAdmin, requireAdminHttp, requireNodeAdminCredential, SETUP_REFUSED, type AdminAccess } from './guards.js'
 
-interface SetupCall {
+interface SetupRequest {
   event: H3Event
   /** Who the guard let in: admin:<workspace>, or key:<fingerprint> for a signed request. */
   actor: string
   /** What the request verifier minted for a request an enrolled key signed for an approval. */
   proof?: DeviceProof
-  workspace: ManagedWorkspace
-  /** The id the route serves (D85, Q15): the addressed workspace's, or NODE_LEVEL for a node-level session route. */
-  workspaceId: string
   views: SetupViews
   /** The request body as JSON, read up to 64 KiB (413 past it); undefined when it is not JSON. */
   body(): Promise<unknown>
@@ -31,13 +29,63 @@ interface SetupCall {
   audit(args: Record<string, JsonValue>): void
 }
 
+interface SetupScope {
+  /** The id the route serves (D85, Q15): the addressed workspace's, or NODE_LEVEL for a node-level session route. */
+  workspaceId: string
+}
+
+interface WorkspaceSetupScope extends SetupScope {
+  workspace: ManagedWorkspace
+}
+
+interface SetupDefinition<Call> {
+  access: AdminAccess | ((event: H3Event) => AdminAccess)
+  resource: string | ((event: H3Event) => string)
+  handler: (call: Call) => unknown
+}
+
+interface SetupTarget<Scope extends SetupScope> {
+  scope: Scope
+  actions: ActionLog
+}
+
 /**
  * One route of the owner's face for a workspace (node level, and its /workspaces/[id]/ twin): the
  * admin guard for its kind of access, the workspace resolved, then the admin audit around the work,
  * with service failures answered by their status. `active` resolves as an agent route does, so a
  * disabled workspace answers 409; the rest reach a disabled or retired workspace too.
  */
-export function defineSetupHandler(definition: { access: AdminAccess | ((event: H3Event) => AdminAccess); resource: string | ((event: H3Event) => string); active?: boolean; /** The catch-all: a path no face serves, whose 404 says nothing more at the node level either. */ unknown?: boolean; /** Served at the node level too (the node-scoped setup session), with workspaceId NODE_LEVEL. */ nodeLevel?: boolean; handler: (call: SetupCall) => unknown }) {
+export function defineSetupHandler(definition: SetupDefinition<SetupRequest & WorkspaceSetupScope> & {
+  active?: boolean
+  /** The catch-all: a path no face serves, whose 404 says nothing more at the node level either. */
+  unknown?: boolean
+}) {
+  return defineSetupOperation<WorkspaceSetupScope>(definition, async ({ event, resource, actor }) => {
+    if (!namedWorkspace(event)) {
+      const actions = await useServices(event).getNodeActions()
+      // No workspace is served at the node level (D85, Q15): the call is recorded on the node's log, as a probe of
+      // an unknown path is, then answered 404 naming where the workspaces are.
+      return mapFailures(() => withSetupAudit(event, { actions, workspaceId: NODE_LEVEL, resource, actorId: actor }, async () => { throw definition.unknown ? notFound() : notFound(NODE_LEVEL_REFUSAL) }))
+    }
+    const workspace = await useSetupTarget(event, { setup: !definition.active })
+    return { scope: { workspace, workspaceId: workspace.runtime.workspaceId }, actions: workspace.runtime.actions }
+  })
+}
+
+/** Served at the node level too (the node-scoped setup session), with workspaceId NODE_LEVEL. */
+export function defineSetupSessionHandler(definition: SetupDefinition<SetupRequest & SetupScope> & { access: 'session' | 'setup'; resource: 'sessions' }) {
+  return defineSetupOperation<SetupScope>(definition, async ({ event }) => {
+    if (!namedWorkspace(event)) {
+      const actions = await useServices(event).getNodeActions()
+      // The node-scoped setup session: no workspace, so the handler reads workspaceId NODE_LEVEL and the node log.
+      return { scope: { workspaceId: NODE_LEVEL }, actions }
+    }
+    const workspace = await useSetupTarget(event, { setup: true })
+    return { scope: { workspaceId: workspace.runtime.workspaceId }, actions: workspace.runtime.actions }
+  })
+}
+
+function defineSetupOperation<Scope extends SetupScope>(definition: SetupDefinition<SetupRequest & Scope>, targetOf: (input: { event: H3Event; resource: string; actor: string }) => Promise<SetupTarget<Scope>>) {
   const accessOf = (event: H3Event) => (typeof definition.access === 'function' ? definition.access(event) : definition.access)
   return defineOperationHandler({
     preflight: [requireAdminHttp, requireNodeAdminCredential],
@@ -45,24 +93,11 @@ export function defineSetupHandler(definition: { access: AdminAccess | ((event: 
     handler: async (event, scope) => {
       const resource = typeof definition.resource === 'function' ? definition.resource(event) : definition.resource
       const actor = scope.context.actor ?? ''
-      if (!namedWorkspace(event)) {
-        const actions = await useServices(event).getNodeActions()
-        if (!definition.nodeLevel) {
-          // No workspace is served at the node level (D85, Q15): the call is recorded on the node's log, as a probe of
-          // an unknown path is, then answered 404 naming where the workspaces are.
-          return mapFailures(() => withSetupAudit(event, { actions, workspaceId: NODE_LEVEL, resource, actorId: actor }, async () => { throw definition.unknown ? notFound() : notFound(NODE_LEVEL_REFUSAL) }))
-        }
-        // The node-scoped setup session: no workspace, so the handler reads workspaceId NODE_LEVEL and the node log.
-        const nodeAudited: Record<string, JsonValue> = {}
-        const nodeProof = actor.startsWith('key:') ? (await useServices(event).getRequestVerifier()).approvalProof(event) : undefined
-        const nodeCall: SetupCall = { event, actor, proof: nodeProof, workspace: undefined as unknown as ManagedWorkspace, workspaceId: NODE_LEVEL, views: useServices(event).getSetupViews(), body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams), audit: args => { Object.assign(nodeAudited, args) } }
-        return mapFailures(() => withSetupAudit(event, { actions, workspaceId: NODE_LEVEL, resource, actorId: actor, args: () => nodeAudited }, async () => definition.handler(nodeCall)))
-      }
-      const workspace = await useSetupTarget(event, { setup: !definition.active })
+      const target = await targetOf({ event, resource, actor })
       const audited: Record<string, JsonValue> = {}
       const proof = actor.startsWith('key:') ? (await useServices(event).getRequestVerifier()).approvalProof(event) : undefined
-      const call: SetupCall = { event, actor, proof, workspace, workspaceId: workspace.runtime.workspaceId, views: useServices(event).getSetupViews(), body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams), audit: args => { Object.assign(audited, args) } }
-      return mapFailures(() => withSetupAudit(event, { actions: workspace.runtime.actions, workspaceId: workspace.runtime.workspaceId, resource, actorId: call.actor, args: () => audited }, async () => definition.handler(call)))
+      const call: SetupRequest & Scope = { ...target.scope, event, actor, proof, views: useServices(event).getSetupViews(), body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams), audit: args => { Object.assign(audited, args) } }
+      return mapFailures(() => withSetupAudit(event, { actions: target.actions, workspaceId: target.scope.workspaceId, resource, actorId: call.actor, args: () => audited }, async () => definition.handler(call)))
     },
   })
 }
