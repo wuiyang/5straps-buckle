@@ -435,9 +435,10 @@ describe('what an approval display hides (owner ruling B)', () => {
     ['a long named JSON value', `{"token":[${'1,'.repeat(500_000)}1]}`],
   ])('reads a 1 MiB value of %s in one pass', (_, text) => {
     for (const context of ['value', 'text', 'json'] as const) {
-      const started = performance.now()
+      const started = process.threadCpuUsage()
       redactCredentials(text, context)
-      expect(performance.now() - started, context).toBeLessThan(1_000)
+      const elapsed = process.threadCpuUsage(started)
+      expect((elapsed.user + elapsed.system) / 1_000, context).toBeLessThan(1_000)
     }
   })
 })

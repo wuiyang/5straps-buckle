@@ -181,7 +181,7 @@ describe('the layer boundary', { timeout: 60_000 }, () => {
     expect(existsSync(join(PACKAGE_ROOT, 'server', 'hono'))).toBe(false)
   })
 
-  it('guards every route: a one-line re-export of a guarded route, or one of the four guarded handler builders; only the health routes are open (review M2 of B15-B17)', () => {
+  it('guards every route: a one-line re-export of a guarded route, or one of the five guarded handler builders; only the health routes are open (review M2 of B15-B17)', () => {
     const routes = routeFiles()
     expect(routes.length).toBeGreaterThan(80)
     const open = routes.filter(file => OPEN_ROUTES.includes(file))
@@ -194,9 +194,16 @@ describe('the layer boundary', { timeout: 60_000 }, () => {
     const utils = (file: string) => readFileSync(join(PACKAGE_ROOT, file), 'utf8')
     expect(utils('layers/common/server/utils/operation.ts')).toMatch(/return defineGuardedHandler\(\{\s*\.\.\.\(definition\.preflight \? \{ preflight: definition\.preflight \} : \{\}\),\s*guards: definition\.guards,/)
     expect(utils('layers/common/server/utils/workbench.ts')).toMatch(/defineOperationHandler\(\{\s*guards: \[requireWorkbench\],/)
-    expect(utils('layers/admin/server/utils/setup.ts').match(/guards: \[[^\]]*requireAdmin\(/g)).toHaveLength(2)
+    const setup = utils('layers/admin/server/utils/setup.ts')
+    expect(setup.match(/guards: \[[^\]]*requireAdmin\(/g)).toHaveLength(2)
     // The experimental flag, then a node without BUCKLE_ADMIN_TOKEN, answer before readiness on both admin builders (review L9 of B23-B25, item 23).
-    expect(utils('layers/admin/server/utils/setup.ts').match(/preflight: \[requireAdminHttp, requireNodeAdminCredential\],/g)).toHaveLength(2)
+    expect(setup.match(/preflight: \[requireAdminHttp, requireNodeAdminCredential\],/g)).toHaveLength(2)
+    for (const [name, scope] of [['defineSetupHandler', 'WorkspaceSetupScope'], ['defineSetupSessionHandler', 'SetupScope']] as const) {
+      const body = setup.split('export function ' + name + '(')[1]?.split(/^(?:export )?(?:async )?function /m)[0] ?? ''
+      expect(body, name).toContain('return defineSetupOperation<' + scope + '>(definition,')
+    }
+    const operation = setup.split('function defineSetupOperation<')[1]?.split(/^(?:export )?(?:async )?function /m)[0] ?? ''
+    expect(operation).toMatch(/return defineOperationHandler\(\{\s*preflight: \[requireAdminHttp, requireNodeAdminCredential\],\s*guards: \[event => requireAdmin\(accessOf\(event\), SETUP_REFUSED\)\(event\)\],/)
   })
 
   it('names the workspace parameter [id] only as routes/workspaces/[id]/, so the registry routes stay node-admin only (review L5 of B15-B17)', () => {
@@ -212,7 +219,7 @@ const OPEN_ROUTES = ['layers/common/server/routes/health.get.ts', 'layers/common
 /** What a layer's server directory may hold: Nitro scans only routes/ and plugins/ of these. */
 const SERVER_ENTRIES = ['routes', 'plugins', 'utils', 'types']
 const PLUGINS = ['layers/common/server/plugins/10.context.ts', 'layers/common/server/plugins/20.head.ts', 'layers/common/server/plugins/30.request-log.ts']
-const GUARDED_BUILDER = /^export default define(Operation|Workbench|Setup|Registry)Handler\(/m
+const GUARDED_BUILDER = /^export default define(Operation|Workbench|Setup|SetupSession|Registry)Handler\(/m
 const RE_EXPORT = /^(?:\s*\/\/[^\n]*\n)*\s*export \{ default \} from '([^']+)'\s*$/
 
 // Flags direct member/index writes, simple destructuring (an array target may carry one bracket index, as in
