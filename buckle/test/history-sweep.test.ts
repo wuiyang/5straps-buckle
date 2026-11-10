@@ -12,22 +12,30 @@ import { blobId, openObjectStore } from '../common/services/history/object-store
 // store holds: it reads what to keep and lists what to remove without the lock, and removes in slices that take the lock
 // briefly, check with a few stats that nothing changed, and remove for 25 ms, so a hold runs past that by one removal at most.
 
-interface SweepHold { startedAt: number; immediate: boolean }
-interface Removal { start: number; end: number; path: string; hold: SweepHold | undefined }
+interface SweepHold { startedAt: number; endedAt: number; cpuMs: number; immediate: boolean }
+interface Removal { start: number; end: number; cpuMs: number; path: string; hold: SweepHold | undefined }
 
 const holds = vi.hoisted(() => ({ list: [] as SweepHold[], active: undefined as SweepHold | undefined }))
-vi.mock('../common/services/history/execution-lock.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../common/services/history/execution-lock.js')>()
-  const withHistoryLock: typeof actual.withHistoryLock = (input, operation) => {
-    const startedAt = performance.now()
-    return actual.withHistoryLock(input, async () => {
-      const hold: SweepHold = { startedAt, immediate: input.deadlineMs === 0 }
+vi.mock('@5straps/runtime/sqlite', async importOriginal => {
+  const actual = await importOriginal<typeof import('@5straps/runtime/sqlite')>()
+  const withFileLock: typeof actual.withFileLock = (input, operation) => {
+    if (!input.path.replace(/\\/g, '/').endsWith('/execution.lock.sqlite')) return actual.withFileLock(input, operation)
+    return actual.withFileLock(input, async () => {
+      const cpu = process.threadCpuUsage()
+      const startedAt = performance.now()
+      const hold: SweepHold = { startedAt, endedAt: startedAt, cpuMs: 0, immediate: input.wait !== 'none' && input.wait.deadlineMs === 0 }
       const previous = holds.active
       holds.active = hold
-      try { return await operation() } finally { holds.active = previous; holds.list.push(hold) }
+      try { return await operation() } finally {
+        hold.endedAt = performance.now()
+        const used = process.threadCpuUsage(cpu)
+        hold.cpuMs = (used.user + used.system) / 1_000
+        holds.active = previous
+        holds.list.push(hold)
+      }
     })
   }
-  return { ...actual, withHistoryLock }
+  return { ...actual, withFileLock }
 })
 /** Each removal of a file: when it started and ended, so each hold is bounded by the one removal it may run past its slice. */
 const removals = vi.hoisted(() => ({ list: [] as Removal[], clock: undefined as number | undefined, stepMs: 0, tracked: new Set<string>() }))
@@ -37,9 +45,11 @@ vi.mock('node:fs', async importOriginal => {
     const hold = holds.active
     const path = String(args[0]).replace(/\\/g, '/')
     const start = performance.now()
+    const cpu = process.threadCpuUsage()
     try { actual.rmSync(...args) } finally {
       if (removals.clock !== undefined && hold?.immediate && removals.tracked.has(path)) removals.clock += removals.stepMs
-      removals.list.push({ start, end: performance.now(), path, hold })
+      const used = process.threadCpuUsage(cpu)
+      removals.list.push({ start, end: performance.now(), cpuMs: (used.user + used.system) / 1_000, path, hold })
     }
   }) as typeof actual.rmSync
   return { ...actual, rmSync, default: { ...actual, rmSync } }
@@ -65,6 +75,7 @@ vi.mock('../common/services/history/command-capture.js', async importOriginal =>
 })
 
 const SLICE_MS = 25
+const CPU_SLACK_MS = 5
 
 const roots: string[] = []
 afterEach(() => { holds.list = []; holds.active = undefined; removals.list = []; removals.clock = undefined; removals.stepMs = 0; removals.tracked.clear(); race.stage = 'off'; race.root = undefined; race.record = undefined; for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -74,6 +85,10 @@ function plannedRemovals(hold: SweepHold, directory: string): Removal[] {
 }
 
 function expectSliceBudget(hold: SweepHold, inside: Removal[]): void {
+  const longestRemoval = Math.max(0, ...inside.map(removal => removal.cpuMs))
+  // Thread CPU excludes disk stalls; the allowance covers one removal and fixed lock upkeep.
+  expect(hold.cpuMs, 'a sweep held the execution lock beyond its slice and one removal').toBeLessThanOrEqual(SLICE_MS + longestRemoval + CPU_SLACK_MS)
+  expect(hold.endedAt).toBeGreaterThanOrEqual(hold.startedAt)
   // A removal may finish past the budget; after that observation, only a new hold may start another.
   for (const removal of inside.slice(0, -1)) expect(removal.end - hold.startedAt, 'a further removal started after the slice budget was observed spent').toBeLessThan(SLICE_MS)
 }
@@ -146,6 +161,7 @@ it.each<['objects' | 'temporaries' | 'mixed', number]>([
     await history.run(details, async () => 'first')
     await vi.waitFor(() => expect(storedCount(directory)).toBeLessThan(10))
     const targets: string[] = []
+    const temporaryTargets = new Set<string>()
     const old = new Date(Date.now() - 3_600_000)
     for (let at = 0; at < 6; at++) {
       if (kind === 'objects' || kind === 'mixed' && at >= 3) {
@@ -157,6 +173,7 @@ it.each<['objects' | 'temporaries' | 'mixed', number]>([
         const path = at % 2 === 0 ? join(directory, 'checkpoints.json.' + randomUUID() + '.tmp') : join(directory, 'blobs', 'aa', 'tmp_obj_' + randomUUID())
         writeFileSync(path, '{}', { mode: 0o600 })
         targets.push(path)
+        temporaryTargets.add(path)
       }
     }
     holds.list = []; removals.list = []
@@ -167,10 +184,14 @@ it.each<['objects' | 'temporaries' | 'mixed', number]>([
     await vi.waitFor(() => expect(targets.filter(path => existsSync(path))).toEqual([]), { timeout: 10_000 })
     const swept = removals.list.filter(removal => removals.tracked.has(removal.path))
     expect(swept).toHaveLength(targets.length)
-    const slices = holds.list.filter(hold => hold.immediate && swept.some(removal => removal.hold === hold))
+    expect(swept.map(removal => temporaryTargets.has(removal.path) ? 'temporary' : 'object')).toEqual([
+      ...Array<string>(temporaryTargets.size).fill('temporary'), ...Array<string>(targets.length - temporaryTargets.size).fill('object'),
+    ])
+    const sweep = holds.list.filter(hold => hold.immediate)
+    for (const hold of sweep) expectSliceBudget(hold, plannedRemovals(hold, directory))
+    const slices = sweep.filter(hold => swept.some(removal => removal.hold === hold))
     for (const hold of slices) {
       const inside = plannedRemovals(hold, directory).filter(removal => removals.tracked.has(removal.path))
-      expectSliceBudget(hold, inside)
       expect(inside).toHaveLength(1)
       expect(inside[0]!.end - inside[0]!.start).toBe(stepMs)
     }
