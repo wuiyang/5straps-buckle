@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -8,6 +8,7 @@ import { createGitStore } from '../common/services/history/git-store.js'
 import { HOST_GIT_REASON, openChangeHistory } from '../common/services/history/journal.js'
 import { logger } from '../common/runtime/log.js'
 import { historyObjects } from './support/history-objects.js'
+import { shadowGitCheckpoint } from './support/shadow-git-checkpoint.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -24,6 +25,7 @@ function named(directory: string, name: string): string[] {
   return readdirSync(directory, { recursive: true, encoding: 'utf8' }).filter(path => path.split(/[\\/]/).at(-1) === name)
 }
 function storedObjects(directory: string): string[] { return historyObjects(directory).map(content => content.toString('latin1')) }
+function commandGit(directory: string, workspace: string): string { return join(directory, 'commands', createHash('sha256').update(workspace).digest('hex').slice(0, 24)) }
 function treeDigest(directory: string): string {
   const hash = createHash('sha256')
   function visit(path: string): void { for (const entry of readdirSync(path, { withFileTypes: true }).sort((a,b) => a.name.localeCompare(b.name))) { const child = join(path, entry.name); hash.update(entry.name); if (entry.isDirectory()) visit(child); else hash.update(readFileSync(child)) } }
@@ -267,37 +269,37 @@ it('collects a packed-only shadow repository after every content reference has b
   try {
     const store = createGitStore({ directory, excluded: [], maxFileBytes: () => 32 * 1048576, allowed: () => true })
     writeFileSync(join(workspace, 'file'), 'packed checkpoint content')
-    const captured = await store.capture({ roots: [workspace], id: 'change-packed', phase: 'before' })
+    const captured = await shadowGitCheckpoint({ directory, roots: [workspace], sessionId: 's', stageId: 'packed', execute: () => {} })
     const git = (...args: string[]) => execFileSync('git', ['--git-dir', join(directory, 'git'), ...args], { encoding: 'utf8' })
     git('gc', '--quiet', '--prune=now')
     expect(readdirSync(join(directory, 'git', 'objects', 'pack')).some(name => name.endsWith('.pack'))).toBe(true)
-    await store.removeRefs('change-packed', captured.trees)
+    await store.removeRefs(captured.id, captured.beforeTrees!)
     await store.collect([])
     expect(readdirSync(join(directory, 'git', 'objects', 'pack')).filter(name => name.endsWith('.pack'))).toEqual([])
   } finally { await history.close() }
 })
 
 
-it('retries interrupted private initialization after HEAD exists without safety setup', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'buckle-history-init-')); roots.push(root)
-  const workspace = join(root, 'workspace'); mkdirSync(workspace)
-  const directory = join(root, 'history')
-  const store = createGitStore({ directory, excluded: [], maxFileBytes: () => 1_048_576, allowed: () => true })
+it('retries interrupted command initialization after HEAD exists without safety setup', async () => {
+  const { workspace, directory, history, details } = await fixture()
   execFileSync('git', ['init', '-q', workspace])
   writeFileSync(join(workspace, 'file'), 'original\r\n')
   const ownerDigest = treeDigest(join(workspace, '.git'))
-  const privateGit = join(directory, 'git')
-  // The store makes its folders at its first git child, never at open (Slice F2, item 7): the crashed setup makes its own.
-  mkdirSync(privateGit, { recursive: true }); mkdirSync(join(directory, 'git-private', 'empty'), { recursive: true })
-  execFileSync('git', ['init', '--quiet', `--template=${join(directory, 'git-private', 'empty')}`, privateGit], { env: { ...process.env, GIT_DIR: privateGit, GIT_WORK_TREE: workspace } })
-  expect(existsSync(join(privateGit, 'HEAD'))).toBe(true)
-  expect(existsSync(join(privateGit, 'info', 'attributes'))).toBe(false)
-  const captured = await store.capture({ roots: [workspace], id: 'change-init-retry', phase: 'before' })
-  expect(captured.restorable).toBe(true)
-  expect(readFileSync(join(privateGit, 'info', 'attributes'), 'utf8')).toContain('-text -filter -ident -working-tree-encoding')
-  expect(existsSync(join(privateGit, 'objects', 'info', 'alternates'))).toBe(true)
-  expect([...(await store.restoreContent({ trees: captured.trees, target: captured.snapshot, paths: [join(workspace, 'file')] })).values()].map(value => value.toString())).toContain('original\r\n')
-  expect(treeDigest(join(workspace, '.git'))).toBe(ownerDigest)
+  const privateGit = commandGit(directory, workspace)
+  try {
+    mkdirSync(privateGit, { recursive: true })
+    execFileSync('git', ['init', '--quiet', `--template=${join(directory, 'commands', 'private', 'empty')}`, privateGit], { env: { ...process.env, GIT_DIR: privateGit, GIT_WORK_TREE: workspace } })
+    expect(existsSync(join(privateGit, 'HEAD'))).toBe(true)
+    expect(existsSync(join(privateGit, 'info', 'attributes'))).toBe(false)
+    await history.run(details, async () => { writeFileSync(join(workspace, 'file'), 'changed') })
+    const [captured] = await history.list()
+    expect(captured!.restorable).toBe(true)
+    expect(readFileSync(join(privateGit, 'info', 'attributes'), 'utf8')).toContain('-text -filter -ident -working-tree-encoding')
+    expect(existsSync(join(privateGit, 'objects', 'info', 'alternates'))).toBe(false)
+    await history.restore(captured!.id)
+    expect(readFileSync(join(workspace, 'file'), 'utf8')).toBe('original\r\n')
+    expect(treeDigest(join(workspace, '.git'))).toBe(ownerDigest)
+  } finally { await history.close() }
 })
 
 it('captures an empty baseline when the root and its parents do not exist', async () => {
@@ -332,19 +334,25 @@ it('keeps concurrent capture timing summaries isolated and omits private metadat
 })
 
 
-for (const missing of ['HEAD', 'info/attributes']) it(`repairs stale setup markers when ${missing} is missing and preserves existing refs`, async () => {
-  const root = mkdtempSync(join(tmpdir(), 'buckle-history-stale-')); roots.push(root)
-  const workspace = join(root, 'workspace'); mkdirSync(workspace); writeFileSync(join(workspace, 'file'), 'original')
-  const directory = join(root, 'history')
-  const store = createGitStore({ directory, excluded: [], maxFileBytes: () => 1_048_576, allowed: () => true })
-  const first = await store.capture({ roots: [workspace], id: 'change-original', phase: 'before' })
-  const privateGit = join(directory, 'git')
-  expect(existsSync(join(privateGit, 'buckle-setup-complete'))).toBe(true)
-  rmSync(join(privateGit, missing))
-  const next = await store.capture({ roots: [workspace], id: 'change-repaired', phase: 'before' })
-  expect(next.restorable).toBe(true)
-  expect(execFileSync('git', ['--git-dir', privateGit, 'rev-parse', 'refs/buckle/checkpoints/change-original-before'], { encoding: 'utf8' }).trim()).toBe(first.trees[0]!.commit)
-  expect(readFileSync(join(privateGit, 'info', 'attributes'), 'utf8')).toContain('-text -filter -ident -working-tree-encoding')
+for (const missing of ['HEAD', 'info/attributes']) it(`repairs stale command setup when ${missing} is missing and preserves earlier checkpoints`, async () => {
+  const { workspace, directory, history, details } = await fixture()
+  const file = join(workspace, 'file'); writeFileSync(file, 'original')
+  const privateGit = commandGit(directory, workspace)
+  try {
+    await history.run(details, async () => { writeFileSync(file, 'first change') })
+    const [first] = await history.list()
+    expect(existsSync(join(privateGit, 'buckle-setup-complete'))).toBe(true)
+    rmSync(join(privateGit, missing))
+    await history.run({ ...details, stageId: 'two' }, async () => { writeFileSync(file, 'second change') })
+    const listed = await history.list()
+    expect(listed.at(-1)!.restorable).toBe(true)
+    expect(listed.find(record => record.id === first!.id)).toEqual(first)
+    expect(readFileSync(join(privateGit, 'info', 'attributes'), 'utf8')).toContain('-text -filter -ident -working-tree-encoding')
+    await history.restore(listed.at(-1)!.id)
+    expect(readFileSync(file, 'utf8')).toBe('first change')
+    await history.restore(first!.id)
+    expect(readFileSync(file, 'utf8')).toBe('original')
+  } finally { await history.close() }
 })
 
 it('preserves borrowed objects when migrating a pre-marker store after owner git changes', async () => {
@@ -355,11 +363,10 @@ it('preserves borrowed objects when migrating a pre-marker store after owner git
   writeFileSync(join(workspace, 'file'), 'borrowed original')
   execFileSync('git', ['-C', workspace, 'add', 'file'])
   const directory = join(root, 'history')
-  const store = createGitStore({ directory, excluded: [], maxFileBytes: () => 1_048_576, allowed: () => true })
-  const first = await store.capture({ roots: [workspace], id: 'change-borrowed', phase: 'before' })
+  const first = await shadowGitCheckpoint({ directory, roots: [workspace], sessionId: 's', stageId: 'borrowed', execute: () => writeFileSync(join(workspace, 'file'), 'old engine') })
   const privateGit = join(directory, 'git')
   const alternates = readFileSync(join(privateGit, 'objects', 'info', 'alternates'), 'utf8')
-  const fileHash = first.snapshot[join(workspace, 'file')]!.hash!
+  const fileHash = first.before[join(workspace, 'file')]!.hash!
   expect(existsSync(join(privateGit, 'objects', fileHash.slice(0, 2), fileHash.slice(2)))).toBe(false)
   rmSync(join(privateGit, 'buckle-setup-complete'), { force: true })
   const nextGit = join(root, 'next-owner-git')
@@ -368,44 +375,54 @@ it('preserves borrowed objects when migrating a pre-marker store after owner git
   writeFileSync(join(workspace, 'file'), 'new content')
   const originalDigest = treeDigest(originalGit)
   const nextDigest = treeDigest(nextGit)
-  await store.capture({ roots: [workspace], id: 'change-migrated', phase: 'after', parents: first.trees })
+  const store = createGitStore({ directory, excluded: [], maxFileBytes: () => 1_048_576, allowed: () => true })
+  await store.reconcile([first])
   expect(readFileSync(join(privateGit, 'objects', 'info', 'alternates'), 'utf8')).toBe(alternates)
-  expect([...(await store.restoreContent({ trees: first.trees, target: first.snapshot, paths: [join(workspace, 'file')] })).values()].map(value => value.toString())).toContain('borrowed original')
+  expect([...(await store.restoreContent({ trees: first.beforeTrees!, target: first.before, paths: [join(workspace, 'file')] })).values()].map(value => value.toString())).toContain('borrowed original')
+  await store.materialize()
+  expect(existsSync(join(privateGit, 'objects', 'info', 'alternates'))).toBe(false)
   expect(treeDigest(originalGit)).toBe(originalDigest)
   expect(treeDigest(nextGit)).toBe(nextDigest)
+  rmSync(join(originalGit, 'objects'), { recursive: true, force: true })
+  expect([...(await store.restoreContent({ trees: first.beforeTrees!, target: first.before, paths: [join(workspace, 'file')] })).values()].map(value => value.toString())).toContain('borrowed original')
 })
 
 
-it.skipIf(process.platform === 'win32')('replaces linked setup metadata without writing through to its target', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'buckle-history-setup-link-')); roots.push(root)
-  const workspace = join(root, 'workspace'); mkdirSync(workspace)
-  const directory = join(root, 'history')
-  const store = createGitStore({ directory, excluded: [], maxFileBytes: () => 1_048_576, allowed: () => true })
-  await store.capture({ roots: [workspace], id: 'change-initial', phase: 'before' })
-  const attributes = join(directory, 'git', 'info', 'attributes')
-  const marker = join(directory, 'git', 'buckle-setup-complete')
+it.skipIf(process.platform === 'win32')('replaces linked command setup metadata without writing through to its target', async () => {
+  const { root, workspace, directory, history, details } = await fixture()
+  const privateGit = commandGit(directory, workspace)
+  const attributes = join(privateGit, 'info', 'attributes')
+  const marker = join(privateGit, 'buckle-setup-complete')
   const target = join(root, 'metadata-target'); writeFileSync(target, 'owner file must stay unchanged')
-  rmSync(attributes); symlinkSync(target, attributes)
-  rmSync(marker); symlinkSync(target, marker)
-  const captured = await store.capture({ roots: [workspace], id: 'change-repair-link', phase: 'before' })
-  expect(captured.restorable).toBe(true)
-  expect(readFileSync(target, 'utf8')).toBe('owner file must stay unchanged')
-  expect(readFileSync(attributes, 'utf8')).toContain('-text -filter -ident -working-tree-encoding')
+  try {
+    await history.run(details, async () => { writeFileSync(join(workspace, 'file'), 'initial') })
+    rmSync(attributes); symlinkSync(target, attributes)
+    rmSync(marker); symlinkSync(target, marker)
+    await history.run({ ...details, stageId: 'two' }, async () => { writeFileSync(join(workspace, 'file'), 'changed') })
+    expect((await history.list()).at(-1)!.restorable).toBe(true)
+    expect(readFileSync(target, 'utf8')).toBe('owner file must stay unchanged')
+    expect(lstatSync(attributes).isSymbolicLink()).toBe(false)
+    expect(lstatSync(marker).isSymbolicLink()).toBe(false)
+    expect(readFileSync(attributes, 'utf8')).toContain('-text -filter -ident -working-tree-encoding')
+  } finally { await history.close() }
 })
 
 
-it('repairs same-size corrupted safety attributes and captures exact CRLF bytes', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'buckle-history-corrupt-attributes-')); roots.push(root)
-  const workspace = join(root, 'workspace'); mkdirSync(workspace)
+it('repairs same-size corrupted command safety attributes and restores exact CRLF bytes', async () => {
+  const { workspace, directory, history, details } = await fixture()
   writeFileSync(join(workspace, '.gitattributes'), 'file text eol=lf\n')
-  writeFileSync(join(workspace, 'file'), 'original\r\n')
-  const directory = join(root, 'history')
-  const store = createGitStore({ directory, excluded: [], maxFileBytes: () => 1_048_576, allowed: () => true })
-  await store.capture({ roots: [workspace], id: 'change-before-corruption', phase: 'before' })
-  const attributes = join(directory, 'git', 'info', 'attributes')
-  const guarded = readFileSync(attributes, 'utf8')
-  writeFileSync(attributes, ' '.repeat(Buffer.byteLength(guarded)))
-  const captured = await store.capture({ roots: [workspace], id: 'change-after-corruption', phase: 'after' })
-  expect([...(await store.restoreContent({ trees: captured.trees, target: captured.snapshot, paths: [join(workspace, 'file')] })).values()].map(value => value.toString())).toContain('original\r\n')
-  expect(readFileSync(attributes, 'utf8')).toBe(guarded)
+  const file = join(workspace, 'file'); writeFileSync(file, 'setup\r\n')
+  const attributes = join(commandGit(directory, workspace), 'info', 'attributes')
+  try {
+    await history.run(details, async () => {})
+    const guarded = readFileSync(attributes, 'utf8')
+    writeFileSync(attributes, ' '.repeat(Buffer.byteLength(guarded)))
+    writeFileSync(file, 'original\r\n')
+    await history.run({ ...details, stageId: 'two' }, async () => { writeFileSync(file, 'changed\r\n') })
+    const captured = (await history.list()).at(-1)!
+    expect(captured.restorable).toBe(true)
+    expect(readFileSync(attributes, 'utf8')).toBe(guarded)
+    await history.restore(captured.id)
+    expect(readFileSync(file, 'utf8')).toBe('original\r\n')
+  } finally { await history.close() }
 })

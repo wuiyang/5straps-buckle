@@ -217,6 +217,7 @@ it('keeps old canonical refs and saved pointers if migration metadata publicatio
 for (const failAfterSave of [false, true]) it(`preserves migrated pending recovery pointers ${failAfterSave ? 'when publication is interrupted' : 'after successful finish'}`, async () => {
   const { test, state } = await seedLegacy()
   const target = state.checkpoints[1]!
+  const baseline = structuredClone(target.before)
   target.status = 'pending'; target.before = {}
   delete target.after; delete target.afterTrees
   saveState(test, state)
@@ -239,7 +240,7 @@ for (const failAfterSave of [false, true]) it(`preserves migrated pending recove
   collect(durable)
   const store = createGitStore({ directory: test.directory, excluded: [], maxFileBytes: () => 1_048_576, allowed: () => true })
   const record = durable.checkpoints.find(row => row.id === target.id)!
-  const content = await store.restoreContent({ trees: record.beforeTrees!, target: await store.loadTree(record.beforeTrees![0]!), paths: [test.file] })
+  const content = await store.restoreContent({ trees: record.beforeTrees!, target: baseline, paths: [test.file] })
   expect([...content.values()].map(value => value.toString())).toContain('owner baseline\r\n')
   // Interrupted, it records no after state, so no restore runs through it.
   await expect(restarted.restore(target.id)).rejects.toMatchObject({ code: 'RESTORE_REFUSED' })

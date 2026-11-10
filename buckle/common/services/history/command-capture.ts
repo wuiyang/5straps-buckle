@@ -5,7 +5,7 @@ import { replaceFile } from '../../adapters/replace-file.js'
 import type { Program, UntrustedRoots } from '../../domain/executable.js'
 import { childPath, isInside, isPlainName } from '../../domain/paths.js'
 import { gitOperation, HistoryGitError, historyGitProgram, isolatedGit, runProgram } from './git-process.js'
-import { escapeIgnore, ownerGitDirectory, RAW_ATTRIBUTES, regularFile } from './git-files.js'
+import { escapeIgnore, ownerGitDirectory, RAW_ATTRIBUTES, readGitMetadata, regularFile } from './git-files.js'
 import { logger } from '../../runtime/log.js'
 import { blobId, type ObjectStore } from './object-store.js'
 import { modeOf } from './file-mode.js'
@@ -125,12 +125,13 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   async function prepare(found: Program, root: string, budget: CaptureBudget): Promise<{ root: string; git: string; extra: string[]; protect: string[] }> {
     const state = { root, git: gitDirectory(root) }
     const attributes = join(state.git, 'info', 'attributes')
-    if (!regularFile(join(state.git, SETUP_MARKER)) || !regularFile(join(state.git, 'HEAD')) || !regularFile(attributes, Buffer.byteLength(RAW_ATTRIBUTES))) {
+    if (!regularFile(join(state.git, SETUP_MARKER)) || !regularFile(join(state.git, 'HEAD')) || !regularFile(attributes, Buffer.byteLength(RAW_ATTRIBUTES)) || readGitMetadata(attributes) !== RAW_ATTRIBUTES) {
       rmSync(join(state.git, SETUP_MARKER), { force: true })
       mkdirSync(state.git, { recursive: true, mode: 0o700 }); mkdirSync(input.objects.root, { recursive: true, mode: 0o700 })
       await git(found, state, ['init', '--quiet', `--template=${empty}`, state.git], { budget })
       mkdirSync(join(state.git, 'info'), { recursive: true, mode: 0o700 })
-      writeFileSync(attributes, RAW_ATTRIBUTES, { mode: 0o600 })
+      rmSync(attributes, { force: true })
+      writeFileSync(attributes, RAW_ATTRIBUTES, { mode: 0o600, flag: 'wx' })
       writeFileSync(join(state.git, SETUP_MARKER), '', { mode: 0o600 })
     }
     const protect = input.excluded().filter(path => isInside(root, path) && path !== root).map(path => relative(root, path))

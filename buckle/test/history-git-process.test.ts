@@ -1,11 +1,14 @@
 import { ChildProcess, spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { PassThrough } from 'node:stream'
 import { afterEach, expect, it, vi } from 'vitest'
-import { createGitStore } from '../common/services/history/git-store.js'
+import { createCommandCapture } from '../common/services/history/command-capture.js'
+import { historyGitProgram, isolatedGit, runProgram } from '../common/services/history/git-process.js'
 import { openChangeHistory } from '../common/services/history/journal.js'
+import { openObjectStore } from '../common/services/history/object-store.js'
 import { logger } from '../common/runtime/log.js'
 import { shadowGitCheckpoint } from './support/shadow-git-checkpoint.js'
 
@@ -30,8 +33,7 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'buckle-history-process-')); roots.push(root)
   const workspace = join(root, 'workspace'); mkdirSync(workspace)
   const directory = join(root, 'history')
-  const store = createGitStore({ directory, excluded: [], maxFileBytes: () => 1_048_576, allowed: () => true })
-  return { root, workspace, directory, store, details: { roots: [workspace], id: 'change-process', phase: 'before' as const } }
+  return { root, workspace, directory }
 }
 function childFixture(action: (child: ChildProcess) => void = () => {}) {
   const child = new ChildProcess()
@@ -43,8 +45,12 @@ function childFixture(action: (child: ChildProcess) => void = () => {}) {
   return { child, kill, running, launch }
 }
 
-for (const kind of ['exit', 'start', 'output-limit'] as const) it(`reports safe ${kind} failure metadata and a failed capture summary`, async () => {
-  const { root, store, details } = fixture()
+for (const kind of ['exit', 'start', 'output-limit'] as const) it(`reports safe ${kind} failure metadata from a Git child`, async () => {
+  const { root, workspace, directory } = fixture()
+  const program = historyGitProgram({ allowed: true, roots: [workspace] })
+  if (!program) throw new Error('The Git process fixture requires trusted host git')
+  const owned = join(directory, 'process')
+  const { environment, safety, empty } = isolatedGit(owned)
   const fake = childFixture(child => {
     child.stderr?.emit('data', Buffer.from('private-stderr token=private-token'))
     if (kind === 'start') child.emit('error', Object.assign(new Error('private-start token=private-token'), { code: 'ENOENT', path: root }))
@@ -52,13 +58,10 @@ for (const kind of ['exit', 'start', 'output-limit'] as const) it(`reports safe 
     child.emit('close', kind === 'exit' ? 42 : null)
   })
   vi.mocked(spawn).mockImplementationOnce(fake.launch)
-  const debug = vi.spyOn(logger, 'debug').mockImplementation(() => {})
-  const failure: unknown = await store.capture(details).catch(error => error)
+  const failure: unknown = await runProgram({ program, operation: 'init', args: [...safety, 'init', '--quiet', `--template=${empty}`, join(directory, 'git')], cwd: owned, environment }).catch(error => error)
   expect(failure).toMatchObject({ name: 'HistoryGitError', details: { operation: 'init', failure: kind, elapsedMs: expect.any(Number), ...(kind === 'exit' ? { exitCode: 42 } : {}), ...(kind === 'start' ? { errno: 'ENOENT' } : {}) } })
-  const summaries = debug.mock.calls.filter(([message]) => message === 'History capture finished')
-  expect(summaries).toEqual([['History capture finished', { phase: 'before', outcome: 'error', captureHashesMs: expect.any(Number), resolveMs: expect.any(Number), gitSubprocessMs: expect.any(Number), commandCount: 1, captureMs: expect.any(Number) }]])
-  expect(JSON.stringify({ failure, summaries })).not.toMatch(/private-stderr|private-start|private-token/)
-  expect(JSON.stringify({ failure, summaries })).not.toContain(root)
+  expect(JSON.stringify(failure)).not.toMatch(/private-stderr|private-start|private-token/)
+  expect(JSON.stringify(failure)).not.toContain(root)
 })
 
 for (const phase of ['before', 'after'] as const) it(`preserves the ${phase} fallback while logging safe Git diagnostics`, async () => {
@@ -108,20 +111,23 @@ it('escalates a timed-out Git child and keeps the mutation lock until close conf
 })
 
 
-it('retries setup if writing safety attributes fails after git init completes', async () => {
-  const { directory, store, details } = fixture()
+it('retries command setup if writing safety attributes fails after git init completes', async () => {
+  const { workspace, directory } = fixture()
+  const commands = createCommandCapture({ directory, objects: openObjectStore(directory), excluded: () => [directory], allowed: () => true, maxFileBytes: () => 1_048_576 })
+  const privateGit = join(directory, 'commands', createHash('sha256').update(workspace).digest('hex').slice(0, 24))
   let interrupted = false
   vi.mocked(writeFileSync).mockImplementation((...args: Parameters<typeof writeFileSync>) => {
     if (!interrupted && typeof args[0] === 'string' && args[0].endsWith(join('info', 'attributes'))) { interrupted = true; throw Object.assign(new Error('fixture setup interruption'), { code: 'EPERM' }) }
     return actualFs.writeFileSync(...args)
   })
-  await expect(store.capture(details)).rejects.toMatchObject({ code: 'EPERM' })
-  expect(existsSync(join(directory, 'git', 'HEAD'))).toBe(true)
-  expect(existsSync(join(directory, 'git', 'buckle-setup-complete'))).toBe(false)
-  const retried = await store.capture({ ...details, id: 'change-retry' })
-  expect(retried.restorable).toBe(true)
-  expect(existsSync(join(directory, 'git', 'info', 'attributes'))).toBe(true)
-  expect(existsSync(join(directory, 'git', 'buckle-setup-complete'))).toBe(true)
+  await expect(commands.baseline([workspace], { deadline: Date.now() + 10_000 })).rejects.toMatchObject({ code: 'EPERM' })
+  expect(existsSync(join(privateGit, 'HEAD'))).toBe(true)
+  expect(existsSync(join(privateGit, 'buckle-setup-complete'))).toBe(false)
+  const retried = await commands.baseline([workspace], { deadline: Date.now() + 10_000 })
+  expect(retried).toHaveLength(1)
+  expect(retried[0]).toMatchObject({ root: workspace, partial: false, tree: expect.stringMatching(/^[a-f0-9]{40}$/) })
+  expect(existsSync(join(privateGit, 'info', 'attributes'))).toBe(true)
+  expect(existsSync(join(privateGit, 'buckle-setup-complete'))).toBe(true)
 })
 
 // Slice F2, item 5 (A9): a collection that fails saves its attempt, so the next write does not start it again at once.
