@@ -5,9 +5,6 @@ import { NoticeRefusedError } from '../../domain/approval/notice-refused.js'
 import { alreadyReported } from '../../adapters/json-file-store.js'
 import { logger } from '../../runtime/log.js'
 
-/** How long a notice the receiver refuses alone is held before it is sent again, while the notices behind it go on. */
-const REFUSED_PAUSE_MS = 5 * 60_000
-
 /** Why a call stopped waiting while its ask stays pending; `no_response`, which ends an ask, is the ledger's alone. */
 export type WaitSkipReason = Exclude<ApprovalSkipReason, 'no_response'>
 
@@ -60,10 +57,7 @@ function createDurableNotices(input: {
   // meanwhile waits for it, rather than sending again to a receiver that just refused.
   let backingOff = false
   const enqueues = new Set<Promise<void>>()
-  // Notices the receiver refused alone, by outbox id, and until when each is held: the receiver may be on an older protocol
-  // that cannot read one kind of notice (APPROVAL-36's no_response), and it must not stall the rest. Held in memory, so a
-  // restart tries each once more; the outbox keeps the notice until it is taken or its retention passes.
-  const held = new Map<string, number>()
+  let dropLogged = false
 
   function flush(): Promise<void> {
     if (closed) return active ?? Promise.resolve()
@@ -87,7 +81,7 @@ function createDurableNotices(input: {
       // An enqueue may arrive while the last acknowledgement is being written.
       do {
         requested = false
-        const entries = readyDeliveries()
+        const entries = input.registry.pendingDeliveries().slice(0, 100)
         if (entries.length === 0) continue
         await deliver(entries)
         requested = !closed
@@ -101,34 +95,41 @@ function createDurableNotices(input: {
     }
   }
 
-  function readyDeliveries(): ApprovalDelivery[] {
-    const pending = input.registry.pendingDeliveries()
-    const ids = new Set(pending.map(entry => entry.id))
-    for (const id of held.keys()) if (!ids.has(id)) held.delete(id)
-    const now = Date.now()
-    return pending.filter(entry => (held.get(entry.id) ?? 0) <= now).slice(0, 100)
-  }
-
   /**
-   * One batch, sent whole, or in halves where the receiver refuses it, until the notice it refuses is alone and held. A
-   * refused batch was taken in no part, so each half is sent once. Any other failure ends the attempt for the retry.
+   * One batch, taken off the outbox once sent: whole, or, where the receiver refuses the post itself, in halves until the
+   * notice it refuses is alone. A receiver on an older protocol refuses a whole post for one notice it cannot read
+   * (APPROVAL-36's no_response), and it must not stall the rest. A notice it refuses alone is dropped, as one it will not
+   * take unchanged: kept, it would be refused at every retry and hold the room new asks need. Any other failure ends the
+   * attempt for the retry, after what was settled is taken off.
    */
   async function deliver(entries: ApprovalDelivery[]): Promise<void> {
+    const settled: string[] = []
+    try {
+      await sendApart(entries, settled)
+    } finally {
+      if (settled.length > 0) await input.registry.acknowledgeDeliveries(settled)
+    }
+  }
+
+  async function sendApart(entries: ApprovalDelivery[], settled: string[]): Promise<void> {
     try {
       await input.send(entries.map(entry => entry.notice))
     } catch (error: unknown) {
       if (!(error instanceof NoticeRefusedError)) throw error
-      if (entries.length === 1) return hold(entries[0]!)
+      if (entries.length === 1) return dropped(entries[0]!, error.status, settled)
       const half = Math.ceil(entries.length / 2)
-      await deliver(entries.slice(0, half))
-      return deliver(entries.slice(half))
+      await sendApart(entries.slice(0, half), settled)
+      return sendApart(entries.slice(half), settled)
     }
-    await input.registry.acknowledgeDeliveries(entries.map(entry => entry.id))
+    settled.push(...entries.map(entry => entry.id))
   }
 
-  function hold(entry: ApprovalDelivery): void {
-    if (!held.has(entry.id)) logger.warn('Approval webhook refuses a lifecycle notice that the others do not; it is held and sent again every few minutes', { event: entry.notice.event, ...(entry.notice.reason === undefined ? {} : { reason: entry.notice.reason }) })
-    held.set(entry.id, Date.now() + REFUSED_PAUSE_MS)
+  function dropped(entry: ApprovalDelivery, status: number, settled: string[]): void {
+    settled.push(entry.id)
+    const fields = { status, event: entry.notice.event, ...(entry.notice.reason === undefined ? {} : { reason: entry.notice.reason }) }
+    if (dropLogged) logger.debug('Approval webhook refuses a lifecycle notice on its own, so it was dropped', fields)
+    else logger.warn('Approval webhook refuses a lifecycle notice on its own, so it was dropped; further drops are logged at debug', fields)
+    dropLogged = true
   }
 
   function skipped(tokens: string[], reason: WaitSkipReason): void {

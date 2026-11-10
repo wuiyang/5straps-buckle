@@ -2,8 +2,9 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { ApprovalNotice } from '@5straps/protocol'
+import { ApprovalNoticeSchema, type ApprovalNotice } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { z } from 'zod'
 import { createApprovalNoticeSender } from '../common/adapters/approval/webhook-notifier.js'
 import { settingsPath } from '../common/services/workspaces/workspace-settings.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -378,10 +379,10 @@ describe('the outcome sender keeps its retry delay while the receiver fails', ()
 })
 
 // A receiver on an older protocol refuses a whole batch for one notice it cannot read, such as the skipped notice with
-// the reason no_response (APPROVAL-36). The others in the batch must still arrive, and the refused one must wait for a
-// receiver that takes it, for as long as the outbox keeps it.
+// the reason no_response (APPROVAL-36). The others in the batch must still arrive, and the refused one leaves the outbox:
+// a receiver that answers 400, 413, or 422 for one notice alone will not take it unchanged, so it is never sent again and
+// never holds the room new asks need.
 describe('a receiver that refuses one notice', () => {
-  const PAUSE_MS = 5 * 60_000
   const refusing = (refused: Set<string>, delivered: string[] = []) => vi.fn(async (batch: ApprovalNotice[]) => {
     if (batch.some(notice => refused.has(notice.token))) throw new NoticeRefusedError(400)
     delivered.push(...batch.map(notice => notice.token))
@@ -391,32 +392,25 @@ describe('a receiver that refuses one notice', () => {
     for (const ask of asks) await q.registry.resolve({ token: ask.token, approved: true, scope: 'once' }, SOURCES.cli)
     return asks.map(ask => ask.token)
   }
+  const sentTokens = (send: ReturnType<typeof refusing>) => send.mock.calls.flatMap(([batch]) => batch.map(notice => notice.token))
 
-  it('delivers the other notices, holds the refused one, and sends it again once the pause has passed', async () => {
+  it('delivers the other notices, drops the refused one from the outbox, and never sends it again', async () => {
     vi.useFakeTimers(); vi.setSystemTime(at)
     const q = queue()
     const [first, poison, last] = await answered(q, 3)
-    const refused = new Set([poison!])
     const delivered: string[] = []
-    const send = refusing(refused, delivered)
-    const notices = createApprovalNotices(send, { registry: q.registry, retryMs: 50 })
+    const send = refusing(new Set([poison!]), delivered)
+    const notices = createApprovalNotices(send, { registry: q.registry, retryMs: 1_000 })
     await notices.flush()
     expect(delivered.sort()).toEqual([first!, last!].sort())
-    expect(q.registry.pendingDeliveries().map(row => row.notice.token)).toEqual([poison])
-    const calls = send.mock.calls.length
-    await vi.advanceTimersByTimeAsync(PAUSE_MS - 1_000)
-    expect(send.mock.calls.length, 'the refused notice is not sent again during the pause').toBe(calls)
-    await vi.advanceTimersByTimeAsync(2_000)
-    expect(send.mock.calls.at(-1)![0].map(notice => notice.token)).toEqual([poison])
-    expect(q.registry.pendingDeliveries()).toHaveLength(1)
-    refused.clear()
-    await vi.advanceTimersByTimeAsync(PAUSE_MS + 1_000)
-    expect(delivered).toContain(poison)
     expect(q.registry.pendingDeliveries()).toEqual([])
+    const tries = sentTokens(send).filter(token => token === poison).length
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(sentTokens(send).filter(token => token === poison)).toHaveLength(tries)
     await notices.settle()
   })
 
-  it('does not let a held notice delay one that arrives after it', async () => {
+  it('does not let a refused notice delay one that arrives after it', async () => {
     vi.useFakeTimers(); vi.setSystemTime(at)
     const q = queue()
     const [poison] = await answered(q, 1)
@@ -424,26 +418,25 @@ describe('a receiver that refuses one notice', () => {
     const send = refusing(new Set([poison!]), delivered)
     const notices = createApprovalNotices(send, { registry: q.registry, retryMs: 50 })
     await notices.flush()
-    expect(q.registry.pendingDeliveries()).toHaveLength(1)
+    expect(q.registry.pendingDeliveries()).toEqual([])
     const [later] = await answered(q, 1)
     await vi.advanceTimersByTimeAsync(100)
     expect(delivered).toEqual([later])
     expect(send.mock.calls.at(-1)![0].map(notice => notice.token)).toEqual([later])
-    expect(q.registry.pendingDeliveries().map(row => row.notice.token)).toEqual([poison])
     await notices.settle()
   })
 
-  it('asks a receiver that refuses everything once per notice, then leaves it alone for the pause', async () => {
+  it('sends a receiver that refuses everything each notice alone at most once, and keeps none of them', async () => {
     vi.useFakeTimers(); vi.setSystemTime(at)
     const q = queue()
     const tokens = await answered(q, 4)
     const send = refusing(new Set(tokens))
-    const notices = createApprovalNotices(send, { registry: q.registry, retryMs: 50 })
+    const notices = createApprovalNotices(send, { registry: q.registry, retryMs: 1_000 })
     await notices.flush()
-    expect(q.registry.pendingDeliveries()).toHaveLength(4)
+    expect(send.mock.calls.length).toBeLessThanOrEqual(2 * tokens.length - 1)
+    expect(q.registry.pendingDeliveries()).toEqual([])
     const calls = send.mock.calls.length
-    expect(calls).toBeLessThanOrEqual(2 * tokens.length)
-    await vi.advanceTimersByTimeAsync(PAUSE_MS - 1_000)
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
     expect(send.mock.calls.length).toBe(calls)
     await notices.settle()
   })
@@ -461,18 +454,65 @@ describe('a receiver that refuses one notice', () => {
     await notices.settle()
   })
 
-  it('keeps a refused notice across a restart and sends it again at once, then holds it for the pause', async () => {
+  it('warns at the first notice it drops, naming its event and reason, and logs later drops at debug', async () => {
     vi.useFakeTimers(); vi.setSystemTime(at)
     const q = queue()
-    const [, poison] = await answered(q, 2)
-    const before = createApprovalNotices(refusing(new Set([poison!])), { registry: q.registry, retryMs: 50 })
-    await before.settle()
-    expect(q.registry.pendingDeliveries().map(row => row.notice.token)).toEqual([poison])
-    const delivered: string[] = []
-    const after = createApprovalNotices(refusing(new Set(), delivered), { registry: q.open(), retryMs: 50 })
-    await after.flush()
-    expect(delivered).toEqual([poison])
+    const tokens = await answered(q, 2)
+    const warn = vi.spyOn(logger, 'warn')
+    const debug = vi.spyOn(logger, 'debug')
+    try {
+      const notices = createApprovalNotices(refusing(new Set(tokens)), { registry: q.registry, retryMs: 1_000 })
+      await notices.flush()
+      await notices.settle()
+      const dropped = (calls: unknown[][]) => calls.filter(([message]) => String(message).startsWith('Approval webhook refuses a lifecycle notice on its own'))
+      expect(dropped(warn.mock.calls)).toEqual([['Approval webhook refuses a lifecycle notice on its own, so it was dropped; further drops are logged at debug', { status: 400, event: 'answered' }]])
+      expect(dropped(debug.mock.calls)).toHaveLength(1)
+      expect(JSON.stringify(dropped([...warn.mock.calls, ...debug.mock.calls]))).not.toContain(tokens[0]!)
+    } finally {
+      warn.mockRestore(); debug.mockRestore()
+    }
+  })
+})
+
+// The notice as a receiver on @5straps/protocol from before APPROVAL-36 reads it: the reason no_response is unknown there.
+const NoticeBeforeNoResponse = ApprovalNoticeSchema.extend({ reason: z.enum(['caller_declined_wait', 'no_approver', 'wait_elapsed', 'shutdown']).optional() })
+
+/** A receiver on that protocol, as Rings is: it takes a post whose every notice it reads, and answers 400 for the whole post otherwise. */
+function receiverBeforeNoResponse() {
+  const taken: ApprovalNotice[] = []
+  let posts = 0
+  const fetch = vi.fn(async (_url: unknown, options: RequestInit) => {
+    posts += 1
+    const read = z.object({ notices: z.array(NoticeBeforeNoResponse) }).safeParse(JSON.parse(String(options.body)))
+    if (!read.success) return new Response('{"error":"Invalid request body"}', { status: 400 })
+    taken.push(...read.data.notices)
+    return new Response('{}', { status: 201 })
+  })
+  return { fetch, taken, posts: () => posts }
+}
+
+describe('a receiver on the protocol from before the skip for no response', () => {
+  it('takes every other notice beside one it cannot read, and the outbox keeps nothing it refused', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(at)
+    const q = queue()
+    const [lapsed, approved, withdrawn] = await q.ask(3)
+    await q.registry.resolve({ token: approved!.token, approved: true, scope: 'once' }, SOURCES.cli)
+    await q.registry.cancel([withdrawn!.token])
+    vi.setSystemTime(Date.parse(lapsed!.expiresAt) + 1_000)
+    await q.registry.sweep()
+    expect(q.registry.pendingDeliveries().map(row => row.notice.reason)).toContain('no_response')
+    const receiver = receiverBeforeNoResponse()
+    vi.stubGlobal('fetch', receiver.fetch)
+    const send = createApprovalNoticeSender({ url: 'http://rings.test/approvals', serverId: 'node', workspaceId: q.workspace })
+    const notices = createApprovalNotices(send, { registry: q.registry, retryMs: 1_000 })
+    await notices.flush()
+    expect(receiver.taken.map(notice => `${notice.token} ${notice.event}`).sort()).toEqual([`${approved!.token} answered`, `${withdrawn!.token} cancelled`].sort())
     expect(q.registry.pendingDeliveries()).toEqual([])
-    await after.settle()
+    const posts = receiver.posts()
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(receiver.posts(), 'nothing is left to post').toBe(posts)
+    // Nothing it refused stands in the room the next ask needs.
+    expect(await q.ask(1)).toHaveLength(1)
+    await notices.settle()
   })
 })
