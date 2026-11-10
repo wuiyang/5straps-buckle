@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -35,9 +35,12 @@ import { idOf, workspacesOf } from './support/workspaces.js'
 // approvals clears a call.
 
 const roots: string[] = []
+// Every second process a test started: one a failed or timed-out test never stopped is killed here.
+const children = new Set<ChildProcess>()
 afterEach(async () => {
   vi.restoreAllMocks()
   vi.useRealTimers()
+  await Promise.all([...children].map(stopped))
   await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -699,11 +702,14 @@ async function runningElsewhere(directory: string, sessionId: string): Promise<{
   writeFileSync(script, `
     import { createExecutingMark } from ${JSON.stringify(new URL('../common/services/workspaces/active-work.ts', import.meta.url).href)};
     createExecutingMark({ directory: process.argv[2], workspaceId: 'w-1', instance: 'second' }).begin({ sessionId: process.argv[3] });
-    setInterval(() => {}, 60_000);
+    // It goes with the test process: its stdin ends when that process exits, and its parent changes when it dies.
+    const parent = process.ppid;
+    process.stdin.on('end', () => process.exit(0)).resume();
+    setInterval(() => { if (process.ppid !== parent) process.exit(0); }, 1_000);
     process.stdout.write('running\\n');
   `)
-  const child = spawn(process.execPath, ['--import', import.meta.resolve('tsx'), script, directory, sessionId], { stdio: ['ignore', 'pipe', 'ignore'] })
-  const exited = new Promise<void>(resolve => child.once('exit', () => resolve()))
+  const child = spawn(process.execPath, ['--import', import.meta.resolve('tsx'), script, directory, sessionId], { stdio: ['pipe', 'pipe', 'ignore'] })
+  children.add(child)
   await new Promise<void>((resolve, reject) => {
     let output = ''
     child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString('utf8'); if (output.includes('running\n')) resolve() })
@@ -712,11 +718,18 @@ async function runningElsewhere(directory: string, sessionId: string): Promise<{
   await new Promise(resolve => setTimeout(resolve, ACTIVE_WORK_REFRESH_MS + 500))
   return {
     async kill() {
-      child.kill('SIGKILL')
-      await exited
+      await stopped(child)
       return Date.now()
     },
   }
+}
+
+async function stopped(child: ChildProcess): Promise<void> {
+  children.delete(child)
+  if (child.exitCode !== null || child.signalCode !== null) return
+  const exited = new Promise<void>(resolve => child.once('exit', () => resolve()))
+  child.kill('SIGKILL')
+  await exited
 }
 
 function captured() {
