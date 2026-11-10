@@ -21,6 +21,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 import { questionFor } from '../common/adapters/approval/terminal-question.js'
 import { settleAuditLogs } from './support/action-log-writer.js'
+import { challengeBytes } from '@5straps/protocol/signed-request'
 
 // The delete policy brief, item 3: a delete outside the workspace's own folder (a writable mount, or a path an approval
 // reached) asks at the floor as before, and offers two subjects besides its scopes: the target alone, as before, or its
@@ -221,13 +222,41 @@ describe('the approval service', () => {
     await service.close()
   })
 
-  it('takes no subject from a device\'s signed decision, whose challenge named none but the ask\'s own', async () => {
+  // APPROVAL-37 (owner, 2026-11-10): a device offers the folder and its subfolders too, on the challenge that showed them.
+  it('signs the wider subject into the challenge of a device that asks for it, and none into any other', async () => {
+    const { registry } = queue()
+    const service = approvalServiceWithTerminal({ registry, workspaceId: 'w1', serverId: 'node', graceMs: 15_000, interaction: fixedInteraction({ requestCli: answering('none'), hold: 'prompt' }) })
+    const [request] = (await registry.ask({ tool: 'fs_delete', sessionId: 's1', asks: [WIDE], call: CALL })).requests
+    const [plain] = service.challengeListing({ workspaceName: true }).challenges
+    const [wider] = service.challengeListing({ workspaceName: true, widerSubject: true }).challenges
+    expect(plain!.challenge).not.toHaveProperty('widerSubject')
+    expect(wider!.challenge).toMatchObject({ token: request!.token, subject: WIDE.subject, widerSubject: WIDE.widerSubject })
+    await service.close()
+  })
+
+  it('grants the folder and its subfolders a device\'s signed decision names, on a challenge that showed them', async () => {
     const { registry, grants } = queue()
     const service = approvalServiceWithTerminal({ registry, workspaceId: 'w1', serverId: 'node', graceMs: 15_000, interaction: fixedInteraction({ requestCli: answering('none'), hold: 'prompt' }) })
     const [request] = (await registry.ask({ tool: 'fs_delete', sessionId: 's1', asks: [WIDE], call: CALL })).requests
-    const result = await service.decide(deviceDecision({ token: request!.token, approved: true, scope: 'session', subject: WIDE.widerSubject, challenge: 'a'.repeat(64) }, { keyId: 'device' }))
-    expect(result).toMatchObject({ status: 'refused', step: 'decision', error: { message: expect.stringContaining('buckle approve --below') } })
+    const challenge = service.challengeListing({ widerSubject: true }).challenges[0]!.challenge!
+    const result = await service.decide(deviceDecision({ token: request!.token, approved: true, scope: 'session', subject: WIDE.widerSubject, challenge: challengeBytes(challenge).digest }, { keyId: 'device' }))
+    expect(result).toMatchObject({ status: 'applied', granted: WIDE.widerSubject })
+    expect(grants.list()).toMatchObject([{ rule: 'write_scope', subject: WIDE.widerSubject, scope: 'session', decidedBy: 'key:device' }])
+    await service.close()
+  })
+
+  it('refuses a device\'s wider subject on a challenge that never showed it, or one the ask does not offer', async () => {
+    const { registry, grants } = queue()
+    const service = approvalServiceWithTerminal({ registry, workspaceId: 'w1', serverId: 'node', graceMs: 15_000, interaction: fixedInteraction({ requestCli: answering('none'), hold: 'prompt' }) })
+    const [request] = (await registry.ask({ tool: 'fs_delete', sessionId: 's1', asks: [WIDE], call: CALL })).requests
+    const plain = service.challengeListing().challenges[0]!.challenge!
+    const wider = service.challengeListing({ widerSubject: true }).challenges[0]!.challenge!
+    const sent = (subject: string, challenge: typeof plain) => service.decide(deviceDecision({ token: request!.token, approved: true, scope: 'session', subject, challenge: challengeBytes(challenge).digest }, { keyId: 'device' }))
+    expect(await sent(WIDE.widerSubject!, plain)).toMatchObject({ status: 'refused', step: 'decision', error: { code: 'action_mismatch' } })
+    expect(await sent('delete-below:/srv', wider)).toMatchObject({ status: 'refused', step: 'decision', error: { code: 'scope_not_offered' } })
     expect(grants.list()).toEqual([])
+    expect(await service.decide(deviceDecision({ token: request!.token, approved: true, scope: 'session', challenge: challengeBytes(wider).digest }, { keyId: 'device' }))).toMatchObject({ status: 'applied' })
+    expect(grants.list()).toMatchObject([{ subject: WIDE.subject }])
     await service.close()
   })
 })

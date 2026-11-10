@@ -101,13 +101,20 @@ describe('scope always on a destructive command', () => {
   })
 })
 
+// APPROVAL-37 (owner, 2026-11-10): every route a person answers on offers the folder and its subfolders, as the terminal
+// does; the decision AI never grants one.
 describe('a wider subject', () => {
-  it.each(['terminal', 'cli'] as const)('is granted to %s, at the node', (source) => {
+  it.each(PERSONS)('is granted to %s, as at the node', (source) => {
     expect(guard({ claim: claim(SOURCES[source], approve('session', { subject: 'delete-below:/outside' })) })).toEqual({ ok: true, apply: { wider: 'delete-below:/outside' } })
   })
 
-  it.each(['forms', 'devices'] as const)('is refused to %s', (source) => {
-    expect(guard({ claim: claim(SOURCES[source], approve('session', { subject: 'delete-below:/outside' })) })).toEqual({ ok: false, code: 'scope_forbidden', reason: 'Only the node\'s terminal and buckle approve grant a folder and its subfolders' })
+  it('is granted to an HTTP form, for its own caller\'s ask', () => {
+    const own: LedgerView = { waiting: { ...ledger().waiting!, actor: 'agent:a' } }
+    expect(guard({ claim: { ...claim(SOURCES['http-forms'], approve('always', { subject: 'delete-below:/outside' })), caller: 'agent:a' }, ledger: own })).toEqual({ ok: true, apply: { wider: 'delete-below:/outside' } })
+  })
+
+  it('is refused to the decision AI, which is no person', () => {
+    expect(guard({ claim: claim(SOURCES.judge, approve('once', { subject: 'delete-below:/outside' })) })).toEqual({ ok: false, code: 'scope_forbidden', reason: 'Only a person grants a folder and its subfolders' })
   })
 })
 

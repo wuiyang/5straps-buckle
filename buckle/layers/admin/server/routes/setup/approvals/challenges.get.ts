@@ -17,14 +17,16 @@ const RECORDED_BEFORE = 'recorded before this build: decide at the node or re-se
 // other ask stays decidable (review M3 of the second proof-of-possession re-review). A call too large
 // to repeat in each of its asks' challenges is listed once in `calls`, by the call digest its
 // challenges sign; the client recomputes that digest from it (review M1 of the slice 5 re-review). A challenge carries
-// the workspace's name only for a device that asks with `?fields=workspaceName`: a device from before the name existed
-// refuses a challenge with a field it does not know.
+// the workspace's name only for a device that asks with `?fields=workspaceName`, and the ask's wider subject only for one
+// that asks with `widerSubject` among the fields (APPROVAL-37): a device from before either existed refuses a challenge
+// with a field it does not know.
 export default defineSetupHandler({
   access: 'approval',
   resource: 'approvals-challenges',
   handler: async ({ event, workspace, query }) => {
     const signer = await useServices(event).getNodeSigner()
-    const listing = workspace.runtime.approvalApi.challengeListing({ workspaceName: (query().fields ?? '').split(',').includes('workspaceName') })
+    const fields = (query().fields ?? '').split(',')
+    const listing = workspace.runtime.approvalApi.challengeListing({ workspaceName: fields.includes('workspaceName'), widerSubject: fields.includes('widerSubject') })
     return {
       node: { keyId: signer.keyId, publicKey: signer.publicKey },
       calls: listing.calls,

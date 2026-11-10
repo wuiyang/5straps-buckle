@@ -58,6 +58,28 @@ describe('the forms backend', () => {
     expect(formOf(drawn, 'b').requestedSchema.properties['action']?.enum).toEqual(['deny'])
   })
 
+  // APPROVAL-37: a delete outside the workspace offers its folder and its subfolders in the form, as at the terminal.
+  it('offers the folder and its subfolders for each lasting scope the ask offers, beside its own subject\'s choices', async () => {
+    const backend = forms()
+    await backend.open(fakeHost({ routed: [askFor('a'), askFor('b')] }))
+    const wider = { ...request('a'), widerSubject: 'delete-below:/srv/data' }
+    const drawn = backend.forms([wider, { ...request('b'), offeredScopes: ['once', 'session'], widerSubject: 'delete-below:/srv/data' }])
+    expect(formOf(drawn, 'a').requestedSchema.properties['action']?.enum).toEqual(['allow_once', 'allow_session', 'allow_always', 'allow_session_below', 'allow_always_below', 'deny'])
+    expect(formOf(drawn, 'a').message).toContain('or:      delete-below:/srv/data (every delete in that folder and its subfolders, for the session or always)')
+    expect(formOf(drawn, 'b').requestedSchema.properties['action']?.enum).toEqual(['allow_once', 'allow_session', 'allow_session_below', 'deny'])
+  })
+
+  it('sends a below answer as the decision the terminal sends for it: the scope, widened below', async () => {
+    const backend = forms()
+    const host = fakeHost({ routed: [askFor('a'), askFor('b')] })
+    await backend.open(host)
+    await backend.answer({ a: accepted({ action: 'allow_session_below' }), b: accepted({ action: 'allow_always_below' }) })
+    expect(host.decided.map(sent => sent.decision)).toEqual([
+      { token: 'a', outcome: 'approve', scope: 'session', widen: 'below' },
+      { token: 'b', outcome: 'approve', scope: 'always', widen: 'below' },
+    ])
+  })
+
   it('decides each accepted answer through the host as a plain decision, and returns the tokens it recorded', async () => {
     const backend = forms()
     const host = fakeHost({ routed: [askFor('a'), askFor('b'), askFor('c')], receipt: decision => (decision.decision.token === 'c' ? REFUSED : { status: 'applied', state: 'approved', assurance: 'local' }) })
@@ -412,13 +434,17 @@ describe('the forms host core opens', () => {
     expect(refused).toEqual([{ token: approved!.token, code: 'approver_not_allowed' }])
   })
 
-  it('takes no wider subject through the forms host, as buckle approve would grant it', async () => {
-    const { registry, grants, service, host } = await opened()
-    const [asked] = (await registry.ask({ tool: 'fs_delete', sessionId: 's-1', requestId: 'r-1', asks: [DELETE], call: CALL })).requests
-    const decision = { token: asked!.token, outcome: 'approve' as const, scope: 'session' as const, widen: 'below' as const }
-    expect(await host().decide({ kind: 'plain', decision })).toEqual({ status: 'refused', error: { code: 'scope_forbidden', message: 'Only the node\'s terminal and buckle approve grant a folder and its subfolders', retryable: false } })
-    expect(grants.list()).toEqual([])
-    expect(await service.decide({ source: 'cli', decision })).toMatchObject({ status: 'applied', granted: 'delete-below:/srv/data' })
+  // APPROVAL-37 (owner, 2026-11-10): a form offers the folder and its subfolders, and its answer widens as buckle approve's does.
+  it.each(['stdio', 'http'] as const)('grants the folder and its subfolders through the %s forms host, as buckle approve grants it', async (face) => {
+    const byForm = await opened(face)
+    const byCli = await opened(face)
+    const asked = async (node: typeof byForm) => (await node.registry.ask({ tool: 'fs_delete', sessionId: 's-1', actor: 'agent:a', requestId: 'r-1', asks: [DELETE], call: CALL })).requests[0]!.token
+    const formed = await asked(byForm)
+    expect((await byForm.backend.answer({ [formed]: accepted({ action: 'allow_session_below' }) }, { caller: 'agent:a' })).tokens).toEqual([formed])
+    expect(await byCli.service.decide({ source: 'cli', decision: { token: await asked(byCli), outcome: 'approve', scope: 'session', widen: 'below' } })).toMatchObject({ status: 'applied', granted: 'delete-below:/srv/data' })
+    const records = (node: typeof byForm) => node.grants.list().map(({ id: _id, createdAt: _at, ...grant }) => grant)
+    expect(records(byForm)).toEqual(records(byCli))
+    expect(records(byForm)).toMatchObject([{ rule: 'write_scope', subject: 'delete-below:/srv/data', scope: 'session', sessionId: 's-1', actor: 'agent:a' }])
   })
 
   it('leaves the whole-action check to core: an approval of an ask kept without its call is refused, and its denial applies', async () => {

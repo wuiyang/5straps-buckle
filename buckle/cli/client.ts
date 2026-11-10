@@ -9,6 +9,7 @@ import { OwnerOnlyError, requireOwnerOnly, setMode, type OwnerOnlyCheck } from '
 import { describeAction, printable, sameCallNote, workspaceLabel } from '../common/domain/approval-instruction.js'
 import { callDigestOf, ShownApprovalCallSchema, shownCallDigestOf, generateSigningKey, keyIdOf, PublicKeyTextSchema, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest, SIGNED_WORKSPACE_MAX, SmallOrderKeyError, type ApprovalChallenge, type ShownApprovalCall, type SignedRequestPurpose, type SigningKey } from '@5straps/protocol/signed-request'
 import { homeDirectory, isDriveRoot, typedPath, WHOLE_DRIVE } from '../common/domain/paths.js'
+import { floorSubjectPath } from '../common/domain/permission/subjects.js'
 import { realPathOf } from '../common/runtime/real-path.js'
 import { saveEndingLine, unsavedApproval, unsavedDenial } from '../common/adapters/approval/grant-save-question.js'
 import { SAVE_FAILED_EXIT } from './exit-codes.js'
@@ -233,8 +234,9 @@ interface UnsignedAsk { token: string; error: string }
  * ask never hides the others (review M3 of the second proof-of-possession re-review).
  */
 async function verifiedChallenges(input: { environment: NodeJS.ProcessEnv; node: string; workspace: string | undefined }): Promise<{ pin: Pin; origin: string; challenges: VerifiedChallenge[]; unsigned: UnsignedAsk[] }> {
-  // Asks for the workspace's name beside its id; a node from before the name existed ignores the field and sends none.
-  const url = setupUrl(input.node, input.workspace, 'approvals/challenges?fields=workspaceName')
+  // Asks for the workspace's name beside its id, and an ask's wider subject (APPROVAL-37); a node from before either existed
+  // ignores the field and sends none.
+  const url = setupUrl(input.node, input.workspace, 'approvals/challenges?fields=workspaceName,widerSubject')
   const pin = pinFor(input.environment, url)
   const response = await send({ environment: input.environment, method: 'GET', url, body: '', purpose: 'buckle-approval' })
   if (!response.ok) throw new ClientError(`The node answered HTTP ${response.status}${response.status === 401 || response.status === 404 ? `; check that --workspace names the workspace this device's key is enrolled for` : ''}`)
@@ -322,6 +324,7 @@ function describeChallenge(item: VerifiedChallenge, shownWith?: string): string 
       `  reason:   ${printable(challenge.reason)}`,
       `  ${sameCallNote(shownWith)}`,
     ]),
+    ...(challenge.widerSubject === undefined ? [] : [`  or:       ${printable(challenge.widerSubject)} (every delete in that folder and its subfolders, for the session or always; --below)`]),
     `  scopes:   ${challenge.offeredScopes.join(', ')}; expires ${printable(challenge.expiresAt)}`,
     `  call:     ${challenge.callDigest ?? 'not recorded'}; session ${printable(challenge.sessionId)}`,
     ...(challenge.truncated ? [`  WARNING: a node built before full display cut this call's arguments or summary; approve refuses it: decide it at the node, or update the node and re-send the call`] : []),
@@ -346,11 +349,15 @@ async function approvals(argv: string[], environment: NodeJS.ProcessEnv): Promis
 }
 
 async function approve(argv: string[], environment: NodeJS.ProcessEnv, confirm: Confirm | null, ignoreWarning: boolean): Promise<CliResult> {
-  const { values, positionals } = parseArgs({ args: argv, options: { workspace: { type: 'string' }, deny: { type: 'boolean' }, scope: { type: 'string' } }, allowPositionals: true })
+  const { values, positionals } = parseArgs({ args: argv, options: { workspace: { type: 'string' }, deny: { type: 'boolean' }, scope: { type: 'string' }, below: { type: 'boolean' } }, allowPositionals: true })
   const [node, token] = positionals
   if (!node || !token || positionals.length !== 2) throw new ClientError(USAGE)
   const scope = values.scope ?? 'once'
   if (scope !== 'once' && scope !== 'session' && scope !== 'always') throw new ClientError('--scope takes once, session or always')
+  // --below grants the ask's wider subject (APPROVAL-37), as `buckle approve --below` does at the node.
+  const below = values.below === true
+  if (below && values.deny) throw new ClientError('--below widens an approval; deny without it')
+  if (below && scope === 'once') throw new ClientError('A once approval covers the one call that asked; grant the folder and its subfolders with --scope session or --scope always')
   const { pin, origin, challenges, unsigned } = await verifiedChallenges({ environment, node, workspace: namedWorkspace(values.workspace) })
   const found = challenges.find(item => item.token === token)
   const refused = unsigned.find(item => item.token === token)
@@ -361,14 +368,17 @@ async function approve(argv: string[], environment: NodeJS.ProcessEnv, confirm: 
   if (!found.consistent) throw new ClientError(`The arguments ${printable(pin.serverId)} shows for ${printable(token)} do not recompute to its call digest; nothing was signed`)
   // D17: the whole action is shown or nothing is signed; there is no override for a cut one.
   if (found.challenge.truncated === true) throw new ClientError(`${printable(pin.serverId)} showed ${printable(token)} only in part (a node built before full display), so nothing was signed; decide it at the node, or update the node and re-send the call`)
+  const wider = found.challenge.widerSubject
+  if (below && wider === undefined) throw new ClientError(`${printable(token)} offers no folder and subfolders to grant; --below takes a delete outside the workspace's folder. Approve it without --below; nothing was signed`)
   if (!values.deny) {
     if (!confirm) throw new ClientError(`Approving needs a person at a terminal after the whole action is shown; run buckle client approve ${printable(node)} ${printable(token)} at a terminal, or use --deny without one`)
-    if (!await confirm('Approve exactly this action? Type yes to confirm: ')) {
+    const widened = below && wider !== undefined ? `, and every later delete in ${printable(floorSubjectPath(wider) ?? wider)} and its subfolders for the ${scope}` : ''
+    if (!await confirm(`Approve exactly this action${widened}? Type yes to confirm: `)) {
       process.stdout.write('Not approved; the ask is still waiting.\n')
       return { exitCode: 1 }
     }
   }
-  const body = JSON.stringify({ token, approved: !values.deny, scope, challenge: found.digest })
+  const body = JSON.stringify({ token, approved: !values.deny, scope, ...(below ? { subject: wider } : {}), challenge: found.digest })
   const response = await send({ environment, method: 'POST', url: setupUrl(node, values.workspace, 'approvals'), body, purpose: 'buckle-approval', node: pin.serverId, ignoreWarning })
   const text = await response.text()
   const reported = report(response, text)

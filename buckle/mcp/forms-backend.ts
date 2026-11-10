@@ -8,12 +8,25 @@ import type { AnswerSender, ApprovalBackend, ApprovalHost, BackendCapabilities, 
 // An approval form's answer names its action. `approve` and `scope` are the shape forms took before one choice field listed
 // the terminal's choices, which a host may still hold across an upgrade; one that names neither, a save answer among them,
 // is none.
+const FORM_ACTIONS = ['allow_once', 'allow_session', 'allow_always', 'allow_session_below', 'allow_always_below', 'deny', 'deny_session', 'always_deny'] as const
+type FormAction = (typeof FORM_ACTIONS)[number]
 const FormAnswerSchema = z.object({
   approve: z.boolean().optional(),
-  action: z.enum(['allow_once', 'allow_session', 'allow_always', 'deny', 'deny_session', 'always_deny']).optional(),
+  action: z.enum(FORM_ACTIONS).optional(),
   scope: GrantScopeSchema.optional(),
 }).refine(answer => answer.approve !== undefined || answer.action !== undefined)
 type FormAnswer = z.infer<typeof FormAnswerSchema>
+/** What each action decides, as the terminal's choice of the same words does; `_below` grants the ask's folder and its subfolders. */
+const ACTION_DECISIONS: Readonly<Record<FormAction, Omit<DecisionBody, 'token'>>> = {
+  allow_once: { outcome: 'approve', scope: 'once' },
+  allow_session: { outcome: 'approve', scope: 'session' },
+  allow_always: { outcome: 'approve', scope: 'always' },
+  allow_session_below: { outcome: 'approve', scope: 'session', widen: 'below' },
+  allow_always_below: { outcome: 'approve', scope: 'always', widen: 'below' },
+  deny: { outcome: 'deny', scope: 'once' },
+  deny_session: { outcome: 'deny', scope: 'session' },
+  always_deny: { outcome: 'deny', scope: 'always' },
+}
 const SaveAnswerSchema = z.object({ save: z.enum(['retry', 'skip']) })
 
 export interface FormsBackendOptions {
@@ -56,6 +69,8 @@ export interface FormsBackend extends ApprovalBackend {
 const CAPABILITIES: BackendCapabilities = { contractVersion: 1, decides: true, scopes: ['once', 'session', 'always'], cancels: false, revokes: false }
 const IN_THE_ANSWER: SubmitResult = { kind: 'declined', reason: 'an MCP host\'s forms ride in the answer to the call that asked' }
 const ALLOW_LABELS: Readonly<Record<GrantScope, string>> = { once: 'Allow once', session: 'Allow this session', always: 'Always allow' }
+/** The ask's folder and its subfolders, for each lasting scope (APPROVAL-37), worded as the terminal words them. */
+const BELOW_LABELS: Readonly<Record<Exclude<GrantScope, 'once'>, string>> = { session: 'Allow this session, folder and below', always: 'Always allow, folder and below' }
 type Denial = 'deny' | 'deny_session' | 'always_deny'
 const DENIAL_LABELS: Readonly<Record<Denial, string>> = { deny: 'Deny', deny_session: 'Deny this session', always_deny: 'Always deny' }
 // A credential file's ask may be denied for longer than the call, as at the terminal; every other ask's denial is for the
@@ -251,9 +266,9 @@ function askLine(ask: FullAsk): string {
 
 /** An answer's decision; an earlier form's denial, which may name a scope, denies the call once, as the terminal's deny. */
 function decisionOf(token: string, answer: FormAnswer): DecisionBody {
-  const approved = answer.action ? answer.action.startsWith('allow_') : answer.approve === true
-  const scope: GrantScope = answer.action === 'deny_session' || answer.action === 'allow_session' ? 'session' : answer.action === 'always_deny' || answer.action === 'allow_always' ? 'always' : answer.action || !approved ? 'once' : answer.scope ?? 'once'
-  return { token, outcome: approved ? 'approve' : 'deny', scope }
+  if (answer.action) return { token, ...ACTION_DECISIONS[answer.action] }
+  const approved = answer.approve === true
+  return { token, outcome: approved ? 'approve' : 'deny', scope: approved ? answer.scope ?? 'once' : 'once' }
 }
 
 /**
@@ -292,18 +307,22 @@ function shownCallOf(ask: FullAsk): ShownCall | undefined {
 /**
  * One choice field listing exactly what the node's terminal offers for the ask, so a form can send nothing else: each
  * scope the ask offers to allow (a credential file once alone, a secret file's use each scope its ask offers, as
- * docs/user/how-to/secrets.md says), then the denials, which outlast the call for a credential file alone.
+ * docs/user/how-to/secrets.md says), then each lasting one for the ask's folder and its subfolders where it offers them
+ * (APPROVAL-37), then the denials, which outlast the call for a credential file alone.
  */
 function approvalForm(input: { approval: ApprovalRequest; message: string }) {
   const { approval } = input
   const scopes = approval.offeredScopes
+  const below = approval.widerSubject === undefined ? [] : scopes.filter((scope): scope is Exclude<GrantScope, 'once'> => scope !== 'once')
   const denials = approval.rule === 'sensitive_path' ? SENSITIVE_DENIALS : CALL_DENIALS
+  const actions = [...scopes.map(scope => `allow_${scope}`), ...below.map(scope => `allow_${scope}_below`), ...denials]
+  const labels = [...scopes.map(scope => ALLOW_LABELS[scope]), ...below.map(scope => BELOW_LABELS[scope]), ...denials.map(denial => DENIAL_LABELS[denial])]
   return inputRequired.elicit({
     message: input.message,
     requestedSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: [...scopes.map(scope => `allow_${scope}`), ...denials], description: [...scopes.map(scope => ALLOW_LABELS[scope]), ...denials.map(denial => DENIAL_LABELS[denial])].join(', ') },
+        action: { type: 'string', enum: actions, description: labels.join(', ') },
       },
       required: ['action'],
     },

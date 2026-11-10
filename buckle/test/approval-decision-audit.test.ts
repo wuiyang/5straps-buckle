@@ -89,6 +89,31 @@ describe('the decision audit seam', () => {
     await service.close()
   })
 
+  // APPROVAL-37 (owner, 2026-11-10): every route a person answers on grants a delete's folder and its subfolders, and the
+  // audit names each widening as it names buckle approve --below's.
+  it('tells the audit the same widening for a below answer from the terminal, buckle approve, a form, and a device', async () => {
+    const { audit, entries } = recordingDecisionAudit()
+    const root = mkdtempSync(join(tmpdir(), 'buckle-decision-audit-'))
+    roots.push(root)
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' }), join(root, 'approvals.json'), 15_000, { live: () => ({ forms: true }) })
+    const service = createApprovalService({ registry, workspaceId: 'w-1', serverId: 'node-1', graceMs: 200, hold: async () => 'grace', terminal: IDLE, nonces: createMemoryNonceClaims(), decisionAudit: audit })
+    const below = { kind: 'ask' as const, ...PLAIN_MARKS, rule: 'write_scope' as const, reason: 'asks', offeredScopes: ['once' as const, 'session' as const, 'always' as const] }
+    const sources = ['terminal', 'cli', 'forms', 'http-forms', 'devices'] as const
+    const tokens = (await registry.ask({ tool: 'fs_delete', sessionId: 's', actor: 'agent:a', requestId: 'r-below', asks: sources.map(source => ({ ...below, subject: `delete:/srv/${source}`, widerSubject: `delete-below:/srv/${source}` })), call: CALL, attempt: ATTEMPT })).requests.map(request => request.token)
+    for (const [index, source] of sources.entries()) {
+      const token = tokens[index]!
+      if (source !== 'devices') {
+        expect(await service.answer({ decision: { token, approved: true, scope: 'session' }, source: SOURCES[source], widen: 'below', ...(source === 'http-forms' ? { caller: 'agent:a' } : {}) })).toMatchObject({ ok: true, granted: `delete-below:/srv/${source}` })
+        continue
+      }
+      const challenge = service.challengeListing({ widerSubject: true }).challenges.find(entry => entry.token === token)!.challenge!
+      expect(await service.decide(deviceDecision({ token, approved: true, scope: 'session', subject: `delete-below:/srv/${source}`, challenge: challengeBytes(challenge).digest }))).toMatchObject({ status: 'applied', granted: `delete-below:/srv/${source}` })
+    }
+    const applied = entries.filter(entry => entry.step === 'applied').map(entry => entry.fields)
+    expect(applied.map(fields => [fields.source.kind, fields.widen, 'widenedTo' in fields ? fields.widenedTo : undefined, fields.call?.subject])).toEqual(sources.map(source => [source, { kind: 'below' }, `delete-below:/srv/${source}`, `delete:/srv/${source}`]))
+    await service.close()
+  })
+
   it('tells the audit of each skip as received, then applied or refused, and of one the ledger could not take as failed', async () => {
     const { audit, entries } = recordingDecisionAudit()
     const { registry, service, token } = await asked({ decisionAudit: audit })

@@ -93,7 +93,7 @@ export function guardDecision(input: { claim: DecisionClaim; ledger: LedgerView;
   const { request } = asked
   if (decision.approved && !request.offeredScopes.includes(decision.scope)) return refuse('scope_not_offered', `Scope ${decision.scope} is not offered for this approval`)
   if (decision.approved && decision.scope === 'always' && alwaysForbidden({ request, marks: asked.marks, policy })) return refuse('scope_forbidden', 'A destructive ask is approved once or for the session, never always')
-  const wider = widerGrant({ decision, request, widened: widenedTo !== undefined, widens: rights.widens })
+  const wider = widerGrant({ decision, request, widened: widenedTo !== undefined, person: rights.person })
   if (wider !== null && 'reason' in wider) return wider
   // A secret file's use (docs/user/how-to/secrets.md) is remembered as other grants are; any other sensitive file is allowed once.
   if (request.rule === 'sensitive_path' && decision.approved && decision.scope !== 'once' && !isSecretFileSubject(request.subject)) return refuse('scope_forbidden', 'Sensitive files can only be allowed once')
@@ -175,12 +175,13 @@ function routingRefusal(input: { source: ApprovalSource; rights: SourceRights; r
   return null
 }
 
-// Only the ask's own widerSubject, approved for the session or always: a once covers the one call that asked.
-function widerGrant(input: { decision: ApprovalDecision; request: ApprovalRequest; widened: boolean; widens: boolean }): { subject: string } | GuardRefusal | null {
+// Only the ask's own widerSubject, approved by a person on any route for the session or always: a once covers the one call
+// that asked.
+function widerGrant(input: { decision: ApprovalDecision; request: ApprovalRequest; widened: boolean; person: boolean }): { subject: string } | GuardRefusal | null {
   const named = input.decision.subject
   if (named === undefined || named === input.request.subject) return null
   if (!input.decision.approved) return refuse('statement_invalid', 'A denial names no subject: it denies the ask\'s own')
-  if (!input.widens) return refuse('scope_forbidden', 'Only the node\'s terminal and buckle approve grant a folder and its subfolders')
+  if (!input.person) return refuse('scope_forbidden', 'Only a person grants a folder and its subfolders')
   if (input.request.widerSubject === undefined || named !== input.request.widerSubject) return refuse('scope_not_offered', `This ask grants ${input.request.subject}${input.request.widerSubject === undefined ? '' : ` or ${input.request.widerSubject}`}, not ${named}`)
   if (input.decision.scope === 'once') return refuse('scope_forbidden', 'A once approval covers the one call that asked; grant the folder and its subfolders for the session or always instead')
   if (input.widened) return refuse('scope_forbidden', 'A host pattern and a wider subject do not combine')

@@ -7,10 +7,12 @@ export interface SourceRights {
   approves: boolean
   /** A relayed kind whose denials may still outlast the call: the setup route's envelope alone. */
   deniesLasting?: true
-  /** Approves as a person, so a floor ask may take its approval at `local` or above; the decision AI never does. */
+  /**
+   * Approves as a person, so a floor ask may take its approval at `local` or above, and an ask's wider subject (a
+   * delete's folder and its subfolders) may be granted in place of its own, on every route a person answers on alike
+   * (APPROVAL-37, owner 2026-11-10); the decision AI does neither.
+   */
   person: boolean
-  /** Grants an ask's wider subject in place of its own: a person at the node alone. */
-  widens: boolean
   /** A core client at the node, routed to every ask whatever routes the ask recorded. */
   everyAsk: boolean
   /** Its answers decide only while the workspace's forms setting is on, read as each is decided. */
@@ -19,24 +21,24 @@ export interface SourceRights {
   sameCaller?: true
 }
 
-const AT_THE_NODE: SourceRights = { assurance: 'local', approves: true, person: true, widens: true, everyAsk: false }
+const AT_THE_NODE: SourceRights = { assurance: 'local', approves: true, person: true, everyAsk: false }
 
 // Ruling 3 of 2026-09-25, which the owner keeps: a form's answers count as the person's, while the owner's forms setting is on.
-const FORMS: SourceRights = { assurance: 'local', approves: true, person: true, widens: false, everyAsk: false, whileFormsOn: true }
+const FORMS: SourceRights = { assurance: 'local', approves: true, person: true, everyAsk: false, whileFormsOn: true }
 
 const RIGHTS: Record<SourceKind, SourceRights> = {
   terminal: AT_THE_NODE,
   cli: { ...AT_THE_NODE, everyAsk: true },
   forms: FORMS,
-  // Where an ask is answered changes nothing it offers, a floor ask's approval included, so an HTTP form decides as a stdio
-  // one; anything holding an agent's token can send one, so it decides only the asks that token raised, and forms stay off
-  // unless the owner turns them on.
+  // Where an ask is answered changes nothing it offers, a floor ask's approval and a delete's folder and subfolders
+  // included (APPROVAL-33, APPROVAL-37), so an HTTP form decides as a stdio one; anything holding an agent's token can send
+  // one, so it decides only the asks that token raised, and forms stay off unless the owner turns them on.
   'http-forms': { ...FORMS, sameCaller: true },
-  devices: { assurance: 'key', approves: true, person: true, widens: false, everyAsk: false },
-  judge: { assurance: 'relayed', approves: true, person: false, widens: false, everyAsk: true },
+  devices: { assurance: 'key', approves: true, person: true, everyAsk: false },
+  judge: { assurance: 'relayed', approves: true, person: false, everyAsk: true },
   // The setup route's envelope keeps today's lasting denials of a sensitive file.
-  sealed: { assurance: 'relayed', approves: false, deniesLasting: true, person: false, widens: false, everyAsk: false },
-  backend: { assurance: 'relayed', approves: false, person: false, widens: false, everyAsk: false },
+  sealed: { assurance: 'relayed', approves: false, deniesLasting: true, person: false, everyAsk: false },
+  backend: { assurance: 'relayed', approves: false, person: false, everyAsk: false },
 }
 
 export function rightsOf(kind: SourceKind): SourceRights {

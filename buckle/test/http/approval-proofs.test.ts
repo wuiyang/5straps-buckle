@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { join } from 'node:path'
 import type { InvokeRequest } from '@5straps/protocol'
@@ -308,6 +308,30 @@ describe('an approval decision a person\'s key proves (B24)', () => {
     // The node it decides for, before anything is signed.
     expect(output.stdout).toContain(`Node:  ${buckle.config.serverId}  ${buckle.nodeKey}  at ${new URL(url).origin}`)
     expect(buckle.runtime.approvals.pending()).toEqual([])
+  })
+
+  // APPROVAL-37 (owner, 2026-11-10): the device route offers a delete's folder and its subfolders, as the terminal does.
+  it('grants a delete\'s folder and its subfolders with buckle client approve --below, on the challenge that showed them', async () => {
+    const buckle = await node()
+    const url = await buckle.listen()
+    const environment = await pinnedDevice(buckle, url)
+    const folder = join(buckle.root, 'trash')
+    mkdirSync(folder)
+    writeFileSync(join(folder, 'old.md'), 'old')
+    const asked = await buckle.runtime.invoke({ sessionId: 'chat-1', request: { requestId: 'below-client', tool: 'fs_delete', args: { paths: [join(folder, 'old.md')] }, approvalTokens: [], context: { approvalWait: { mode: 'none' } } } })
+    expect(asked).toMatchObject({ outcome: 'approval_required', approvals: [{ widerSubject: `delete-below:${folder}` }] })
+    const token = asked.outcome === 'approval_required' ? asked.approvals[0]!.token : ''
+    const output = capture()
+    expect((await clientCommand(['approvals', url, '--workspace', 'workspace'], environment)).exitCode).toBe(0)
+    expect(output.stdout).toContain(`  or:       delete-below:${folder} (every delete in that folder and its subfolders, for the session or always; --below)`)
+    expect((await clientCommand(['approve', url, '--workspace', 'workspace', token, '--below'], environment, { confirm: async () => true })).exitCode).toBe(1)
+    expect(output.stderr).toContain('grant the folder and its subfolders with --scope session or --scope always')
+    expect((await clientCommand(['approve', url, '--workspace', 'workspace', token, '--below', '--deny'], environment, { confirm: async () => true })).exitCode).toBe(1)
+    expect(output.stderr).toContain('--below widens an approval; deny without it')
+    const prompts: string[] = []
+    expect((await clientCommand(['approve', url, '--workspace', 'workspace', token, '--scope', 'session', '--below'], environment, { confirm: async (prompt) => { prompts.push(prompt); return true } })).exitCode).toBe(0)
+    expect(prompts).toEqual([`Approve exactly this action, and every later delete in ${folder} and its subfolders for the session? Type yes to confirm: `])
+    expect(buckle.runtime.grants.list()).toMatchObject([{ rule: 'write_scope', subject: `delete-below:${folder}`, scope: 'session', decidedBy: expect.stringMatching(/^key:/) }])
   })
 
   it('shows two writes in one directory apart: the path and the content, as the node signed them', async () => {

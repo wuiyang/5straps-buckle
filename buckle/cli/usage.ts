@@ -108,8 +108,10 @@ export const CLIENT_USAGE = `Usage:
   buckle client trust <node-url> <server-id> <node-public-key>
                                       Pin the node at that URL, as \`buckle keys node\` prints it on that node
   buckle client approvals <node-url> --workspace <name>
-  buckle client approve <node-url> <token> [--deny] [--scope once|session|always] --workspace <name>
-                                      Show the whole action an ask is, as the pinned node signed it, and decide on exactly that
+  buckle client approve <node-url> <token> [--deny] [--scope once|session|always] [--below] --workspace <name>
+                                      Show the whole action an ask is, as the pinned node signed it, and decide on exactly that;
+                                      --below grants a delete's folder and its subfolders, for the session or always, where the
+                                      ask offers them
 
 --ignore-warning asks the node to make a change its audit log cannot record (ignoreWarning=true in the signed query);
 without it the node refuses the change, 503, and the command prints the write's error and exits 6.

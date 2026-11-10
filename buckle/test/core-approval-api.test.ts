@@ -134,11 +134,15 @@ describe('the core approval API', () => {
     expect(registry.pending().map(request => request.token)).toEqual([token])
   })
 
-  it('takes no subject from a device, whose challenge named the ask\'s own, and names buckle approve --below', async () => {
+  // APPROVAL-37: a device grants the wider subject too, but only on a challenge that showed it.
+  it('takes a device\'s wider subject only on a challenge it was shown, and grants it there', async () => {
     const { service, token, grants } = await asked(WIDE)
     const receipt = await service.decide(deviceDecision({ token, approved: true, scope: 'session', subject: WIDE.widerSubject, challenge: 'a'.repeat(64) }))
-    expect(receipt).toMatchObject({ status: 'refused', step: 'decision', decision: { token, approved: true, scope: 'session', challenge: 'a'.repeat(64) }, error: { code: 'scope_forbidden', message: expect.stringContaining('buckle approve --below') } })
+    expect(receipt).toMatchObject({ status: 'refused', step: 'decision', decision: { token, approved: true, scope: 'session', challenge: 'a'.repeat(64) }, error: { code: 'action_mismatch' } })
     expect(grants.list()).toEqual([])
+    const challenge = service.challengeListing({ widerSubject: true }).challenges[0]!.challenge!
+    expect(await service.decide(deviceDecision({ token, approved: true, scope: 'session', subject: WIDE.widerSubject, challenge: challengeBytes(challenge).digest }))).toMatchObject({ status: 'applied', granted: WIDE.widerSubject })
+    expect(grants.list()).toMatchObject([{ subject: WIDE.widerSubject, scope: 'session' }])
   })
 
   it('denies through the setup bearer\'s plain body as the sealed source, and never approves through it', async () => {

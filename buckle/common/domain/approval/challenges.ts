@@ -50,38 +50,44 @@ export interface ApprovalChallengeIdentity {
 export function createApprovalChallenges(identity: ApprovalChallengeIdentity) {
   return { listing: challengeListing, shownDigests }
 
-  function challengeListing(waiting: readonly PendingAsk[], listing?: { workspaceName?: boolean }): ChallengeListing {
+  function challengeListing(waiting: readonly PendingAsk[], listing?: { workspaceName?: boolean; widerSubject?: boolean }): ChallengeListing {
     const shown = createCallShapes()
     const calls: ChallengeListing['calls'] = {}
     const challenges = waiting.map((ask) => {
-      const challenge = challengeOf(ask, shown, listing?.workspaceName === true)
+      const challenge = challengeOf(ask, shown, { named: listing?.workspaceName === true, wider: listing?.widerSubject === true })
       if (challenge?.callRef !== undefined && ask.call) calls[challenge.callRef] = shownCallOf(challenge.tool, ask.call)
       return { token: ask.request.token, challenge }
     })
     return { challenges, calls }
   }
 
-  /** The digests of the challenges a device may have been shown for an ask, with the workspace's name and without it. */
-  function shownDigests(ask: PendingAsk): string[] {
+  /**
+   * The digests of the challenges a device may have been shown for an ask, with the workspace's name and without it, and
+   * with its wider subject and without it; a decision that grants the wider subject counts only those that showed it.
+   */
+  function shownDigests(ask: PendingAsk, widens: boolean): string[] {
     const shapes = createCallShapes()
-    return [false, true].flatMap((named) => {
-      const shown = challengeOf(ask, shapes, named)
-      return shown === null ? [] : [challengeBytes(shown).digest]
-    })
+    const wider = widens ? [true] : [false, true]
+    return [...new Set([false, true].flatMap(named => wider.flatMap((showsWider) => {
+      const shown = challengeOf(ask, shapes, { named, wider: showsWider })
+      return shown === null || (widens && shown.widerSubject === undefined) ? [] : [challengeBytes(shown).digest]
+    })))]
   }
 
   // Each challenge signs either the whole inline call or the digest of every shared display field. The workspace's name is
-  // read as it is signed, so a rename shows, and travels beside its id for a device that asked for it to show (D85, Q15).
-  function challengeOf(ask: PendingAsk, shapes: CallShapes, withName = false): ApprovalChallenge | null {
+  // read as it is signed, so a rename shows, and travels beside its id for a device that asked for it to show (D85, Q15);
+  // the ask's wider subject travels for a device that asked for it, which may grant it (APPROVAL-37).
+  function challengeOf(ask: PendingAsk, shapes: CallShapes, view: { named: boolean; wider: boolean } = { named: false, wider: false }): ApprovalChallenge | null {
     const { request, call } = ask
     if (!call?.complete) return null
     const { digest, callRef, inline } = shapes(request.tool, call)
-    const name = withName ? identity.workspaceName : undefined
+    const name = view.named ? identity.workspaceName : undefined
     return {
       v: SIGNED_REQUEST_VERSION, purpose: 'buckle-approval-challenge', node: identity.serverId, workspace: identity.workspaceId,
       ...(name && name.length <= WORKSPACE_NAME_MAX ? { workspaceName: name } : {}),
       token: request.token, requestId: ask.requestId ?? null, sessionId: ask.sessionId, actor: ask.actor ?? null,
       tool: request.tool, rule: request.rule, subject: request.subject, reason: request.reason, offeredScopes: request.offeredScopes,
+      ...(view.wider && request.widerSubject !== undefined ? { widerSubject: request.widerSubject } : {}),
       arguments: inline ? call.arguments : null, cwd: inline ? call.cwd : null, callDigest: digest,
       ...(inline ? {} : { callRef }),
       description: inline ? call.description : null, effects: inline ? call.effects ?? [] : null, expiresAt: request.expiresAt,

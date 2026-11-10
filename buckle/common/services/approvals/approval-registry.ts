@@ -1162,11 +1162,12 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     return subject !== undefined && subject !== entry.request?.subject ? { granted: subject } : {}
   }
 
-  // An ask the ledger does not hold keeps the decision as sent, which the decision guard refuses.
+  // An ask the ledger does not hold keeps the decision as sent, which the decision guard refuses. A subject the decision
+  // names, as a device's signed one does, stays as named, and the guard holds it to the ask's wider subject.
   function widened(input: { decision: ApprovalDecision; widen: ResolveOptions['widen']; request: ApprovalRequest | undefined }): ApprovalDecision | null {
     if (input.widen === undefined || input.request === undefined) return input.decision
     const wider = input.request.widerSubject
-    return wider === undefined ? null : { ...input.decision, subject: wider }
+    return wider === undefined ? null : { ...input.decision, subject: input.decision.subject ?? wider }
   }
 
   const registry: ApprovalRegistry = {

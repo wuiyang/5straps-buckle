@@ -370,7 +370,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
         try {
           result = await options.registry.resolve(input.decision, input.source, {
             ...(input.widenTo === undefined ? {} : { widenTo: input.widenTo }),
-            ...(challenge === undefined ? {} : { challenge: { digest: challenge, shown: challenges.shownDigests } }),
+            ...(challenge === undefined ? {} : { challenge: { digest: challenge, shown: ask => challenges.shownDigests(ask, input.decision.subject !== undefined || input.widen === 'below') } }),
             ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }),
             ...(input.consumeNotAfter === undefined ? {} : { consumeNotAfter: input.consumeNotAfter }),
             ...(input.code === undefined ? {} : { code: input.code }),

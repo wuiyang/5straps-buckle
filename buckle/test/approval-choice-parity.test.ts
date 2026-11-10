@@ -31,9 +31,8 @@ import { approvalServiceWithTerminal, fixedInteraction } from './support/interac
 // them, a floor ask's included. Each ask here is made by the rule that makes it in a workspace and kept in a real ledger.
 // Each route is then driven for everything it can send: every key the serve terminal and `buckle approvals --watch` take,
 // every answer an MCP form's schema admits over stdio and over HTTP, and every `--scope` and `--deny` the device route
-// takes; each set is held to the choices the ask offers, and to the decision guard. The serve terminal and --watch alone
-// grant a delete's folder and its subfolders (the delete policy brief), a widening only a person at the node makes, so
-// those two choices are read apart.
+// takes; each set is held to the choices the ask offers, and to the decision guard. A delete outside the workspace offers
+// its folder and its subfolders on every route alike (APPROVAL-37, owner 2026-11-10), so no route offers less than another.
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 type Property = { type?: string; enum?: unknown[] }
@@ -192,16 +191,21 @@ async function watchSends(registry: ApprovalRegistry): Promise<string[]> {
   return sorted(answered.map(({ sent }) => sent!))
 }
 
-/** Whether the guard takes the choice from `source`, as the asking caller's answer, with the forms setting on. */
+/**
+ * Whether the guard takes the choice from `source`, as the asking caller's answer, with the forms setting on. A `below`
+ * choice names the ask's wider subject, as `--below` does; a client refuses `--below` where the ask shows none.
+ */
 function takes(input: { source: ApprovalSource; choice: string; request: ApprovalRequest; ask: Ask }): boolean {
-  const [outcome, scope] = input.choice.split(' ') as ['approve' | 'deny', ApprovalDecision['scope']]
+  const [outcome, scope, below] = input.choice.split(' ') as ['approve' | 'deny', ApprovalDecision['scope'], 'below' | undefined]
+  if (below !== undefined && input.request.widerSubject === undefined) return false
   const ledger: LedgerView = { waiting: { request: input.request, complete: true, challenges: [], marks: { floor: input.ask.floor, destructive: input.ask.destructive }, routes: TODAYS_ROUTES, actor: CALLER } }
-  const claim = { decision: { token: input.request.token, approved: outcome === 'approve', scope }, source: input.source, caller: CALLER }
+  const subject = below === undefined ? {} : { subject: input.request.widerSubject! }
+  const claim = { decision: { token: input.request.token, approved: outcome === 'approve', scope, ...subject }, source: input.source, caller: CALLER }
   return guardDecision({ claim, ledger, now: Date.now(), live: { forms: true } }).ok
 }
 
 describe('the choices each route can send for one ask', () => {
-  it.each(ASKS)('are the same for %s at the serve terminal, at --watch, in a stdio and an HTTP form, and from a device', async (_name, tool, makeAsk, offered) => {
+  it.each(ASKS)('are the same for %s at the serve terminal, at --watch, in a stdio and an HTTP form, at buckle approve, and from a device', async (_name, tool, makeAsk, offered) => {
     const ask = makeAsk()
     const { registry, http, host } = node()
     const [request] = (await registry.ask({ tool, sessionId: 'mcp', actor: CALLER, requestId: `r-${tool}`, asks: [ask], call: CALL })).requests
@@ -209,16 +213,18 @@ describe('the choices each route can send for one ask', () => {
     const fullAsk = host().pending().find(waiting => waiting.token === token)!
     const widened = ask.widerSubject === undefined ? [] : BELOW
 
+    const choices = sorted([...offered, ...widened])
     const terminal = await terminalSends(fullAsk)
-    expect(terminal).toEqual(sorted([...offered, ...widened]))
-    expect(await watchSends(registry)).toEqual(terminal)
-    expect(await formSends('stdio', fullAsk, request!)).toEqual(sorted(offered))
+    expect(terminal).toEqual(choices)
+    expect(await watchSends(registry)).toEqual(choices)
+    expect(await formSends('stdio', fullAsk, request!)).toEqual(choices)
     const overHttp = await formSends('http', fullAsk, request!)
-    expect(overHttp).toEqual(sorted(offered))
-    // `buckle client approve` takes --scope and --deny as typed and prints the scopes the ask offers; the guard takes from
-    // a device what the terminal offers.
-    const typed = SCOPES.flatMap(scope => [`approve ${scope}`, `deny ${scope}`])
-    expect(sorted(typed.filter(choice => takes({ source: SOURCES.devices, choice, request: request!, ask })))).toEqual(sorted(offered))
+    expect(overHttp).toEqual(choices)
+    // `buckle approve` and `buckle client approve` take --scope, --deny, and --below as typed and print the scopes the ask
+    // offers; the guard takes from each what the terminal offers.
+    const typed = SCOPES.flatMap(scope => [`approve ${scope}`, `deny ${scope}`, `approve ${scope} below`])
+    expect(sorted(typed.filter(choice => takes({ source: SOURCES.cli, choice, request: request!, ask })))).toEqual(choices)
+    expect(sorted(typed.filter(choice => takes({ source: SOURCES.devices, choice, request: request!, ask })))).toEqual(choices)
 
     for (const choice of overHttp) {
       const sources = [SOURCES['http-forms'], SOURCES.forms, SOURCES.terminal]

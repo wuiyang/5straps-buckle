@@ -72,10 +72,10 @@ export interface CoreApprovalApi {
   listing(): ListedApproval[]
   /**
    * The challenges and each large whole call once, by its signed full-content reference. A challenge carries the
-   * workspace's name only where `workspaceName` asks for it: a device from before the name existed refuses a challenge
-   * with a field it does not know.
+   * workspace's name only where `workspaceName` asks for it, and the ask's wider subject only where `widerSubject` does: a
+   * device from before either existed refuses a challenge with a field it does not know.
    */
-  challengeListing(options?: { workspaceName?: boolean }): ChallengeListing
+  challengeListing(options?: { workspaceName?: boolean; widerSubject?: boolean }): ChallengeListing
   /**
    * The owner's withdraw of one call (owner decision D6): its asks still waiting are withdrawn and told cancelled, and
    * its answered `once` approvals no call spent are dropped.
@@ -122,9 +122,10 @@ function readSigned(input: Extract<CoreDecisionInput, { source: 'devices' }>): R
   const signed = SignedApprovalDecisionSchema.safeParse(input.body)
   if (!signed.success) return INVALID
   const { challenge, ...decision } = signed.data
-  // The challenge a device was shown names the ask's own subject and no wider one, so its decision grants that alone.
-  if (decision.subject !== undefined) return { ok: false, receipt: { status: 'refused', step: 'decision', decision: readOf(decision, challenge), error: { code: 'scope_forbidden', message: DEVICE_SUBJECT, retryable: false } } }
-  return { ok: true, answer: { decision, source: SOURCES.devices, challenge, decidedBy: `key:${proof.keyId}`, consumeNotAfter: proof.deadline, proof: 'device' } }
+  // A decision that names a subject grants the ask's wider subject, as `--below` does at the node (APPROVAL-37); the guard
+  // holds it to the one its challenge showed.
+  const widen = decision.subject === undefined ? {} : { widen: 'below' as const }
+  return { ok: true, answer: { decision, source: SOURCES.devices, challenge, decidedBy: `key:${proof.keyId}`, consumeNotAfter: proof.deadline, proof: 'device', ...widen } }
 }
 
 async function readSealed(body: unknown, context: ReadContext): Promise<ReadInput> {
@@ -138,7 +139,6 @@ async function readSealed(body: unknown, context: ReadContext): Promise<ReadInpu
 
 const UNVERIFIED: ReadInput = { ok: false, receipt: { status: 'refused', step: 'proof', error: { code: 'proof_invalid', message: 'unverified', retryable: false } } }
 const INVALID: ReadInput = { ok: false, receipt: { status: 'refused', step: 'statement', error: { code: 'statement_invalid', message: 'Invalid approval decision', retryable: false } } }
-const DEVICE_SUBJECT = 'A device\'s decision grants the subject of the challenge it was shown and names none of its own; grant a folder and its subfolders at the node, with buckle approve --below'
 const PROOF_CODES: Readonly<Record<DecisionRefusal, ApprovalErrorCode>> = { expired: 'proof_expired', replayed: 'replayed', tampered: 'proof_invalid', unknown_key: 'proof_invalid', plain_refused: 'proof_invalid' }
 
 const DecisionInputSchema = z.object({
