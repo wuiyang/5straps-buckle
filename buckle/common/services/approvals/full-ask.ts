@@ -2,7 +2,7 @@ import type { ApprovalRequest } from '@5straps/protocol'
 import type { AskedCall } from '../../domain/approval/asked-call.js'
 import { callIdentityKey } from '../../domain/call-identity.js'
 import type { ApprovalHold, FullAsk } from '../../types/ports/approval-backend.js'
-import type { PendingAsk } from './approval-registry.js'
+import type { PendingAsk } from '../../domain/approval/ledger-state.js'
 
 /** Where an ask is shown from: its workspace, its call's group and key, and who asked. */
 export interface AskSetting {

@@ -18,7 +18,7 @@ import { RECORDED_BEFORE_NOTE } from '../common/domain/approval/recorded-before-
 import { auditOf, judgeNoteOf } from '../common/services/judge/judge-gate.js'
 import { floorCause } from '../common/domain/permission/judged.js'
 import { shownCall } from '../common/domain/approval/asked-call.js'
-import type { PendingAsk } from '../common/services/approvals/approval-registry.js'
+import type { PendingAsk } from '../common/domain/approval/ledger-state.js'
 import { saveEndingLine, settleUnsaved, unsavedOf, type SaveEnding, type Unsaved } from '../common/adapters/approval/grant-save-question.js'
 import type { CoreDecisionInput, CoreDecisionReceipt } from '../common/services/approvals/core-approval-api.js'
 import type { DecisionBody } from '../common/types/ports/approval-backend.js'

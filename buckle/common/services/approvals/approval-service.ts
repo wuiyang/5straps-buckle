@@ -1,7 +1,6 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto'
 import { useScopeSafe } from '@5straps/runtime'
 import type { ApprovalRequest, ApprovalSkipReason, ApprovalWait } from '@5straps/protocol'
-import { callDigestOf, canonicalJson, challengeBytes, shownCallDigestOf, SIGNED_REQUEST_VERSION, WORKSPACE_NAME_MAX, type ApprovalChallenge, type ShownApprovalCall } from '@5straps/protocol/signed-request'
 import { callIdentityKey, requestIdKey } from '../../domain/call-identity.js'
 import { heldAskName } from '../../domain/approval/call-identity.js'
 import type { ApprovalKey } from '@5straps/protocol/envelope'
@@ -16,24 +15,19 @@ import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { GrantHolder } from '../../domain/permission/grant-holder.js'
 import { logger, withoutCause } from '../../runtime/log.js'
 import { openApprovalDecision } from './approval-envelope.js'
-import { listedApprovals } from './approval-listing.js'
+import { createApprovalChallenges, listedApprovals } from '../../domain/approval/challenges.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
-import { backendDecisionOf, backendReceipt, decisionOf, decisionRecord, INVALID_BACKEND_DECISION, readInput, receiptOf, skipReceiptOf, type ChallengeListing, type CoreApprovalApi } from './core-approval-api.js'
+import { backendDecisionOf, backendReceipt, decisionOf, decisionRecord, INVALID_BACKEND_DECISION, readInput, receiptOf, skipReceiptOf, type CoreApprovalApi } from './core-approval-api.js'
 import { fullAskOf, ledgerAskOf, type AskSetting } from './full-ask.js'
 import type { AskedCall } from '../../domain/approval/asked-call.js'
 import type { ApprovalAnswer } from '../../domain/approval/answer.js'
-import type { ApprovalRegistry, Departure, EndedSession, PendingAsk, Resolution, SessionEndRequest, SkipResolution } from './approval-registry.js'
-import { maskHeld, maskHeldJson, masksHeld } from '../secrets/mask.js'
+import type { ApprovalRegistry, Departure, EndedSession, Resolution, SessionEndRequest, SkipResolution } from './approval-registry.js'
+import { maskHeld, maskHeldJson, masksHeld } from '../../runtime/held-secrets.js'
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 
 /** How quickly an answer written by another process (buckle approve, a second node process) is noticed. */
 const POLL_INTERVAL_MS = 400
-/**
- * A whole shown call larger than this is not repeated inside each of its asks'
- * challenges: each carries its digest, and the listing carries the call once (review M1 of the slice 5 re-review).
- */
-export const INLINE_CALL_BYTES = 16 * 1_024
 const SWEEP_MARGIN_MS = 1_000
 /** An operation nobody bound holds its call only while its terminal asks, and it has none. */
 const UNBOUND_HOLD: ApprovalHold = 'prompt'
@@ -232,6 +226,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   const closing = new AbortController()
   const pollMs = options.pollMs ?? POLL_INTERVAL_MS
   const { nonces } = options
+  const challenges = createApprovalChallenges(options)
   const notices = options.notices ?? createApprovalNotices()
   // One sweep per issued ask at its expiry, so an ask nobody answered is reported expired on time.
   const sweeps = new Set<NodeJS.Timeout>()
@@ -377,7 +372,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
         try {
           result = await options.registry.resolve(input.decision, input.source, {
             ...(input.widenTo === undefined ? {} : { widenTo: input.widenTo }),
-            ...(challenge === undefined ? {} : { challenge: { digest: challenge, shown: shownDigests } }),
+            ...(challenge === undefined ? {} : { challenge: { digest: challenge, shown: challenges.shownDigests } }),
             ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }),
             ...(input.consumeNotAfter === undefined ? {} : { consumeNotAfter: input.consumeNotAfter }),
             ...(input.code === undefined ? {} : { code: input.code }),
@@ -422,16 +417,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
     skipSave: input => skipAs({ source: SOURCES[input.source], token: input.token }),
 
-    challengeListing(listing) {
-      const shown = createCallShapes()
-      const calls: ChallengeListing['calls'] = {}
-      const challenges = options.registry.waiting().map((ask) => {
-        const challenge = challengeOf(ask, shown, listing?.workspaceName === true)
-        if (challenge?.callRef !== undefined && ask.call) calls[challenge.callRef] = shownCallOf(challenge.tool, ask.call)
-        return { token: ask.request.token, challenge }
-      })
-      return { challenges, calls }
-    },
+    challengeListing: listing => challenges.listing(options.registry.waiting(), listing),
 
     withdraw: tokens => withdraw(tokens),
 
@@ -481,33 +467,6 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       await Promise.allSettled([...waiting, ...backends.map(backend => backend.close())])
       await notices.settle()
     },
-  }
-
-  /** The digests of the challenges a device may have been shown for an ask, with the workspace's name and without it. */
-  function shownDigests(ask: PendingAsk): string[] {
-    const shapes = createCallShapes()
-    return [false, true].flatMap((named) => {
-      const shown = challengeOf(ask, shapes, named)
-      return shown === null ? [] : [challengeBytes(shown).digest]
-    })
-  }
-
-  // Each challenge signs either the whole inline call or the digest of every shared display field. The workspace's name is
-  // read as it is signed, so a rename shows, and travels beside its id for a device that asked for it to show (D85, Q15).
-  function challengeOf(ask: PendingAsk, shapes: CallShapes, withName = false): ApprovalChallenge | null {
-    const { request, call } = ask
-    if (!call?.complete) return null
-    const { digest, callRef, inline } = shapes(request.tool, call)
-    const name = withName ? options.workspaceName : undefined
-    return {
-      v: SIGNED_REQUEST_VERSION, purpose: 'buckle-approval-challenge', node: options.serverId, workspace: options.workspaceId,
-      ...(name && name.length <= WORKSPACE_NAME_MAX ? { workspaceName: name } : {}),
-      token: request.token, requestId: ask.requestId ?? null, sessionId: ask.sessionId, actor: ask.actor ?? null,
-      tool: request.tool, rule: request.rule, subject: request.subject, reason: request.reason, offeredScopes: request.offeredScopes,
-      arguments: inline ? call.arguments : null, cwd: inline ? call.cwd : null, callDigest: digest,
-      ...(inline ? {} : { callRef }),
-      description: inline ? call.description : null, effects: inline ? call.effects ?? [] : null, expiresAt: request.expiresAt,
-    }
   }
 
   function skip(input: { approvals: ApprovalRequest[]; answered: string[]; reason: ApprovalSkipReason }): ApprovalWaitResult {
@@ -863,26 +822,4 @@ function closingEvent(approval: ApprovalRequest, departure: Departure | undefine
   const event = { eventId: randomUUID(), token: approval.token, at: new Date().toISOString() }
   if (departure === undefined) return { ...event, type: remainingMs(approval.expiresAt) === 0 ? 'expired' : 'cancelled' }
   return { ...event, type: departure.type, ...('reason' in departure ? { reason: departure.reason } : {}) }
-}
-
-// Hash and size each group's whole call once, however many asks share it.
-type CallShape = { digest: string; callRef: string; inline: boolean }
-type CallShapes = (tool: string, call: AskedCall) => CallShape
-
-function createCallShapes(): CallShapes {
-  const known = new WeakMap<AskedCall, Map<string, CallShape>>()
-  return (tool, call) => {
-    const byTool = known.get(call) ?? new Map<string, CallShape>()
-    known.set(call, byTool)
-    const cached = byTool.get(tool)
-    if (cached) return cached
-    const shown = shownCallOf(tool, call)
-    const shape = { digest: callDigestOf(shown), callRef: shownCallDigestOf(shown), inline: Buffer.byteLength(canonicalJson(shown)) <= INLINE_CALL_BYTES }
-    byTool.set(tool, shape)
-    return shape
-  }
-}
-
-function shownCallOf(tool: string, call: AskedCall): ShownApprovalCall {
-  return { tool, arguments: call.arguments, cwd: call.cwd, description: call.description, effects: call.effects ?? [] }
 }

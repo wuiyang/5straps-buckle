@@ -1,6 +1,7 @@
 import type { JsonValue } from '@5straps/protocol'
 import { ToolInputError, type FilledSecret } from '../../domain/tool.js'
-import { createMasker, holdMasker, type Masker } from './mask.js'
+import { createMasker, type Masker } from '../../domain/secret-mask.js'
+import { holdMasker } from '../../runtime/held-secrets.js'
 import { digestOf } from './call-secrets.js'
 import { readSecretValues } from './secret-file.js'
 

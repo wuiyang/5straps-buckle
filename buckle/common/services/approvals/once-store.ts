@@ -1,20 +1,7 @@
-import { z } from 'zod'
-import { GrantSubjectSchema, type GrantSubject } from '@5straps/protocol'
+import type { GrantSubject } from '@5straps/protocol'
+import type { OnceEntry } from '../../domain/approval/ledger-state.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
-
-/**
- * A `once` approval, kept in approvals.json beside the asks under the same lock. `fingerprint` and `actor`: the call it
- * was asked for and the identity its transport authenticated, which alone spend it. `decidedBy`: key:<fingerprint> when
- * a person's key signed it. `code`: the code a once the decision AI's thorough stage gave on request binds to.
- */
-export const onceSchema = z.object({
-  workspace: z.string(), token: z.string(), subject: GrantSubjectSchema,
-  sessionId: z.string(), actor: z.string().optional(), tool: z.string(), expiresAt: z.string(), requestId: z.string().optional(),
-  fingerprint: z.string().optional(), decidedBy: z.string().optional(),
-  code: z.object({ key: z.string().regex(/^[0-9a-f]{64}$/), allowed: z.boolean() }).optional(),
-})
-export type OnceEntry = z.infer<typeof onceSchema>
 
 /** One call's last check, and what it may spend: the `once` approvals of its workspace, session, actor and tool. */
 export interface OnceSpend {

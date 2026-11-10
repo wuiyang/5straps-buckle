@@ -8,7 +8,8 @@ import { logger, rootLogger } from '../common/runtime/log.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 
 import { NO_INTERACTION } from '../common/runtime/interaction.js'
-import { createMasker, holdMasker, maskForms, maskHeld, masksHeld } from '../common/services/secrets/mask.js'
+import { createMasker, maskForms } from '../common/domain/secret-mask.js'
+import { holdMasker, maskHeld, masksHeld } from '../common/runtime/held-secrets.js'
 import { fixedInteraction, approvalServiceWithTerminal } from './support/interaction.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 

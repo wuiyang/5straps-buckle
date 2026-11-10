@@ -6,7 +6,7 @@ import { QUIET_MS, discardTypedLine, pause, watchKeys, type KeyWatch } from './t
 import { remainingMs } from '../common/domain/approval/expiry.js'
 import { approveCommand, denyCommand, describeAskOfShownCall, printable, workspaceLabel } from '../common/domain/approval-instruction.js'
 import type { CoreApprovalApi } from '../common/services/approvals/core-approval-api.js'
-import type { PendingAsk } from '../common/services/approvals/approval-registry.js'
+import type { PendingAsk } from '../common/domain/approval/ledger-state.js'
 import { saveAnswerOf, saveChoices, saveEndingLine, settleUnsaved, unsavedOf, type SaveAnswer, type SaveEnding, type Unsaved } from '../common/adapters/approval/grant-save-question.js'
 import type { DecisionBody } from '../common/types/ports/approval-backend.js'
 

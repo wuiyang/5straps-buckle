@@ -1,9 +1,8 @@
 import { randomUUID } from 'node:crypto'
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, rmSync } from 'node:fs'
 import { dirname, join } from 'pathe'
-import { z } from 'zod'
 import { redactCredentials } from '@5straps/runtime'
-import { APPROVAL_NO_DEADLINE, ApprovalNoticeSchema, ApprovalDecisionSchema, ApprovalRequestSchema, GrantRecordSchema, PermissionRuleIdSchema, type ApprovalDecision, type ApprovalNotice, type ApprovalRequest, type GrantRecord, type GrantSubject, type PermissionRuleId } from '@5straps/protocol'
+import { APPROVAL_NO_DEADLINE, ApprovalNoticeSchema, type ApprovalDecision, type ApprovalNotice, type ApprovalRequest, type GrantRecord, type GrantSubject, type PermissionRuleId } from '@5straps/protocol'
 import { alreadyReported, createJsonFileStore, fileVersion, StateFileError } from '../../adapters/json-file-store.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
@@ -11,14 +10,15 @@ import type { CodeBinding } from '../../domain/permission/judged.js'
 import { endsSession, endsWithSessions, holderKey, servesHolder, sessionOf, type GrantHolder, type SessionEnding } from '../../domain/permission/grant-holder.js'
 import type { GrantStore, LedgerGrants } from '../../types/ports/grant-store.js'
 import type { CallAttempt } from '../../types/ports/action-log.js'
-import { askedCallSchema, type AskedCall } from '../../domain/approval/asked-call.js'
+import type { AskedCall } from '../../domain/approval/asked-call.js'
+import { approvalLedgerSchema as fileSchema, revocationsSchema, type ApprovalDelivery, type ApprovalLedgerState as State, type LastingGrant, type OnceEntry, type PendingAsk, type PendingEntry, type ResolvedEntry, type Revocation, type RevocationsFile } from '../../domain/approval/ledger-state.js'
+import { createCallFiles } from '../../adapters/approval-ledger/file-call-store.js'
 import { guardDecision, guardSkip, screenDecision, screenSkip, type DecisionClaim, type LedgerView, type LiveSettings } from '../../domain/approval/decision-guard.js'
 import { TODAYS_ROUTES } from '../../domain/approval/routes.js'
-import { GRANT_SAVES, type ApprovalErrorCode, type EventReason, type GrantSave } from '../../types/ports/approval-backend.js'
-import { BUILT_IN_SOURCES, type ApprovalSource } from '../../types/ports/approval-source.js'
+import type { ApprovalErrorCode, EventReason, GrantSave } from '../../types/ports/approval-backend.js'
+import type { ApprovalSource } from '../../types/ports/approval-source.js'
 import { logger, withoutCause } from '../../runtime/log.js'
-import { isPlainName } from '../../domain/paths.js'
-import { dropOnces, liveOnces, onceSchema, spendOnces, unspentOnces, type OnceEntry, type OnceSpend, type UnspentOnce } from './once-store.js'
+import { dropOnces, liveOnces, spendOnces, unspentOnces, type OnceSpend, type UnspentOnce } from './once-store.js'
 import { ActionTooLargeError, ApprovalConflictError, ApprovalLimitError, RequestIdReusedError } from './approval-errors.js'
 import { saveFailure } from './grant-save.js'
 import { heldAskName } from '../../domain/approval/call-identity.js'
@@ -68,82 +68,10 @@ const UNSETTLED_SAVES: ReadonlySet<GrantSave> = new Set(['owed', 'skipping'])
 const STANDING_SAVES: ReadonlySet<GrantSave> = new Set(['owed', 'saved'])
 const OWED_SAVES: ReadonlySet<GrantSave> = new Set(['owed'])
 const SAVED_SAVES: ReadonlySet<GrantSave> = new Set(['saved'])
-const CALL_FILE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.json$/
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
-// requestId and actor let a re-sent call join the ask it already made (ruling 5 of 2026-09-28); an
-// answered entry keeps them, so a call re-sent after part of its asks were answered still joins.
-const joinKey = { requestId: z.string().optional(), actor: z.string().optional() }
-// fingerprint: the tool and its whole arguments that asked, hashed (requestFingerprint); a re-send joins
-// only with the same one, and a once decided on its ask is spent only by it, whichever route decided it
-// (review H3 of B23-B25; review item 1 of the proof-of-possession fixes).
-const fingerprint = { fingerprint: z.string().optional() }
-// decidedBy: key:<fingerprint> when a person's enrolled key signed the decision (review H4 of B23-B25).
-const decidedBy = { decidedBy: z.string().optional() }
-// lapsesAt: when an ask nobody holds lapses before its stated expiry, ten minutes after the last hold on it ended, and
-// again from a re-send that joins it, never nearer (the MCP asks brief, item 5). An ask at wait 0 states no deadline,
-// which its signed challenge carries, so the lapse is kept beside the request rather than in it; none while a caller
-// holds it until answered. abandonedAt: when the caller that held it left before its hold ended; the oldest abandoned asks make room
-// under the caps, so a session's or the workspace's cap is never reached through them alone.
-const lapse = { lapsesAt: z.iso.datetime().optional(), abandonedAt: z.iso.datetime().optional() }
-// callFile: the file beside approvals.json that holds the whole call of the ask's request group, once for every
-// ask the call made, so the file every update rewrites holds requests alone (review M5). `bytes` counts against
-// the budgets once per group; `complete` repeats the call's own mark. An ask recorded before this build keeps its
-// call inline, in `call`.
-const callFileSchema = z.object({ id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/), bytes: z.number().int().nonnegative(), complete: z.literal(true).optional() })
-// attempt: the attempt entry of the call that raised the ask, which each decision's record names; a re-send that joins
-// shares its requestId.
-const attempt = { attempt: z.object({ auditId: z.string(), requestId: z.string() }).optional() }
-// floor and destructive: the marks the rule that asked set (AskMarks); an ask recorded before they were kept reads as both.
-const marks = { floor: z.boolean().default(true), destructive: z.boolean().default(true) }
-const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...marks, ...joinKey, ...fingerprint, ...attempt, notify: z.literal(true).optional(), call: askedCallSchema.optional(), callFile: callFileSchema.optional(), ...lapse })
-// grant: the session or always grant an approval makes, kept with its resolved entry under the id it is written with.
-// `save` is `owed` until the grant store holds it, then `saved`; a skip turns it `skipping` until a grant that may have
-// saved is confirmed gone, then `skipped`, which nothing writes again. The entry commits first, so a grant never stands
-// without its decision; one left owed is written, and one left skipping removed, when the workspace opens again
-// (recover) or by the next decision recorded or sent again. A revoke, a session end, or a lasting denial in its place
-// turns an owed or saved one `dropped`. `source`: the route that recorded the decision, which alone may skip it. A lasting denial is never owed: it is
-// written before its decision commits.
-const sourceSchema = z.object({ id: z.string(), kind: z.enum([...BUILT_IN_SOURCES, 'backend']) })
-const lastingGrantSchema = z.object({
-  id: z.string().uuid(), sessionId: z.string(), actor: z.string().optional(), rule: PermissionRuleIdSchema, subject: z.string(), scope: z.enum(['session', 'always']),
-  pattern: z.literal(true).optional(), ...decidedBy, source: sourceSchema, save: z.enum(GRANT_SAVES),
-})
-type LastingGrant = z.infer<typeof lastingGrantSchema>
-const resolvedSchema = z.object({
-  workspace: z.string(), decision: ApprovalDecisionSchema, widenedTo: z.string().optional(), expiresAt: z.string(),
-  request: ApprovalRequestSchema.optional(), sessionId: z.string().optional(), ...joinKey, ...fingerprint, ...decidedBy, ...attempt,
-  grant: lastingGrantSchema.optional(),
-})
-const deliverySchema = z.object({ id: z.string().uuid(), workspace: z.string(), notice: ApprovalNoticeSchema, expiresAt: z.iso.datetime() })
-// An ask a session end withdrew, kept as long as an answer is, so a process that did not end the session reads why it left.
-const endedAskSchema = z.object({ workspace: z.string(), token: z.string(), expiresAt: z.iso.datetime() })
-export type ApprovalDelivery = Omit<z.infer<typeof deliverySchema>, 'workspace'>
-
-const fileSchema = z.object({
-  version: z.literal(1),
-  pending: z.array(pendingSchema),
-  once: z.array(onceSchema),
-  resolved: z.array(resolvedSchema),
-  outbox: z.array(deliverySchema).default([]),
-  ended: z.array(endedAskSchema).default([]),
-})
-type State = z.infer<typeof fileSchema>
-type ResolvedEntry = State['resolved'][number]
-
-const endingSchema = z.union([z.object({ sessionId: z.string() }), z.object({ sessions: z.array(z.object({ sessionId: z.string(), actor: z.string().optional() })).readonly() }), z.object({ allSessions: z.literal(true) })])
-// A revoke, by the record it removed, or a session end, by when it ended, so one done late never reaches a grant made after
-// it. Each drops the owed grants that would write again what it removed, applied before the next decision, so it reaches
-// only grants decided before it.
-const revocationSchema = z.union([z.object({ grant: GrantRecordSchema }), z.object({ ending: endingSchema, endedAt: z.iso.datetime() })])
-type Revocation = z.infer<typeof revocationSchema>
-// `revoked`: made while approvals.json could not be read, so the ledger has yet to drop what each removed. `owed`: the
-// ledger dropped it, and the grants file may still hold it. Both are recorded before the grant store is written, and an
-// approval either names clears no call until the grant store confirms it gone.
-const revocationsSchema = z.object({ version: z.literal(1), revoked: z.array(revocationSchema), owed: z.array(revocationSchema) })
 /** What a revocations file that cannot be read may name: any session's end, so no session approval clears a call meanwhile. */
 const ANY_SESSION_END: Revocation = Object.freeze({ ending: { allSessions: true as const }, endedAt: '9999-12-31T23:59:59.999Z' })
-type PendingEntry = State['pending'][number]
 /** A decision, with the answer it gives and its resolved entry, whose lasting grant reads `owed` while it is unwritten. */
 interface AppliedDecision { resolution: Extract<Resolution, { ok: true }>; entry: ResolvedEntry }
 /**
@@ -152,13 +80,6 @@ interface AppliedDecision { resolution: Extract<Resolution, { ok: true }>; entry
  * (`saveError`).
  */
 interface DecisionProgress { decided?: AppliedDecision; refused?: Extract<Resolution, { ok: false }>; recorded?: true; denial?: GrantRecord; saveError?: string }
-/**
- * An ask waiting in the queue, with the whole call it came from, read from its file. `callRef` names the file,
- * which every ask of one request group shares, so a listing carries the group's call once and each ask names it
- * (review M1 of the slice 5 re-review); an ask recorded before this build keeps its call inline and has none.
- */
-export type PendingAsk = Omit<PendingEntry, 'workspace' | 'callFile'> & { callRef?: string }
-
 // Refused before anything is written; the invoker records the refusal in the call's audit entries. A session is
 // its id under the actor that opened it: HTTP API callers choose the id, HTTP MCP clients share `mcp`, and each
 // `buckle mcp` process has a `stdio:<id>` of its own, so one caller's asks never fill another's session.
@@ -218,75 +139,6 @@ function assertBytesFor(input: { waiting: readonly PendingEntry[]; group: readon
     if (budget.held + asked <= budget.limit) continue
     logger.warn('Approval refused: the approvals waiting hold too much', { waiting: budget.held, asked, limit: budget.limit, per: budget.per })
     throw new ApprovalLimitError(`${budget.whose} already hold ${budget.held} bytes and this call's asks would add ${asked}; ask again once some are answered or withdrawn (limit ${budget.limit} bytes ${budget.per})`, budget.room)
-  }
-}
-
-/**
- * The whole calls of waiting asks, one 0600 file per request group in a 0700 directory beside approvals.json,
- * written before the index names it and removed once no waiting ask names it (review M5).
- */
-interface CallFiles {
-  write(id: string, text: string): void
-  /** The group's whole call, or why its file could not be read; logs nothing, so a pass says it once (callsRead). */
-  read(id: string): { call: AskedCall } | { failure: string }
-  /** The file's size in bytes, or undefined when it is missing: one stat, no read. */
-  size(id: string): number | undefined
-  remove(ids: Iterable<string>): void
-  /** Removes every call file no waiting ask names; run under the queue's lock. */
-  prune(named: ReadonlySet<string>): void
-  /** Whether any call file, or a temporary one, is left that no waiting ask names. */
-  unnamed(named: ReadonlySet<string>): boolean
-}
-
-function createCallFiles(directory: string): CallFiles {
-  const pathOf = (id: string) => join(directory, `${id}.json`)
-  return {
-    write(id, text) {
-      mkdirSync(directory, { recursive: true, mode: 0o700 })
-      const temporary = join(directory, `${id}.${randomUUID()}.tmp`)
-      try {
-        const descriptor = openSync(temporary, 'wx', 0o600)
-        try {
-          writeFileSync(descriptor, text)
-          fsyncSync(descriptor)
-        } finally {
-          closeSync(descriptor)
-        }
-        renameSync(temporary, pathOf(id))
-      } finally {
-        rmSync(temporary, { force: true })
-      }
-    },
-    read(id) {
-      try {
-        return { call: askedCallSchema.parse(JSON.parse(readFileSync(pathOf(id), 'utf8'))) }
-      } catch (error) {
-        // Shown as recorded before this build: denied or re-sent, never approved from a part.
-        return { failure: error instanceof Error ? error.name : 'Unknown error' }
-      }
-    },
-    size: id => statSync(pathOf(id), { throwIfNoEntry: false })?.size,
-    remove(ids) {
-      for (const id of ids) rmSync(pathOf(id), { force: true })
-    },
-    prune(named) {
-      for (const name of leftOver(named)) rmSync(join(directory, name), { force: true })
-    },
-    unnamed: named => leftOver(named).length > 0,
-  }
-
-  function leftOver(named: ReadonlySet<string>): string[] {
-    let names: string[]
-    try {
-      names = readdirSync(directory)
-    } catch {
-      return []
-    }
-    return names.filter((name) => {
-      if (!isPlainName(name)) return false
-      const id = CALL_FILE.exec(name)?.[1]
-      return (id !== undefined && !named.has(id)) || name.endsWith('.tmp')
-    })
   }
 }
 
@@ -837,7 +689,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
   }
 
   /** Keeps the revocations still to apply or confirm, and removes the file once none is. */
-  async function keepRecorded(file: Omit<z.infer<typeof revocationsSchema>, 'version'>): Promise<void> {
+  async function keepRecorded(file: Omit<RevocationsFile, 'version'>): Promise<void> {
     if (file.revoked.length === 0 && file.owed.length === 0) rmSync(revocationsPath, { force: true })
     else await revocations.write({ version: 1, ...file })
   }

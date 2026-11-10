@@ -3,7 +3,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { masksHeld } from '../common/services/secrets/mask.js'
+import { masksHeld } from '../common/runtime/held-secrets.js'
 import { createScriptSecrets } from '../common/services/secrets/script-secrets.js'
 
 // The values a code_run script's calls resolve (Codex review of the code mode secret fix, finding S1): they mask every

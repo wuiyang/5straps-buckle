@@ -1,6 +1,6 @@
+import type { PendingAsk } from '../../domain/approval/ledger-state.js'
 import { z } from 'zod'
 import { ApprovalDecisionSchema, GrantScopeSchema, SignedApprovalDecisionSchema, type ApprovalDecision, type ApprovalRequest, type ApprovalWithdraw, type GrantScope, type PermissionRuleId } from '@5straps/protocol'
-import type { ApprovalChallenge, ShownApprovalCall } from '@5straps/protocol/signed-request'
 import { rightsOf } from '../../domain/approval/assurance.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
 import { redactedSubject } from '../../domain/redact.js'
@@ -8,8 +8,8 @@ import type { ApprovalError, ApprovalErrorCode, DecisionBody, DecisionReceipt, G
 import { SOURCES, type Assurance } from '../../types/ports/approval-source.js'
 import type { DecisionRefusal, OpenedDecision } from './approval-envelope.js'
 import { isDeviceProof, spendDeviceProof, type DeviceProof } from './device-proof.js'
-import type { ListedApproval } from './approval-listing.js'
-import type { GroupSelector, GroupWithdrawal, PendingAsk, Resolution, SkipResolution } from './approval-registry.js'
+import type { ChallengeListing, ListedApproval } from '../../domain/approval/challenges.js'
+import type { GroupSelector, GroupWithdrawal, Resolution, SkipResolution } from './approval-registry.js'
 import type { ApprovalAnswer } from '../../domain/approval/answer.js'
 
 /** What a core client sends. Core holds the source its tag names, and the decision guard checks it as any backend's. */
@@ -48,12 +48,6 @@ export type CoreDecisionReceipt =
   | { status: 'repeated'; state: 'approved' | 'denied'; decision: ReadDecision; asked?: AnsweredAsk; save?: GrantSave; saveError?: string }
   | { status: 'refused'; step: 'decision'; decision: ReadDecision; error: ApprovalError }
   | { status: 'refused'; step: 'proof' | 'statement'; error: ApprovalError }
-
-/** Every waiting ask's challenge, with each large whole call carried once by its signed reference. */
-export interface ChallengeListing {
-  challenges: Array<{ token: string; challenge: ApprovalChallenge | null }>
-  calls: Record<string, ShownApprovalCall>
-}
 
 /** A withdrawal, with its selector as the registry keeps it (a requestId hashed) for the audit entry. */
 export interface CallWithdrawal extends GroupWithdrawal {
