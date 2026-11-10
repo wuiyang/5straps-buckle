@@ -11,6 +11,7 @@ import { createRuntime, type CoreRuntime } from '../common/services/workspaces/w
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 import { settleAuditLogs } from './support/action-log-writer.js'
+import { processorTime } from './support/processor-time.js'
 
 // fs_apply_patch (the fs-verbs brief): a unified diff over several files, all or nothing, written as fs_write writes,
 // with the whole diff in the ask.
@@ -116,12 +117,11 @@ describe('the unified diff', () => {
     expect(apply('--- a/f.txt\n+++ b/f.txt\n@@ -3,3 +3,3 @@\n a\n-b\n+B\n c\n', { 'f.txt': 'x\na\nb\nc\ny\n' })[0]!.content).toBe('x\na\nB\nc\ny\n')
   })
 
-  it('refuses a patch whose hunks cannot be placed within the comparison budget, without a long stall', () => {
+  it('refuses a patch whose hunks cannot be placed within the comparison budget, under 2,000 ms of CPU', () => {
     const context = Array.from({ length: 4_000 }, () => ' x')
     const patch = ['--- a/big.txt', '+++ b/big.txt', '@@ -1,8001 +1,8001 @@', ...context, '-y', '+z', ...context, ''].join('\n')
-    const started = performance.now()
-    expect(() => apply(patch, { 'big.txt': 'x\n'.repeat(80_000) })).toThrow(`could not be placed within ${MAX_PLACEMENT_COMPARISONS} line comparisons, so nothing was written`)
-    expect(performance.now() - started).toBeLessThan(2_000)
+    const { milliseconds } = processorTime(() => expect(() => apply(patch, { 'big.txt': 'x\n'.repeat(80_000) })).toThrow(`could not be placed within ${MAX_PLACEMENT_COMPARISONS} line comparisons, so nothing was written`))
+    expect(milliseconds).toBeLessThan(2_000)
   })
 
   it('reads the diff --git block of an empty file made or removed, which git writes with no --- or +++ lines', () => {

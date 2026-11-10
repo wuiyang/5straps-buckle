@@ -8,6 +8,7 @@ import { rootsOf } from '../common/domain/executable.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { createShellPack } from '../common/services/packs/shell/index.js'
 import type { ProcessRequest } from '../common/types/ports/process-runner.js'
+import { processorTime } from './support/processor-time.js'
 
 // On the owner's Windows node agent-browser's screenshot hung under Buckle and worked by hand with the same flags:
 // every program Buckle started ran without SystemRoot, TEMP, USERPROFILE, and the rest, as the inherited list named
@@ -97,11 +98,10 @@ describe('a call that sets many variables', () => {
     return extra
   }
 
-  it.each(['linux', 'darwin', 'win32'] as const)('on %s merges 30,000 names in well under a second, the inherited names among them', (platform) => {
+  it.each(['linux', 'darwin', 'win32'] as const)('on %s merges 30,000 names under 1,000 ms of CPU, the inherited names among them', (platform) => {
     const extra = many(30_000)
-    const started = performance.now()
-    const child = buildChildEnvironment({ parent: { PATH: '/usr/bin', Path: 'C:\\Tools', SystemRoot: 'C:\\Windows' }, extra, platform })
-    expect(performance.now() - started).toBeLessThan(1_000)
+    const { milliseconds, result: child } = processorTime(() => buildChildEnvironment({ parent: { PATH: '/usr/bin', Path: 'C:\\Tools', SystemRoot: 'C:\\Windows' }, extra, platform }))
+    expect(milliseconds).toBeLessThan(1_000)
     expect(Object.keys(child).length).toBeGreaterThanOrEqual(30_002)
     expect(Object.getOwnPropertyDescriptor(child, '__proto__')?.value).toBe('c')
     expect(Object.getOwnPropertyDescriptor(child, 'constructor')?.value).toBe('a')

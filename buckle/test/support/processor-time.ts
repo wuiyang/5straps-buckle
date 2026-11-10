@@ -5,6 +5,13 @@
  */
 export const PROCESSOR_TIME_ROW_TIMEOUT = 30_000
 
+export function processorTime<T>(run: () => T): { milliseconds: number; result: T } {
+  const started = process.threadCpuUsage()
+  const result = run()
+  const used = process.threadCpuUsage(started)
+  return { milliseconds: (used.user + used.system) / 1_000, result }
+}
+
 /**
  * The least processor time of this thread, in milliseconds, over a few timed runs of a reading after one untimed run,
  * and the last run's result. A loaded machine stretches the wall clock and a cold start slows the first run, but neither
@@ -16,10 +23,9 @@ export function leastProcessorTime<T>(run: () => T, runs = 3): { milliseconds: n
   let milliseconds = Number.POSITIVE_INFINITY
   let result = run()
   for (let index = 0; index < runs; index++) {
-    const started = process.threadCpuUsage()
-    result = run()
-    const used = process.threadCpuUsage(started)
-    milliseconds = Math.min(milliseconds, (used.user + used.system) / 1_000)
+    const measured = processorTime(run)
+    result = measured.result
+    milliseconds = Math.min(milliseconds, measured.milliseconds)
   }
   return { milliseconds, result }
 }

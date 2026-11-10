@@ -15,6 +15,7 @@ import { searchContent } from '../common/services/packs/fs/search.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { settleAuditLogs } from './support/action-log-writer.js'
+import { processorTime } from './support/processor-time.js'
 
 // fs_search_content without ripgrep (the fs-verbs brief): Buckle's own walker, with ripgrep's ignore rules, limits, read
 // judgement, and output shape, offered wherever the fs pack is.
@@ -194,10 +195,9 @@ describe('the glob matcher', () => {
     expect(disagreements).toEqual([])
   })
 
-  it('answers a pattern of many stars on a long text at once, where a backtracking matcher would not', () => {
-    const started = performance.now()
-    expect(matchesPattern('a'.repeat(3_000), `${'*a'.repeat(30)}*b`)).toBe(false)
-    expect(performance.now() - started).toBeLessThan(2_000)
+  it('answers a pattern of many stars on a long text under 2,000 ms of CPU, where a backtracking matcher would not', () => {
+    const { milliseconds } = processorTime(() => expect(matchesPattern('a'.repeat(3_000), `${'*a'.repeat(30)}*b`)).toBe(false))
+    expect(milliseconds).toBeLessThan(2_000)
   })
 
   it('matches nothing for a pattern too long or with too many choices, rather than fail', () => {

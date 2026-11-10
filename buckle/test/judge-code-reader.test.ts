@@ -9,6 +9,7 @@ import { allForms, commandFormsOf } from '../common/domain/command-forms.js'
 import { CODE_LIMITS, CODE_REFUSALS, createCodeView, readInterpreterCode, type CodeRead } from '../common/services/judge/code-reader.js'
 import { SHELL_TEXT_REFUSAL, simpleStatement } from '../common/services/judge/shell-statement.js'
 import { judgeCacheKey } from '../common/services/judge/judge-cache.js'
+import { processorTime } from './support/processor-time.js'
 
 // What the decision AI reads of an interpreter call (D91, addendum B): the code the command line hands the
 // interpreter, the scripts it names, and every local file they import, transitively, through the agent's own view.
@@ -1147,25 +1148,23 @@ describe('the single-statement grammar (fix brief 4, P)', () => {
 })
 
 describe('long shell text (fix brief 4, P)', () => {
-  it('refuses a 1 MiB text with 64 heredoc statements inside 300 ms, where a per-statement index once took seconds (fix brief 4, R9)', () => {
+  it('refuses a 1 MiB text with 64 heredoc statements within 300 ms of CPU, where a per-statement index once took seconds (fix brief 4, R9)', () => {
     const { root, view } = workspace({ 'helper.py': 'X = 1\n' })
     const statements = Array.from({ length: 64 }, (_, index) => (index % 2 === 0 ? `python3 <<P${index}\nimport helper\nP${index}\n` : `lua <<L${index}\nprint(1)\nL${index}\n`)).join('')
     const text = `: '${'<'.repeat(1_000_000)}'\n${statements}`
     // The call's forms are the permission pipeline's own reading, shared with every rule, so they are not the reader's cost.
     const forms = commandFormsOf({ command: 'bash', args: ['-c', text] })
     const running = allForms(forms).filter(([word = '']) => forms.interpreters.includes(baseCommand(word)))
-    const started = performance.now()
-    const result = readInterpreterCode({ forms: running, chain: forms.chain, cwd: root, view })
-    expect(performance.now() - started).toBeLessThan(300)
+    const { milliseconds, result } = processorTime(() => readInterpreterCode({ forms: running, chain: forms.chain, cwd: root, view }))
+    expect(milliseconds).toBeLessThan(300)
     expect(result).toEqual(shellRefusal)
   })
 
 
-  it('refuses 4,000 statements at once, and reads one statement with a long heredoc body', () => {
+  it('refuses 4,000 statements within 200 ms of CPU, and reads one statement with a long heredoc body', () => {
     const { shell } = workspace({ 'helper.py': 'X = 1\n' })
-    const started = performance.now()
-    expect(shell('python3 <<E\nE\n'.repeat(4_000))).toEqual(shellRefusal)
-    expect(performance.now() - started).toBeLessThan(200)
+    const { milliseconds } = processorTime(() => expect(shell('python3 <<E\nE\n'.repeat(4_000))).toEqual(shellRefusal))
+    expect(milliseconds).toBeLessThan(200)
     const body = `import helper\n${'x = 1\n'.repeat(20_000)}`
     expect(reading(shell(`python3 <<'E'\n${body}E\n`)).files.map(file => file.path)).toEqual(['/workspace/helper.py'])
   })

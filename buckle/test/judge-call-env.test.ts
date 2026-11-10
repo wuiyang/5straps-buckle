@@ -16,6 +16,7 @@ import type { Judge, JudgeInput, JudgeResult } from '../common/types/ports/judge
 import type { QuickJudge } from '../common/types/ports/quick-judge.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
+import { processorTime } from './support/processor-time.js'
 
 // The variables a call sets for its command (D91, fix brief 1 item 14): one that changes what code runs means no rating,
 // so the call asks a person, and under scope all nothing is screened; every other variable reaches both stages, its value
@@ -586,13 +587,12 @@ describe('a call that sets more variables than the stages are sent (fix brief 3,
   // The same assignments before the command on its one statement, which the reader rates whole (fix brief 4, P).
   const leading = (count: number) => `${Array.from({ length: count }, (_, index) => `a${index}=${index}`).join(' ')} node build.js`
 
-  it('reads 50,000 unique assignments and refuses them within 200 ms, where the old dedupe was quadratic', () => {
+  it('reads 50,000 unique assignments and refuses them within 200 ms of CPU, where the old dedupe was quadratic', () => {
     const effect = { command: 'bash', args: ['-c', assignments(50_000)] }
     // The command's forms are the permission pipeline's own reading, shared with every rule, so they are not the gate's cost.
     const forms = commandFormsOf(effect)
-    const started = performance.now()
-    const joined = joinedVariables([], assignedVariables(effect, forms).variables, MAX_SHOWN_VARIABLES)
-    expect(performance.now() - started).toBeLessThan(200)
+    const { milliseconds, result: joined } = processorTime(() => joinedVariables([], assignedVariables(effect, forms).variables, MAX_SHOWN_VARIABLES))
+    expect(milliseconds).toBeLessThan(200)
     expect(joined).toBeNull()
   })
 
