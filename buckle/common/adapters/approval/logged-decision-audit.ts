@@ -3,12 +3,12 @@ import { redactCredentials } from '@5straps/runtime'
 import type { JsonObject, PermissionRuleId } from '@5straps/protocol'
 import { rightsOf } from '../../domain/approval/assurance.js'
 import { redactedSubject } from '../../domain/redact.js'
-import { DECISION_TOOL, SESSION_END_TOOL } from '../../domain/record-tools.js'
+import { DECISION_TOOL, NO_RESPONSE_TOOL, SESSION_END_TOOL } from '../../domain/record-tools.js'
 import { MAX_LOGGED_ID } from '../../domain/redact.js'
 import type { ActionLog, ActionLogEntry } from '../../types/ports/action-log.js'
 import type { ApprovalErrorCode } from '../../types/ports/approval-backend.js'
 import type { ApprovalSource, SourceKind } from '../../types/ports/approval-source.js'
-import type { AnsweredCall, AuditedDecision, AuditedSessionEnd, AuditedSkip, AuditedWidening, DecisionAudit, DecisionEnding } from '../../types/ports/decision-audit.js'
+import type { AnsweredCall, AuditedDecision, AuditedNoResponse, AuditedSessionEnd, AuditedSkip, AuditedWidening, DecisionAudit, DecisionEnding } from '../../types/ports/decision-audit.js'
 
 /** Decisions belong to no agent's session; their entries share this one. */
 const DECISION_SESSION = 'approvals'
@@ -43,7 +43,8 @@ interface RecordEnding {
  * Each decision and each skip in its workspace's own log, through the log service: received as an attempt, then how it
  * ended as its result, under one auditId. A refusal keeps its code and never its reason, which may name the ask's subject.
  * A decision names the widening it asked for and, once the ledger read its ask, the subject its grant took and the call
- * it answered, by that call's attempt entry. Each session's end is one result entry under the session it ended. An answer
+ * it answered, by that call's attempt entry. Each session's end is one result entry under the session it ended, and each ask
+ * nobody answered before it ran out one `approval_skipped` result entry, with the reason no_response and the call. An answer
  * from a route anything holding the agent's token can send (an HTTP form) gives way first, attempt and refusal alike, so a
  * flood of them pushes out no person's record; what it applied is kept.
  */
@@ -68,6 +69,17 @@ export function createLoggedDecisionAudit(input: { actions: Pick<ActionLog, 'app
       return { applied: outcome => ending.applied(outcome), refused: ({ code }) => ending.refused(code, {}), failed: ending.failed }
     },
     sessionEnded: end => input.actions.append(sessionEndEntry(input.workspaceId, end)),
+    noResponse: skip => input.actions.append(noResponseEntry(input.workspaceId, skip)),
+  }
+}
+
+/** An ask skipped with no response (APPROVAL-36): nobody answered it, so the entry names no actor, and no denial. */
+function noResponseEntry(workspaceId: string, skip: AuditedNoResponse): ActionLogEntry {
+  const auditId = randomUUID()
+  return {
+    auditId, workspaceId, event: 'result', at: new Date().toISOString(), requestId: auditId, sessionId: DECISION_SESSION,
+    tool: NO_RESPONSE_TOOL, outcome: 'ok', durationMs: 0, effects: [], detail: 'no_response',
+    args: { token: skip.token.slice(0, MAX_LOGGED_ID), reason: 'no_response', ...callArgs(skip.call) },
   }
 }
 

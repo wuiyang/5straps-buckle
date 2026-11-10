@@ -57,7 +57,7 @@ describe('durable approval outcome delivery', () => {
     await notices.settle()
   })
 
-  it('records expiry and cancellation atomically, and duplicate skipped notices never extend retention', async () => {
+  it('records a skip for no response and a cancellation atomically, and duplicate wait notices never extend retention', async () => {
     vi.useFakeTimers(); vi.setSystemTime(at)
     const q = queue()
     const [expires, cancelled] = await q.ask(2)
@@ -71,8 +71,9 @@ describe('durable approval outcome delivery', () => {
     await q.registry.sweep()
     const reopened = q.open()
     expect(reopened.pending()).toEqual([])
-    expect(reopened.pendingDeliveries().map(row => row.notice.event).sort()).toEqual(['cancelled', 'expired'])
-    const expiry = reopened.pendingDeliveries().find(row => row.notice.event === 'expired')!
+    expect(reopened.pendingDeliveries().map(row => row.notice.event).sort()).toEqual(['cancelled', 'skipped'])
+    const expiry = reopened.pendingDeliveries().find(row => row.notice.event === 'skipped')!
+    expect(expiry.notice).toMatchObject({ token: expires!.token, event: 'skipped', reason: 'no_response' })
     expect(expiry.notice.at).toBe(new Date(Date.parse(expires!.expiresAt) + 1).toISOString())
     expect(expiry.id).not.toBe(first.id)
     await reopened.acknowledgeDeliveries([first.id])
@@ -238,7 +239,7 @@ describe('durable approval outcome delivery', () => {
     const calls: string[] = []
     vi.stubGlobal('fetch', vi.fn(async (_url: unknown, options: RequestInit) => { calls.push(String(options.body)); return new Response('', { status: calls.length === 1 ? 503 : 200 }) }))
     const send = createApprovalNoticeSender({ url: 'http://rings.test/approvals', serverId: 'node', workspaceId: 'default', approvalKey: approvalKey(mintApprovalKey()) })
-    const notice: ApprovalNotice[] = [{ token: randomUUID(), event: 'expired', at: new Date().toISOString() }]
+    const notice: ApprovalNotice[] = [{ token: randomUUID(), event: 'skipped', at: new Date().toISOString(), reason: 'no_response' }]
     await expect(send(notice)).rejects.toThrow('503')
     await expect(send(notice)).resolves.toBeUndefined()
     expect(calls[0]).not.toEqual(calls[1])
@@ -273,7 +274,7 @@ describe('an ask\'s end is recorded whatever the outbox holds', () => {
     const { live, legacy } = atCap(q)
     const registry = q.open()
     await act(registry, live)
-    expect(registry.pendingDeliveries().some(item => item.notice.token === legacy.request.token && item.notice.event === 'expired')).toBe(true)
+    expect(registry.pendingDeliveries().some(item => item.notice.token === legacy.request.token && item.notice.event === 'skipped' && item.notice.reason === 'no_response')).toBe(true)
   })
 
   it('acknowledges, sweeps, cancels, resolves and asks again in turn once the receiver drains the head', async () => {
@@ -286,7 +287,7 @@ describe('an ask\'s end is recorded whatever the outbox holds', () => {
     expect(await registry.resolve({ token: live.request.token, approved: false, scope: 'once' }, SOURCES.cli)).toMatchObject({ ok: true })
     expect(await q.ask()).toHaveLength(1)
     expect(registry.pendingDeliveries().map(item => item.notice)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ token: legacy.request.token, event: 'expired' }),
+      expect.objectContaining({ token: legacy.request.token, event: 'skipped', reason: 'no_response' }),
       expect.objectContaining({ token: live.request.token, event: 'denied' }),
     ]))
   })
@@ -301,9 +302,9 @@ describe('an ask\'s end is recorded whatever the outbox holds', () => {
     const warn = vi.spyOn(logger, 'warn')
     try {
       await registry.sweep()
-      expect(registry.pendingDeliveries().filter(item => item.notice.event === 'expired')).toHaveLength(20)
+      expect(registry.pendingDeliveries().filter(item => item.notice.reason === 'no_response')).toHaveLength(20)
       expect(warn.mock.calls.filter(([message]) => message.startsWith('Approval outcome delivery is past its limits')))
-        .toEqual([[expect.any(String), { entries: APPROVAL_OUTBOX_COUNT_MAX - 2 + 20, added: 20, events: ['expired'] }]])
+        .toEqual([[expect.any(String), { entries: APPROVAL_OUTBOX_COUNT_MAX - 2 + 20, added: 20, events: ['skipped'] }]])
     } finally {
       warn.mockRestore()
     }

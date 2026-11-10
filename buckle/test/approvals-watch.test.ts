@@ -64,7 +64,7 @@ function keyboardTerminal() {
   return { input, output, errors, shown: () => shown, refused: () => refused, type: (keys: string) => input.write(keys) }
 }
 
-function watch(approvals: Pick<ApprovalService, 'waiting' | 'pending' | 'decide' | 'skipSave'>, terminal = keyboardTerminal()) {
+function watch(approvals: Pick<ApprovalService, 'waiting' | 'pending' | 'decide' | 'skipSave' | 'departure'>, terminal = keyboardTerminal()) {
   const done = watchApprovals({ sources: async () => [{ approvals, workspaceId: 'default' }], input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL })
   return { terminal, done }
 }
@@ -274,22 +274,43 @@ describe('buckle approvals --watch', () => {
     await done
   })
 
-  it('drops a question whose request expires while it is on screen', async () => {
+  // APPROVAL-36 (owner, 2026-11-10): an ask nobody answered before it ran out is skipped with no response.
+  it('drops a question whose request runs out while it is on screen, as skipped with no response', async () => {
     const expiring: ApprovalRequest = {
       token: 'expiring', rule: 'read_scope', subject: '/shots', reason: 'outside the sandbox', tool: 'fs_read',
       offeredScopes: ['once'], expiresAt: new Date(Date.now() + 300).toISOString(),
     }
     const decide = vi.fn()
     const live = () => [expiring].filter(request => Date.parse(request.expiresAt) > Date.now())
-    const { terminal, done } = watch({ waiting: () => live().map(request => ({ request, sessionId: 'chat-1', floor: false, destructive: false })), pending: live, decide, skipSave: vi.fn() })
+    const { terminal, done } = watch({ waiting: () => live().map(request => ({ request, sessionId: 'chat-1', floor: false, destructive: false })), pending: live, decide, skipSave: vi.fn(), departure: () => undefined })
 
-    await vi.waitFor(() => expect(terminal.shown()).toContain('expiring expired; dropped.'))
+    await vi.waitFor(() => expect(terminal.shown()).toContain('expiring skipped: no response; dropped.'))
     terminal.type('o\r')
     await new Promise(resolve => setTimeout(resolve, 100))
 
     expect(decide).not.toHaveBeenCalled()
     terminal.type('\x03')
     expect(await done).toEqual({ exitCode: 0 })
+  })
+
+  it('drops a question whose ask lapsed while it is on screen, as skipped with no response, though it states no deadline', async () => {
+    const config = node()
+    const [request] = (await registryOf(config).ask({
+      tool: 'fs_write', sessionId: 'chat-1', waitMs: null, holdMs: 0, call: { arguments: { path: '/outside/report.md', content: 'x' }, cwd: '/workspace', description: 'Write "/outside/report.md"', effects: ['write /outside/report.md'], complete: true },
+      asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside/report.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
+    })).requests
+    const { terminal, done } = watch(serviceOf(config))
+    await vi.waitFor(() => expect(terminal.shown()).toContain('needs approval'))
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(Date.now() + 11 * 60_000)
+      await registryOf(config).sweep()
+      await vi.waitFor(() => expect(terminal.shown()).toContain(`${request!.token} skipped: no response; dropped.`))
+    } finally {
+      vi.useRealTimers()
+    }
+    terminal.type('\x03')
+    await done
   })
 
   it('drops a question another route answered', async () => {

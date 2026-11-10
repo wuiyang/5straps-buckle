@@ -5,6 +5,7 @@ import { describeQuestion, marked } from './terminal-consumer.js'
 import { QUIET_MS, discardTypedLine, pause, watchKeys, type KeyWatch } from './terminal-keys.js'
 import { remainingMs } from '../common/domain/approval/expiry.js'
 import { approveCommand, denyCommand, describeAskOfShownCall, printable, workspaceLabel } from '../common/domain/approval-instruction.js'
+import { NO_RESPONSE_LINE } from '../common/domain/approval-deadline.js'
 import type { CoreApprovalApi } from '../common/services/approvals/core-approval-api.js'
 import type { PendingAsk } from '../common/domain/approval/ledger-state.js'
 import { saveAnswerOf, saveChoices, saveEndingLine, settleUnsaved, unsavedOf, type SaveAnswer, type SaveEnding, type Unsaved } from '../common/adapters/approval/grant-save-question.js'
@@ -34,7 +35,7 @@ const WIDER_KEYS: typeof SCOPE_KEYS = [
 ]
 
 export interface WatchSource {
-  approvals: Pick<CoreApprovalApi, 'waiting' | 'pending' | 'decide' | 'skipSave'>
+  approvals: Pick<CoreApprovalApi, 'waiting' | 'pending' | 'departure' | 'decide' | 'skipSave'>
   workspaceId: string
   workspaceName?: string
   /** Whether the workspace's thorough stage can approve, which an unrated ask's judge line says (D91 follow-up F6). */
@@ -63,8 +64,8 @@ type Outcome = { exitCode: number }
  * resolves one, as the `cli` source, so `BUCKLE-D14` holds as it does there.
  *
  * Each request is asked once. A skipped one stays waiting for another route, and a question whose
- * request expires or is answered elsewhere while on screen is dropped with a note. The first
- * Ctrl-C stops the watch; nothing is answered on the way out.
+ * request runs out unanswered (skipped with no response, APPROVAL-36) or is answered elsewhere while on
+ * screen is dropped with a note. The first Ctrl-C stops the watch; nothing is answered on the way out.
  *
  * No key answers a question the owner has not seen. A question takes keys only once the keyboard
  * has been still for `QUIET_MS` with it on screen, and a line typed before that is thrown away.
@@ -196,8 +197,7 @@ async function askOne(context: AskContext): Promise<Ending> {
         answer = (await context.readline.question(prompt, { signal })).trim().toLowerCase()
       } catch {
         if (context.stopped.aborted) return 'stopped'
-        const expired = expiry?.aborted === true || remainingMs(request.expiresAt) === 0
-        output.write(`  ${request.token} ${expired ? 'expired' : 'was answered elsewhere'}; dropped.\n`)
+        output.write(`  ${request.token} ${ranOut(context, expiry) ? NO_RESPONSE_LINE : 'was answered elsewhere'}; dropped.\n`)
         return 'dropped'
       }
       if (answer === 'n') {
@@ -214,6 +214,19 @@ async function askOne(context: AskContext): Promise<Ending> {
     }
   } finally {
     clearInterval(watcher)
+  }
+}
+
+/**
+ * Whether a dropped question's ask ran out unanswered: past its stated expiry by the clock, or skipped with no response as
+ * the ledger keeps it, as after a lapse; an ask whose end cannot be read reads as answered elsewhere.
+ */
+function ranOut(context: AskContext, expiry: AbortSignal | null): boolean {
+  if (expiry?.aborted === true || remainingMs(context.request.expiresAt) === 0) return true
+  try {
+    return context.approvals.departure(context.request.token)?.type === 'skipped'
+  } catch {
+    return false
   }
 }
 

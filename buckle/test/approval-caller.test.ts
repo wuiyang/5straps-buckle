@@ -206,6 +206,7 @@ function opened(face: FormsFace) {
     received: (answer) => { heard.push(answer.source); callers.push(answer.caller); return ending(answer.token) },
     skipReceived: (skip) => { heard.push(skip.source); callers.push(skip.caller); return ending(skip.token) },
     sessionEnded: () => undefined,
+    noResponse: () => undefined,
   }
   const service = approvalServiceWithTerminal({ registry, workspaceId: 'w-1', serverId: 'node-1', graceMs: 200, interaction: fixedInteraction(), decisionAudit })
   services.push(service)

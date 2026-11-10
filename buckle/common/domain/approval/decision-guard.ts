@@ -10,7 +10,7 @@ import { isSecretFileSubject } from '../permission/subjects.js'
 import { compileHostPattern, UrlPatternError } from '../url-pattern.js'
 
 export type GuardRefusalCode = Extract<ApprovalErrorCode,
-  | 'unknown_ask' | 'conflicting_decision' | 'action_mismatch' | 'incomplete_action' | 'scope_not_offered' | 'scope_forbidden'
+  | 'unknown_ask' | 'ask_closed' | 'conflicting_decision' | 'action_mismatch' | 'incomplete_action' | 'scope_not_offered' | 'scope_forbidden'
   | 'statement_invalid' | 'proof_expired' | 'assurance_too_low' | 'capability_exceeded' | 'approver_not_allowed'>
 
 export interface GuardRefusal { ok: false; code: GuardRefusalCode; reason: string }
@@ -37,6 +37,8 @@ export interface LedgerView {
    * and destructive marks. `routes`: the routes the ask was sent down.
    */
   waiting?: { request: ApprovalRequest; complete: boolean; challenges: readonly string[]; marks: AskMarks; routes: readonly RecordedRoute[]; actor?: string }
+  /** `no_response`: the ask left the queue skipped, as nobody answered it before it ran out (APPROVAL-36). */
+  closed?: 'no_response'
 }
 
 /** The workspace's settings a decision meets, as core reads them when it decides, never from the route that sent it. */
@@ -46,6 +48,9 @@ export interface LiveSettings {
 }
 
 export interface DecisionPlan { widenedTo?: string; wider?: string }
+
+/** What a late answer to an ask skipped with no response is told: it is no denial, and its call did not run. */
+const NO_RESPONSE_REFUSAL = 'This ask was skipped: no response. Nobody answered it before it ran out, so its call did not run; the call sent again asks afresh'
 
 export type GuardVerdict =
   | GuardRefusal
@@ -82,7 +87,8 @@ export function guardDecision(input: { claim: DecisionClaim; ledger: LedgerView;
   if (stranger) return stranger
   if (ledger.resolved) return repeatOf({ decision, widenedTo, resolved: ledger.resolved, source: claim.source })
   const asked = ledger.waiting
-  if (!asked) return refuse('unknown_ask', 'Approval token is unknown or expired')
+  if (!asked && ledger.closed === 'no_response') return refuse('ask_closed', NO_RESPONSE_REFUSAL)
+  if (!asked) return refuse('unknown_ask', 'Approval token is unknown or no longer waiting')
   const unrouted = routingRefusal({ source: claim.source, rights, routes: asked.routes, approved: decision.approved })
   if (unrouted) return unrouted
   if (claim.challenge !== undefined && !asked.challenges.includes(claim.challenge)) return refuse('action_mismatch', 'The decision names another challenge than this ask\'s: fetch the challenge again and decide on what it shows')

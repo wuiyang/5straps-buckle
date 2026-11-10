@@ -101,7 +101,7 @@ describe('defineTool', () => {
 
   it('names in its refusal the tool and every name Buckle keeps for its own records, so a plugin\'s author can rename it', () => {
     expect(() => defineTool('acme', { name: 'workspace_search', description: 'Clashing tool', risk: 'read', input: z.object({}), effects: () => [], run: async () => null }))
-      .toThrow('Tool name workspace_search is reserved for Buckle\'s own records (approval_decision, log_dropped, approval_session_ended, and every name starting cli_, setup_, workspace_, or policy_); rename the tool')
+      .toThrow('Tool name workspace_search is reserved for Buckle\'s own records (approval_decision, log_dropped, approval_session_ended, approval_skipped, and every name starting cli_, setup_, workspace_, or policy_); rename the tool')
   })
 
   it('derives the JSON Schema from the Zod schema, so the two cannot drift', () => {

@@ -168,6 +168,7 @@ async function atWatch(registry: ApprovalRegistry, answer?: string): Promise<{ p
       return APPLIED(input.decision)
     },
     skipSave: async () => ({ status: 'skipped' }),
+    departure: () => undefined,
   }
   const stop = new AbortController()
   const done = watchApprovals({ sources: async () => [{ approvals, workspaceId: 'w-1', workspaceName: 'Site' }], input, output, errors: new PassThrough(), signal: stop.signal, pollMs: { first: 20, idle: 50 } })

@@ -850,8 +850,9 @@ async function clearPermissions(input: {
   // one too, rather than telling the caller nobody answered (review L6 of B23-B25).
   const ranMeanwhile = options.executions.earlier(input.key)
   if (ranMeanwhile) return { response: null, asked, approvedBy: [...new Set(approvedBy)], earlier: ranMeanwhile }
-  // Nobody denied it: the asks expired, were withdrawn, or another call spent the `once`. Only a
-  // recorded denial is reported as one (review M1).
+  // Nobody denied it: nobody answered an ask before it ran out, which skips it (APPROVAL-36), or the asks were withdrawn,
+  // or another call spent the `once`. Only a recorded denial is reported as one (review M1).
+  if (options.approvals.unanswered(approvals).length > 0) return { response: failed(request, NO_RESPONSE), asked, approvedBy: [...new Set(approvedBy)] }
   return { response: failed(request, UNANSWERED), asked, approvedBy: [...new Set(approvedBy)] }
 }
 
@@ -948,11 +949,13 @@ const SUPERSEDED = { code: REQUEST_SUPERSEDED, message: 'A newer call with the s
 export const CALLER_LEFT = { code: 'CALLER_LEFT', message: 'The caller left before this call ran, so nothing ran; an ask it made stays pending, and the same call sent again joins it', retryable: true }
 /** What a call its caller cancelled before it ran answers: nothing ran, and its asks were withdrawn. */
 const CALLER_CANCELLED = { code: 'CALLER_CANCELLED', message: 'The caller cancelled this call before it ran, so nothing ran, and its asks were withdrawn', retryable: true }
-const UNANSWERED = { code: 'APPROVAL_UNANSWERED', message: 'The approval this call waited for expired, was withdrawn or was spent by another call; send the call again to ask again', retryable: true }
+const UNANSWERED = { code: 'APPROVAL_UNANSWERED', message: 'The approval this call waited for was withdrawn or was spent by another call; send the call again to ask again', retryable: true }
+/** What a call answers when nobody answered its ask before it ran out (APPROVAL-36): skipped, never denied, and nothing ran. */
+const NO_RESPONSE = { code: 'APPROVAL_SKIPPED', message: 'Nobody answered this call\'s approval before it ran out, so it was skipped: no response. The call did not run, and this is not a denial; send the call again to ask afresh', retryable: true, details: { reason: 'no_response' } }
 const REUSED = { code: REQUEST_ID_REUSED, message: 'This requestId already names a different call from this session; send a new requestId', retryable: false }
 const SCRIPT_CALL_REUSED = { code: CODE_REPLAY_DIVERGED, message: 'This script ran lately and made another call at this point then; Buckle does not mix the two runs. Change the script, even by a comment, to run it from its start', retryable: false }
 
-function failed(request: InvokeRequest, error: { code: string; message: string; retryable: boolean }): InvokeResponse {
+function failed(request: InvokeRequest, error: { code: string; message: string; retryable: boolean; details?: JsonValue }): InvokeResponse {
   return { requestId: request.requestId, outcome: 'error', error }
 }
 

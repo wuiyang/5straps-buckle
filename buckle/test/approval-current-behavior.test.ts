@@ -219,7 +219,7 @@ describe('the checks an answer meets', () => {
   }
 
   it.each([
-    ['an unknown token', (token: string) => ({ token: `${token}-other`, approved: true, scope: 'once' as const }), 'Approval token is unknown or expired'],
+    ['an unknown token', (token: string) => ({ token: `${token}-other`, approved: true, scope: 'once' as const }), 'Approval token is unknown or no longer waiting'],
     ['a lasting denial of a write', (token: string) => ({ token, approved: false, scope: 'session' as const }), 'Persistent denials are supported only for sensitive files'],
     ['another subject than the ask offers', (token: string) => ({ token, approved: true, scope: 'session' as const, subject: '/elsewhere' }), 'not /elsewhere'],
   ])('refuses %s', async (_name, decision, reason) => {

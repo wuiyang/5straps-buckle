@@ -352,7 +352,7 @@ describe('an index unreadable for a while, then repaired in place', () => {
     const stored = (error: { mock: { calls: unknown[][] } }) => error.mock.calls.filter(([message]) => message === 'State file cannot be read safely').length
     const warned = (warn: { mock: { calls: unknown[][] } }, message: string) => warn.mock.calls.filter(([logged]) => logged === message).length
     /** The prune's and the sender's warnings together: whichever reads the damage first warns, and the other stays quiet. */
-    const retries = (warn: { mock: { calls: unknown[][] } }) => warned(warn, 'Could not drop the approvals that expired') + warned(warn, 'Approval lifecycle delivery will be retried')
+    const retries = (warn: { mock: { calls: unknown[][] } }) => warned(warn, 'Could not drop the approvals nobody answered before they ran out') + warned(warn, 'Approval lifecycle delivery will be retried')
 
     /** A queue whose ends go to an outcome receiver through the durable outbox, retried every 20 ms. */
     function withWebhook() {
@@ -414,7 +414,7 @@ describe('an index unreadable for a while, then repaired in place', () => {
         vi.setSystemTime(Date.now() + 11 * 60_000)
         await thirtySeconds(registry)
         expect(stored(error)).toBe(1)
-        expect(warned(warn, 'Could not drop the approvals that expired')).toBe(1)
+        expect(warned(warn, 'Could not drop the approvals nobody answered before they ran out')).toBe(1)
         chmodSync(filePath, 0o600)
         vi.setSystemTime(Date.now() + 6_000)
         expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
@@ -425,7 +425,7 @@ describe('an index unreadable for a while, then repaired in place', () => {
         vi.setSystemTime(Date.now() + 11 * 60_000)
         await thirtySeconds(registry)
         expect(stored(error)).toBe(2)
-        expect(warned(warn, 'Could not drop the approvals that expired')).toBe(2)
+        expect(warned(warn, 'Could not drop the approvals nobody answered before they ran out')).toBe(2)
       } finally {
         chmodSync(filePath, 0o600)
         warn.mockRestore()
@@ -450,7 +450,7 @@ describe('an index unreadable for a while, then repaired in place', () => {
         chmodSync(filePath, 0o600)
         vi.setSystemTime(Date.now() + 6_000)
         expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
-        await vi.waitFor(() => expect(sent.map(notice => [notice.token, notice.event])).toEqual([[request!.token, 'expired']]))
+        await vi.waitFor(() => expect(sent.map(notice => [notice.token, notice.event])).toEqual([[request!.token, 'skipped']]))
         expect(JSON.parse(readFileSync(filePath, 'utf8'))).toMatchObject({ pending: [], outbox: [] })
         const [again] = (await issue(registry)).requests
         expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
@@ -500,7 +500,7 @@ describe('an index unreadable for a while, then repaired in place', () => {
           chmodSync(root, 0o700)
           vi.setSystemTime(Date.now() + 6_000)
           expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
-          await vi.waitFor(() => expect(sent.map(notice => [notice.token, notice.event])).toEqual([[request!.token, 'expired']]))
+          await vi.waitFor(() => expect(sent.map(notice => [notice.token, notice.event])).toEqual([[request!.token, 'skipped']]))
           expect(warned(warn, 'Approval lifecycle delivery will be retried')).toBe(1)
         } finally {
           chmodSync(root, 0o700)
@@ -712,7 +712,7 @@ describe('an index unreadable for a while, then repaired in place', () => {
           expect(lines(warn, error)).toEqual([])
           renameSync(`${root}.gone`, root)
           expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
-          await vi.waitFor(() => expect(sent.map(notice => [notice.token, notice.event])).toEqual([[request!.token, 'expired']]))
+          await vi.waitFor(() => expect(sent.map(notice => [notice.token, notice.event])).toEqual([[request!.token, 'skipped']]))
         } finally {
           if (existsSync(`${root}.gone`)) renameSync(`${root}.gone`, root)
           warn.mockRestore()
@@ -766,7 +766,7 @@ describe('expired approval cleanup runs without another approval event', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     const { root, filePath, grants, registry, service } = queue()
     const expired: string[] = []
-    const watching = createApprovalRegistry(grants, filePath, 0, { onExpired: requests => expired.push(...requests.map(request => request.token)) })
+    const watching = createApprovalRegistry(grants, filePath, 0, { onNoResponse: asks => expired.push(...asks.map(ask => ask.request.token)) })
     try {
       const [request] = (await issue(watching)).requests
       vi.setSystemTime(Date.now() + 11 * 60_000)
@@ -784,7 +784,7 @@ describe('expired approval cleanup runs without another approval event', () => {
     try {
       await service.close()
       const expired: string[] = []
-      const serving = createApprovalRegistry(grants, filePath, 0, { onExpired: requests => expired.push(...requests.map(request => request.token)) })
+      const serving = createApprovalRegistry(grants, filePath, 0, { onNoResponse: asks => expired.push(...asks.map(ask => ask.request.token)) })
       await serving.sweepIfDue()
       const [request] = (await issue(registry)).requests
       vi.setSystemTime(Date.now() + 11 * 60_000)
@@ -804,10 +804,10 @@ describe('expired approval cleanup runs without another approval event', () => {
     vi.setSystemTime(Date.now() + 11 * 60_000)
     const sent: ApprovalNotice[] = []
     const notices = createApprovalNotices(async batch => { await new Promise(resolve => setTimeout(resolve, 20)); sent.push(...batch) })
-    const restarted = createApprovalRegistry(grants, filePath, 0, { onExpired: requests => notices.expired(requests) })
+    const restarted = createApprovalRegistry(grants, filePath, 0, { onNoResponse: asks => notices.noResponse(asks.map(ask => ask.request.token)) })
     const closing = approvalServiceWithTerminal({ registry: restarted, workspaceId: 'default', serverId: 'node-1', graceMs: 1, interaction: async () => undefined, notices })
     await closing.close()
-    expect(sent).toEqual([expect.objectContaining({ token: request!.token, event: 'expired' })])
+    expect(sent).toEqual([expect.objectContaining({ token: request!.token, event: 'skipped', reason: 'no_response' })])
     expect(JSON.parse(readFileSync(filePath, 'utf8')).pending).toEqual([])
     expect(existsSync(join(root, 'approval-calls', 'orphan.tmp'))).toBe(false)
     expect(readdirSync(join(root, 'approval-calls'))).toEqual([])

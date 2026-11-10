@@ -77,13 +77,20 @@ export interface AuditedSessionEnd {
   denials: number
 }
 
+/** An ask nobody answered before it ran out, skipped with no response (APPROVAL-36): its token and the call it came from. */
+export interface AuditedNoResponse {
+  token: string
+  call: AnsweredCall
+}
+
 /**
  * Each decision's audit, and each skip's: received before the ledger reads it, then how it ended, never inside the
- * approvals lock; and each session's end, once it applied. Every call returns at once and never throws, so a record that
- * cannot be written never holds up or refuses an answer.
+ * approvals lock; each session's end, once it applied; and each ask skipped with no response, once its end is on disk.
+ * Every call returns at once and never throws, so a record that cannot be written never holds up or refuses an answer.
  */
 export interface DecisionAudit {
   received(decision: AuditedDecision): DecisionEnding
   skipReceived(skip: AuditedSkip): SkipEnding
   sessionEnded(end: AuditedSessionEnd): void
+  noResponse(skip: AuditedNoResponse): void
 }

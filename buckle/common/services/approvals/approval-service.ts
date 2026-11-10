@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto'
 import { useScopeSafe } from '@5straps/runtime'
-import type { ApprovalRequest, ApprovalSkipReason, ApprovalWait } from '@5straps/protocol'
+import type { ApprovalRequest, ApprovalWait } from '@5straps/protocol'
 import { callIdentityKey, requestIdKey } from '../../domain/call-identity.js'
 import { heldAskName } from '../../domain/approval/call-identity.js'
 import type { ApprovalKey } from '@5straps/protocol/envelope'
@@ -16,12 +16,12 @@ import type { GrantHolder } from '../../domain/permission/grant-holder.js'
 import { logger, withoutCause } from '../../runtime/log.js'
 import { openApprovalDecision } from './approval-envelope.js'
 import { createApprovalChallenges, listedApprovals } from '../../domain/approval/challenges.js'
-import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
+import { createApprovalNotices, type ApprovalNotices, type WaitSkipReason } from './approval-notices.js'
 import { backendDecisionOf, backendReceipt, decisionOf, decisionRecord, INVALID_BACKEND_DECISION, readInput, receiptOf, skipReceiptOf, type CoreApprovalApi } from './core-approval-api.js'
 import { fullAskOf, ledgerAskOf, type AskSetting } from './full-ask.js'
 import type { AskedCall } from '../../domain/approval/asked-call.js'
 import type { ApprovalAnswer } from '../../domain/approval/answer.js'
-import type { ApprovalRegistry, Departure, EndedSession, Resolution, SessionEndRequest, SkipResolution } from './approval-registry.js'
+import { NO_RESPONSE, type ApprovalRegistry, type Departure, type EndedSession, type Resolution, type SessionEndRequest, type SkipResolution } from './approval-registry.js'
 import { maskHeld, maskHeldJson, masksHeld } from '../../runtime/held-secrets.js'
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
@@ -29,6 +29,7 @@ type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 /** How quickly an answer written by another process (buckle approve, a second node process) is noticed. */
 const POLL_INTERVAL_MS = 400
 const SWEEP_MARGIN_MS = 1_000
+const SWEEP_FAILED = 'Could not sweep the approvals nobody answered before they ran out'
 /** An operation nobody bound holds its call only while its terminal asks, and it has none. */
 const UNBOUND_HOLD: ApprovalHold = 'prompt'
 
@@ -99,6 +100,12 @@ export interface ApprovalService extends CoreApprovalApi {
   /** Withdraws the asks among `tokens` still waiting, telling the webhook they were cancelled. */
   withdraw(tokens: string[]): Promise<void>
   /**
+   * The tokens among `approvals` that left the queue skipped with no response, as nobody answered them before they ran out
+   * (APPROVAL-36); none where the queue or the ledger's departures cannot be read, so a call answers as one whose asks
+   * left another way.
+   */
+  unanswered(approvals: ApprovalRequest[]): string[]
+  /**
    * Ends sessions (the ledger's endSessions): their waiting asks are withdrawn, the webhook told they were cancelled and
    * each caller waiting on one woken, and each session that ended recorded with its cause. Null where `due`, read again
    * under the lock, kept them all.
@@ -121,6 +128,7 @@ export function approvalFaceOf(service: ApprovalService): CoreApprovalApi {
     pending: () => service.pending(),
     waiting: () => service.waiting(),
     waitingAsk: token => service.waitingAsk(token),
+    departure: token => service.departure(token),
     listing: () => service.listing(),
     challengeListing: options => service.challengeListing(options),
     withdrawCall: selector => service.withdrawCall(selector),
@@ -227,7 +235,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   const { nonces } = options
   const challenges = createApprovalChallenges(options)
   const notices = options.notices ?? createApprovalNotices()
-  // One sweep per issued ask at its expiry, so an ask nobody answered is reported expired on time.
+  // One sweep per issued ask at its expiry, so an ask nobody answered is reported skipped, no response, on time.
   const sweeps = new Set<NodeJS.Timeout>()
   // Calls still waiting and terminal questions still running, so close lets each call report back and
   // an answer already being recorded finish before the notices are flushed.
@@ -265,8 +273,9 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     log,
   })
   const formsBackends = new Set<ApprovalBackend>()
-  // What expired, or a call file left over, while no process of this node ran is dropped now (review L1 of the slice 5 re-review).
-  track(options.registry.sweepIfDue().catch((error: unknown) => { logger.warn('Could not sweep expired approvals', { error: withoutCause(error) }) }))
+  // What ran out unanswered, or a call file left over, while no process of this node ran is dropped now (review L1 of the
+  // slice 5 re-review).
+  track(options.registry.sweepIfDue().catch((error: unknown) => { logger.warn(SWEEP_FAILED, { error: withoutCause(error) }) }))
 
   const service: ApprovalService = {
     async request(asked) {
@@ -316,14 +325,14 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
         // A hold that ends before its wait starts still ends as a hold (the MCP asks brief, item 5): with none left, its
         // asks start their ten minutes where they have no lapse. Awaited where it returns, so the `finally` lets go
         // only after the step has, under the approvals lock.
-        const unheld = async (reason: ApprovalSkipReason) => {
+        const unheld = async (reason: WaitSkipReason) => {
           if (input.resends) await holdEnded({ tokens, abandoned: false, letGo })
           return skip({ approvals, answered, reason })
         }
         if (closing.signal.aborted) return await unheld('shutdown')
         const holdMs = atMost(ownHold, input.holdUntil === undefined ? undefined : Math.max(0, Math.floor(input.holdUntil - performance.now())))
         // No hold left for a script's call is a wait that elapsed, not one the caller declined.
-        const zeroHold: ApprovalSkipReason = ownHold === 0 ? 'caller_declined_wait' : 'wait_elapsed'
+        const zeroHold: WaitSkipReason = ownHold === 0 ? 'caller_declined_wait' : 'wait_elapsed'
         // The hint sets how long the caller is held and never who is asked: a `grace` entry point asks
         // its terminal whatever the hint says, and keeps asking after the caller returns (owner ruling).
         const keepAsking = hold === 'grace'
@@ -419,6 +428,8 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
     withdraw: tokens => withdraw(tokens),
 
+    unanswered: approvals => unanswered(approvals),
+
     openFormsBackend(backend, face) {
       formsBackends.add(backend)
       track(backend.open(formsHostOf(FORMS_SOURCES[face])).catch((error: unknown) => { logger.warn('Could not open the MCP host\'s approval forms', { error: withoutCause(error) }) }))
@@ -451,6 +462,8 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
     waitingAsk: token => options.registry.waitingAsk(token),
 
+    departure: token => options.registry.departures([token]).get(token),
+
     listing: () => listedApprovals(options.registry.waiting()),
 
     decisionRecord,
@@ -467,7 +480,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     },
   }
 
-  function skip(input: { approvals: ApprovalRequest[]; answered: string[]; reason: ApprovalSkipReason }): ApprovalWaitResult {
+  function skip(input: { approvals: ApprovalRequest[]; answered: string[]; reason: WaitSkipReason }): ApprovalWaitResult {
     notices.skipped(input.approvals.map(approval => approval.token), input.reason)
     return { settled: false, approvals: input.approvals, answered: input.answered }
   }
@@ -483,7 +496,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     sweepIn(Math.max(...approvals.map(approval => remainingMs(approval.expiresAt))))
   }
 
-  /** A sweep at the moment an ask lapses, so it is reported expired on time (the MCP asks brief, item 5). */
+  /** A sweep at the moment an ask lapses, so it is reported skipped, no response, on time (the MCP asks brief, item 5). */
   function scheduleSweepAt(at: number): void {
     sweepIn(Math.max(0, at - Date.now()))
   }
@@ -492,7 +505,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     if (remaining === Infinity || closing.signal.aborted) return
     const sweep = setTimeout(() => {
       sweeps.delete(sweep)
-      track(Promise.resolve().then(() => options.registry.sweep()).catch((error: unknown) => { logger.warn('Could not sweep expired approvals', { error: withoutCause(error) }) }))
+      track(Promise.resolve().then(() => options.registry.sweep()).catch((error: unknown) => { logger.warn(SWEEP_FAILED, { error: withoutCause(error) }) }))
     }, Math.min(remaining + SWEEP_MARGIN_MS, MAX_TIMER_MS))
     // A one-shot command does not stay open for it; the next update anywhere reports the expiry instead.
     sweep.unref()
@@ -669,6 +682,19 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     return { settled, approvals: own.approvals, answered: own.answered }
   }
 
+  function unanswered(approvals: ApprovalRequest[]): string[] {
+    const state = readQueue(approvals.map(approval => approval.token))
+    const left = state === null ? [] : approvals.filter(approval => !state.pending.has(approval.token))
+    if (left.length === 0) return []
+    try {
+      const departures = options.registry.departures(left.map(approval => approval.token))
+      return left.filter(approval => departureOf(approval, departures.get(approval.token)).type === 'skipped').map(approval => approval.token)
+    } catch (error) {
+      logger.warn('Could not read how an approval ended', { error: withoutCause(error) })
+      return []
+    }
+  }
+
   async function withdraw(tokens: string[]): Promise<void> {
     notices.cancelled(await options.registry.cancel(tokens))
   }
@@ -738,7 +764,7 @@ function groupOf(tokens: readonly string[]): string {
 }
 
 /** Why a call stopped waiting while its ask stays pending. */
-function skipReason(ending: Ending): ApprovalSkipReason {
+function skipReason(ending: Ending): WaitSkipReason {
   if (ending === 'closed') return 'shutdown'
   if (ending === 'prompt_ended') return 'no_approver'
   return 'wait_elapsed'
@@ -815,9 +841,15 @@ function endDecision(input: { received: DecisionEnding; source: ApprovalSource; 
   received.applied({ assurance: rightsOf(input.source.kind).assurance, repeated: result.repeated === true, ...(result.save === undefined ? {} : { save: result.save }), ...(widenedTo === undefined ? {} : { widenedTo }), ...answered })
 }
 
-/** How an ask that left the queue ended; one another process dropped is expired past its stated expiry, else cancelled. */
+/**
+ * How an ask that left the queue ended, as the ledger or this process saw it; one that neither kept is skipped with no
+ * response past its stated expiry (APPROVAL-36), else cancelled.
+ */
+function departureOf(approval: ApprovalRequest, departure: Departure | undefined): Departure | { type: 'cancelled' } {
+  return departure ?? (remainingMs(approval.expiresAt) === 0 ? NO_RESPONSE : { type: 'cancelled' })
+}
+
 function closingEvent(approval: ApprovalRequest, departure: Departure | undefined): LifecycleEvent {
-  const event = { eventId: randomUUID(), token: approval.token, at: new Date().toISOString() }
-  if (departure === undefined) return { ...event, type: remainingMs(approval.expiresAt) === 0 ? 'expired' : 'cancelled' }
-  return { ...event, type: departure.type, ...('reason' in departure ? { reason: departure.reason } : {}) }
+  const left = departureOf(approval, departure)
+  return { eventId: randomUUID(), token: approval.token, at: new Date().toISOString(), type: left.type, ...('reason' in left ? { reason: left.reason } : {}) }
 }

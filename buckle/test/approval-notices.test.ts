@@ -107,7 +107,7 @@ function service(input: { graceMs: number | null; interaction?: Interaction; dur
   const root = mkdtempSync(join(tmpdir(), 'buckle-notice-service-'))
   const sent: ApprovalNotice[] = []
   const notices = createApprovalNotices(async batch => { sent.push(...batch) })
-  const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), input.graceMs, { onExpired: requests => notices.expired(requests), ...(input.durable ? { durableNotices: true } : {}) })
+  const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), input.graceMs, { onNoResponse: asks => notices.noResponse(asks.map(ask => ask.request.token)), ...(input.durable ? { durableNotices: true } : {}) })
   const approvals = approvalServiceWithTerminal({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: input.graceMs, interaction: fixedInteraction(input.interaction ?? headlessGrace), notices })
   const ask = (overrides: Partial<ApprovalAskInput> = {}) => approvals.request({ sessionId: 's', requestId: `r-${Math.random()}`, tool: 'fs_write', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }], ...overrides })
   return { registry, approvals, sent, ask, notices }
@@ -158,7 +158,8 @@ describe('why a call stopped waiting while its ask stays pending', () => {
   })
 })
 
-describe('an ask that expires unanswered', () => {
+// APPROVAL-36 (owner, 2026-11-10): an ask nobody answered before it ran out is skipped with no response, never denied.
+describe('an ask nobody answers before it runs out', () => {
   it('is told once, by the sweep at its expiry', async () => {
     vi.useFakeTimers()
     const { ask, sent, notices, registry } = service({ graceMs: 1 })
@@ -166,14 +167,14 @@ describe('an ask that expires unanswered', () => {
     sent.splice(0)
     await vi.advanceTimersByTimeAsync(10 * 60_000 + 1_100)
     await notices.settle()
-    expect(sent).toEqual([{ token: asked!.token, event: 'expired', at: expect.any(String) }])
+    expect(sent).toEqual([{ token: asked!.token, event: 'skipped', at: expect.any(String), reason: 'no_response' }])
     await registry.sweep()
     await notices.settle()
     expect(sent).toHaveLength(1)
   })
 
-  // Review of the MCP asks slice, finding minor-3: an ask at wait 0 states no deadline, so only its lapse can report it expired on time.
-  it('is told expired by the sweep at its lapse, when it states no deadline and its face sends the call again', async () => {
+  // Review of the MCP asks slice, finding minor-3: an ask at wait 0 states no deadline, so only its lapse can report its end on time.
+  it('is told skipped, no response, by the sweep at its lapse, when it states no deadline and its face sends the call again', async () => {
     vi.useFakeTimers()
     const { ask, sent, notices } = service({ graceMs: null })
     const [asked] = (await ask({ wait: { mode: 'none' }, resends: true })).approvals
@@ -186,10 +187,10 @@ describe('an ask that expires unanswered', () => {
     expect(sent).toEqual([])
     await vi.advanceTimersByTimeAsync(2 * 60_000)
     await notices.settle()
-    expect(sent).toEqual([{ token: asked!.token, event: 'expired', at: expect.any(String) }])
+    expect(sent).toEqual([{ token: asked!.token, event: 'skipped', at: expect.any(String), reason: 'no_response' }])
   })
 
-  it('is never told expired at wait 0 where its face does not send the call again', async () => {
+  it('is never told skipped, no response, at wait 0 where its face does not send the call again', async () => {
     vi.useFakeTimers()
     const { ask, sent, notices, registry } = service({ graceMs: null })
     const [asked] = (await ask({ wait: { mode: 'none' } })).approvals

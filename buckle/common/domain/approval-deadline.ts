@@ -5,8 +5,8 @@ import { localDate, localTime } from './local-time.js'
 /*
  * An approval has two deadlines, and they are not the same one:
  *
- * - The **request expiry**, ten minutes beyond the configured finite wait, after which the token resolves no
- *   longer: `buckle approve` on it answers "unknown or expired".
+ * - The **request expiry**, ten minutes beyond the configured finite wait, after which nobody's answer is taken: the ask
+ *   is skipped with no response (APPROVAL-36), never denied, and `buckle approve` on it says so.
  * - The **grace period**, fifteen seconds by default, which is only how long one gated call is
  *   held open while it waits for an answer. A call that gives up leaves the request answerable.
  *
@@ -15,11 +15,14 @@ import { localDate, localTime } from './local-time.js'
  * Everything a person is shown about the first is worded here, so the two never read as one.
  */
 
-/** `expires in 9m 58s (2026-09-22T07:41:02.000Z)`, the request expiry in both readings. */
+/**
+ * `expires in 9m 58s (2026-09-22T07:41:02.000Z)`, the request expiry in both readings; once passed, `skipped: no response`,
+ * as nobody answered the ask before it ran out (APPROVAL-36).
+ */
 export function describeExpiry(expiresAt: string): string {
   if (expiresAt === APPROVAL_NO_DEADLINE) return 'no expiry; waiting for an owner decision'
   const remaining = remainingMs(expiresAt)
-  if (remaining === 0) return `expired (${expiresAt})`
+  if (remaining === 0) return `${NO_RESPONSE_LINE} (${expiresAt})`
   return `expires in ${describeDuration(remaining)} (${expiresAt})`
 }
 
@@ -33,8 +36,11 @@ export function describeLocalExpiry(expiresAt: string): string {
   if (expiresAt === APPROVAL_NO_DEADLINE || Number.isNaN(at.getTime())) return describeExpiry(expiresAt)
   const clock = `at ${localDate(at) === localDate(new Date()) ? '' : `${localDate(at)} `}${localTime(at)}`
   const remaining = remainingMs(expiresAt)
-  return remaining === 0 ? `expired (${clock})` : `expires in ${describeDuration(remaining)} (${clock})`
+  return remaining === 0 ? `${NO_RESPONSE_LINE} (${clock})` : `expires in ${describeDuration(remaining)} (${clock})`
 }
+
+/** How every route names an ask nobody answered before it ran out (APPROVAL-36). */
+export const NO_RESPONSE_LINE = 'skipped: no response'
 
 function describeDuration(ms: number): string {
   const seconds = Math.ceil(ms / 1_000)

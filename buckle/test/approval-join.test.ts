@@ -88,6 +88,33 @@ describe('a re-sent call joined to a waiting ask (review M1)', () => {
     expect((await results(runtime, 'rings-3')).map(entry => entry.outcome)).toEqual(['error'])
     await runtime.history.close()
   })
+
+  // APPROVAL-36 (owner, 2026-11-10): an ask nobody answered before it ran out is skipped, no response; never a denial.
+  it('answers a caller whose ask nobody answered before it ran out as skipped, no response, retryable, and records the skip', async () => {
+    const { runtime } = await node()
+    const waiting = runtime.invoke({ sessionId: 'chat-1', request: single('rings-4') })
+    await vi.waitFor(() => expect(runtime.approvalService.pending()).toHaveLength(1))
+    const [asked] = runtime.approvalService.pending()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(Date.parse(asked!.expiresAt) + 1_000)
+      await runtime.approvals.sweep()
+      const answered = await waiting
+      expect(answered).toMatchObject({ outcome: 'error', error: { code: 'APPROVAL_SKIPPED', retryable: true, details: { reason: 'no_response' } } })
+      const message = answered.outcome === 'error' ? answered.error.message : ''
+      expect(message).toContain('Nobody answered')
+      expect(message).toContain('did not run')
+      expect(message).toContain('not a denial')
+      expect(message).toContain('send the call again')
+    } finally {
+      vi.useRealTimers()
+    }
+    expect((await results(runtime, 'rings-4')).map(entry => [entry.outcome, entry.detail])).toEqual([['error', 'APPROVAL_SKIPPED']])
+    const skipped = (await auditEntries(runtime.actions, 200)).filter(entry => entry.tool === 'approval_skipped')
+    expect(skipped).toEqual([expect.objectContaining({ event: 'result', outcome: 'ok', detail: 'no_response', args: { token: asked!.token, reason: 'no_response', call: expect.objectContaining({ requestId: 'rings-4', rule: 'write_scope' }) } })])
+    expect(runtime.approvals.wasDenied([asked!.token])).toBe(false)
+    await runtime.history.close()
+  })
 })
 
 describe('a re-sent call after part of its asks were answered (review M2)', () => {

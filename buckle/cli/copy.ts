@@ -172,7 +172,7 @@ type Attempt = { kind: 'answered'; answer: InvokeResponse } | { kind: 'asked'; a
  * Sends the copy until a person has decided its asks (the MCP asks brief, item 6). An approval_required prints the node's
  * instruction once per ask, as an agent is told it, and one line naming the asks it waits on, never a token; a 408 prints
  * one line too. Each is followed, after a short pause, by the same request under the same requestId, which joins the asks
- * still waiting, so the node's own hold paces the sends. An ask that expired is asked again by the next send, and its
+ * still waiting, so the node's own hold paces the sends. An ask skipped with no response is asked again by the next send, and its
  * fresh ask shown. It ends once the copy runs or is refused, or at Ctrl-C (guardSignals).
  */
 async function untilDecided(client: NodeClient, workspace: string, send: () => Promise<Attempt>): Promise<InvokeResponse> {

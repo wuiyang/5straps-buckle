@@ -15,7 +15,7 @@ import { approvalLedgerSchema as fileSchema, revocationsSchema, type ApprovalDel
 import { createCallFiles } from '../../adapters/approval-ledger/file-call-store.js'
 import { guardDecision, guardSkip, screenDecision, screenSkip, type DecisionClaim, type LedgerView, type LiveSettings } from '../../domain/approval/decision-guard.js'
 import { TODAYS_ROUTES } from '../../domain/approval/routes.js'
-import type { ApprovalErrorCode, EventReason, GrantSave } from '../../types/ports/approval-backend.js'
+import type { ApprovalErrorCode, CancelReason, GrantSave } from '../../types/ports/approval-backend.js'
 import type { ApprovalSource } from '../../types/ports/approval-source.js'
 import { logger, withoutCause } from '../../runtime/log.js'
 import { dropOnces, liveOnces, spendOnces, unspentOnces, type OnceSpend, type UnspentOnce } from './once-store.js'
@@ -220,14 +220,14 @@ export type SkipResolution =
   | { ok: false; code: ApprovalErrorCode; reason: string }
 
 /**
- * How an ask left the queue: its recorded decision, else what this process saw. A lapse moves an ask's expiry, so it
- * reads as expired.
+ * How an ask left the queue: its recorded decision, else what this process saw, else what the ledger kept of it. An ask
+ * nobody answered before it ran out, at its lapse or its stated expiry, is skipped with no response (APPROVAL-36).
  */
-export type Departure = { type: 'answered' | 'denied' } | { type: 'expired' } | { type: 'cancelled'; reason: EventReason }
+export type Departure = { type: 'answered' | 'denied' } | { type: 'skipped'; reason: 'no_response' } | { type: 'cancelled'; reason: CancelReason }
 
 /** How many departures this process remembers, oldest dropped first: a poll reads each within a second. */
 const DEPARTURES_KEPT = 1_024
-const EXPIRED: Departure = { type: 'expired' }
+export const NO_RESPONSE: Departure = Object.freeze({ type: 'skipped', reason: 'no_response' })
 const SESSION_ENDED: Departure = { type: 'cancelled', reason: 'session_ended' }
 
 /**
@@ -324,10 +324,10 @@ export interface ApprovalRegistry {
    * read without the lock. Throws where approvals.json cannot be read.
    */
   askingSessions(): GrantHolder[]
-  /** Drops the asks that expired unanswered, telling `onExpired` about them. Every update does this too. */
+  /** Drops the asks nobody answered before they ran out, telling `onNoResponse` about them. Every update does this too. */
   sweep(): Promise<void>
   /**
-   * Sweeps when an ask expired unanswered or a call file no waiting ask names is left over, as a process that
+   * Sweeps when an ask ran out unanswered or a call file no waiting ask names is left over, as a process that
    * stopped leaves them, and does nothing otherwise; read without the lock (review L1 of the slice 5 re-review).
    */
   sweepIfDue(): Promise<void>
@@ -364,12 +364,21 @@ export interface GroupWithdrawal {
   dropped: string[]
 }
 
+/** An ask nobody answered before it ran out: its request, and the attempt entry of the call that raised it, where it kept one. */
+export interface UnansweredAsk {
+  request: ApprovalRequest
+  attempt?: CallAttempt
+}
+
 export interface ApprovalRegistryOptions {
   lockDeadlineMs?: number
   durableNotices?: boolean
   onNoticeQueued?: () => void
-  /** Told of this workspace's asks that expired unanswered, by whichever update drops them first. */
-  onExpired?: (requests: ApprovalRequest[]) => void
+  /**
+   * Told of this workspace's asks nobody answered before they ran out, skipped with no response (APPROVAL-36), by whichever
+   * update drops them first, once that update is on disk.
+   */
+  onNoResponse?: (asks: UnansweredAsk[]) => void
   /** The workspace's settings as they stand, read at each decision and skip; without it no MCP form answer decides. */
   live?: () => LiveSettings
   /** Told of each ask recorded and each decision applied, which count as the activity of the session it asked in for its idle check. */
@@ -386,7 +395,7 @@ const UNREAD_SETTINGS: LiveSettings = Object.freeze({ forms: false })
 /** The ledger is keyed by the grant store's workspace, so its asks and their grants never part. */
 export function createApprovalRegistry(grantStore: GrantStore, filePath: string, waitMs: number | null = 0, options: ApprovalRegistryOptions = {}): ApprovalRegistry {
   const { workspace } = grantStore
-  const store = createJsonFileStore({ filePath, schema: fileSchema, fallback: { version: 1, pending: [], once: [], resolved: [], outbox: [], ended: [] }, lockDeadlineMs: options.lockDeadlineMs })
+  const store = createJsonFileStore({ filePath, schema: fileSchema, fallback: { version: 1, pending: [], once: [], resolved: [], outbox: [], ended: [], noResponse: [] }, lockDeadlineMs: options.lockDeadlineMs })
   const durableNotices = options.durableNotices === true
   const live = options.live ?? (() => UNREAD_SETTINGS)
   const calls = createCallFiles(join(dirname(filePath), CALLS_DIRECTORY))
@@ -394,8 +403,8 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
   const revocations = createJsonFileStore({ filePath: revocationsPath, schema: revocationsSchema, fallback: { version: 1, revoked: [], owed: [] }, lockDeadlineMs: options.lockDeadlineMs })
   // The revocations recorded, as last read: read again only when their file changes, and none while it is absent.
   let recorded: { version: string; revocations: readonly Revocation[] } = { version: 'missing', revocations: [] }
-  // When the earliest waiting ask this process last saw expires: an ordinary call past it prunes, so an expired
-  // ask's entry, its call file and its expiry notice never wait for the next approval event (review L1 of the
+  // When the earliest waiting ask this process last saw runs out: an ordinary call past it prunes, so such an
+  // ask's entry, its call file and its end's notice never wait for the next approval event (review L1 of the
   // slice 5 re-review). Unknown until the queue is first read.
   let nextExpiry = Number.NEGATIVE_INFINITY
   let queueVersion: string | undefined
@@ -430,12 +439,12 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
   }
 
   /**
-   * Every change starts by dropping what expired; this workspace's unanswered asks among them are reported once
-   * written, and the call files no waiting ask names any longer are removed once the index no longer names them.
-   * `committed` runs once the change is on disk, before the lock is released.
+   * Every change starts by dropping the asks nobody answered before they ran out, each kept as skipped with no response
+   * (APPROVAL-36) and reported once written; the call files no waiting ask names any longer are removed once the index no
+   * longer names them. `committed` runs once the change is on disk, before the lock is released.
    */
   async function update<R>(change: (state: State, commit: () => Promise<void>) => R | Promise<R>, committed?: () => void): Promise<R> {
-    let expired: ApprovalRequest[] = []
+    let unanswered: UnansweredAsk[] = []
     let released: string[] = []
     let queued = false
     // Set once the store has read the index whole, before the change runs, so a change that throws still counts it.
@@ -444,19 +453,21 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       readable = true
       const before = namedCalls(state)
       const outboxBefore = new Set(state.outbox.map(entry => entry.id))
-      const expiredEntries = prune(state)
-      expired = expiredEntries.filter(entry => entry.workspace === workspace).map(entry => entry.request)
-      // An expiry never refuses (review M2 of the continuation review): every update prunes first, so a throw here
-      // would fail every later update, acknowledgement included.
-      for (const entry of expiredEntries) {
-        if (notifies(entry)) enqueueOutcome(state, entry.workspace, { token: entry.request.token, event: 'expired', at: new Date().toISOString() })
+      const ranOut = prune(state)
+      unanswered = ranOut.filter(entry => entry.workspace === workspace).map(entry => ({ request: entry.request, ...(entry.attempt === undefined ? {} : { attempt: entry.attempt }) }))
+      // A skip for no response never refuses (review M2 of the continuation review): every update prunes first, so a throw
+      // here would fail every later update, acknowledgement included.
+      const at = new Date().toISOString()
+      for (const entry of ranOut) {
+        state.noResponse.push({ workspace: entry.workspace, token: entry.request.token, expiresAt: new Date(Date.now() + PENDING_TTL_MS).toISOString() })
+        if (notifies(entry)) enqueueOutcome(state, entry.workspace, { token: entry.request.token, event: 'skipped', at, reason: 'no_response' })
       }
       const value = await change(state, commit)
       const after = namedCalls(state)
       released = [...before].filter(id => !after.has(id))
       const added = state.outbox.filter(entry => !outboxBefore.has(entry.id))
       queued = added.some(entry => entry.workspace === workspace)
-      // Said once per update, not once per end it kept: one sweep may expire hundreds of unreserved asks.
+      // Said once per update, not once per end it kept: one sweep may skip hundreds of unreserved asks.
       if (added.length > 0 && pastDeliveryLimits(state.outbox)) logger.warn('Approval outcome delivery is past its limits; the asks\' ends were kept anyway, and new asks wait until the receiver drains it', { entries: state.outbox.length, added: added.length, events: [...new Set(added.map(entry => entry.notice.event))] })
       nextExpiry = earliestExpiry(state)
       return value
@@ -468,8 +479,8 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     // The change is on disk, so a step below that fails undoes none of it.
     queueVersion = undefined
     calls.remove(released)
-    departed(expired.map(request => request.token), EXPIRED)
-    if (expired.length > 0) options.onExpired?.(expired)
+    departed(unanswered.map(ask => ask.request.token), NO_RESPONSE)
+    if (unanswered.length > 0) options.onNoResponse?.(unanswered)
     // Only an update that queued a notice wakes the sender, which otherwise keeps its own retry delay (review L6 of the
     // continuation review): a decision, a cancel or an expiry here, not every write of the index.
     if (durableNotices && queued) options.onNoticeQueued?.()
@@ -496,7 +507,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       nextExpiry = Date.now() + PRUNE_RETRY_MS
       // A damaged index the store already reported is retried quietly, not warned about every PRUNE_RETRY_MS (slice 7c
       // review R7C-TL-3).
-      if (!alreadyReported(error)) logger.warn('Could not drop the approvals that expired', { error: withoutCause(error) })
+      if (!alreadyReported(error)) logger.warn('Could not drop the approvals nobody answered before they ran out', { error: withoutCause(error) })
     }).finally(() => { pruning = undefined })
     return pruning
   }
@@ -947,7 +958,9 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     const claim: DecisionClaim = { ...input.claim, decision }
     const waiting = approval === undefined ? undefined : waitingView(withCall(approval), options.challenge)
     const owedBy = previous?.grant?.save === 'owed' ? { owedBy: previous.grant.source } : {}
-    const ledger: LedgerView = { ...(previous === undefined ? {} : { resolved: { ...previous, ...owedBy } }), ...(waiting === undefined ? {} : { waiting }) }
+    // An ask nobody answered before it ran out tells a late answer so (APPROVAL-36).
+    const closed = met === undefined && state.noResponse.some(entry => entry.workspace === workspace && entry.token === token) ? { closed: 'no_response' as const } : {}
+    const ledger: LedgerView = { ...(previous === undefined ? {} : { resolved: { ...previous, ...owedBy } }), ...(waiting === undefined ? {} : { waiting }), ...closed }
     const verdict = guardDecision({ claim, ledger, now, live: live() })
     if (!verdict.ok) return { ok: false, code: verdict.code, reason: verdict.reason, ...answered }
     if ('repeated' in verdict) {
@@ -1287,6 +1300,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       }
       const state = read()
       for (const entry of state.ended) if (entry.workspace === workspace && tokens.includes(entry.token)) found.set(entry.token, SESSION_ENDED)
+      for (const entry of state.noResponse) if (entry.workspace === workspace && tokens.includes(entry.token)) found.set(entry.token, NO_RESPONSE)
       for (const entry of state.resolved) if (entry.workspace === workspace && tokens.includes(entry.decision.token)) found.set(entry.decision.token, { type: entry.decision.approved ? 'answered' : 'denied' })
       return found
     },
@@ -1377,7 +1391,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       return update(state => {
         for (const value of notices) {
           const notice = ApprovalNoticeSchema.parse(value)
-          if (notice.event !== 'skipped') throw new Error('Only registry transitions enqueue terminal approval outcomes')
+          if (endsAsk(notice)) throw new Error('Only registry transitions enqueue terminal approval outcomes')
           if (!state.pending.some(entry => entry.workspace === workspace && entry.request.token === notice.token)) continue
           enqueueOutcome(state, workspace, notice)
         }
@@ -1624,17 +1638,18 @@ function waitingView(asked: PendingAsk, challenge: ResolveOptions['challenge']):
   }
 }
 
-/** Drops everything past its expiry, returning the asks that expired unanswered. */
+/** Drops everything past its expiry, returning the asks nobody answered before they ran out. */
 function prune(state: State): State['pending'] {
   const now = Date.now()
   state.outbox = state.outbox.filter(entry => Date.parse(entry.expiresAt) > now)
   state.ended = state.ended.filter(entry => Date.parse(entry.expiresAt) > now)
-  const expired = state.pending.filter(entry => lapseOf(entry) <= now)
+  state.noResponse = state.noResponse.filter(entry => Date.parse(entry.expiresAt) > now)
+  const ranOut = state.pending.filter(entry => lapseOf(entry) <= now)
   state.pending = state.pending.filter(entry => lapseOf(entry) > now)
   state.once = liveOnces(state.once, now)
   // A decision whose grant is still owed, or not confirmed removed, stays until the settling pass settles it.
   state.resolved = state.resolved.filter(entry => (entry.grant !== undefined && UNSETTLED_SAVES.has(entry.grant.save)) || Date.parse(entry.expiresAt) > now)
-  return expired
+  return ranOut
 }
 
 /**
@@ -1658,19 +1673,27 @@ function assertDeliveryRoom(state: State, additional: readonly PendingEntry[], n
   }
 }
 
+/**
+ * Whether a notice tells an ask's end: any event but a wait notice, which is skipped with the reason its call stopped
+ * waiting; a skip for no response ends the ask (APPROVAL-36).
+ */
+function endsAsk(notice: ApprovalNotice): boolean {
+  return notice.event !== 'skipped' || notice.reason === 'no_response'
+}
+
 function pastDeliveryLimits(entries: readonly unknown[]): boolean {
   return entries.length > APPROVAL_OUTBOX_COUNT_MAX || Buffer.byteLength(JSON.stringify(entries)) > APPROVAL_OUTBOX_BYTES_MAX
 }
 
 /**
- * Queues an ask's end or its wait notice, and never refuses (review M2 of the continuation review): an expiry,
- * a decision, a cancel or an acknowledgement must commit whatever the outbox holds. Admission keeps the outbox
+ * Queues an ask's end or its wait notice, and never refuses (review M2 of the continuation review): a skip for no
+ * response, a decision, a cancel or an acknowledgement must commit whatever the outbox holds. Admission keeps the outbox
  * within its limits for every reserved ask; an end nothing reserved room for may pass them, which the update logs
- * once, and new asks then wait until the receiver drains it.
+ * once, and new asks then wait until the receiver drains it. An end replaces the wait notice before it, never the reverse.
  */
 function enqueueOutcome(state: State, workspace: string, notice: ApprovalNotice): void {
   const previous = state.outbox.find(entry => entry.workspace === workspace && entry.notice.token === notice.token)
-  if (previous && (previous.notice.event !== 'skipped' || notice.event === 'skipped')) return
+  if (previous && (endsAsk(previous.notice) || !endsAsk(notice))) return
   state.outbox = state.outbox.filter(entry => entry !== previous)
   state.outbox.push({ id: randomUUID(), workspace, notice, expiresAt: new Date(Date.now() + APPROVAL_OUTBOX_RETENTION_MS).toISOString() })
 }

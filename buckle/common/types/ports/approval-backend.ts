@@ -112,7 +112,8 @@ export interface ApprovalError {
   saveError?: string
 }
 
-export type AskState = 'pending' | 'abandoned' | 'approved' | 'denied' | 'expired' | 'withdrawn'
+/** `skipped`: nobody answered it before it ran out (APPROVAL-36), which is never a denial. */
+export type AskState = 'pending' | 'abandoned' | 'approved' | 'denied' | 'skipped' | 'withdrawn'
 
 /**
  * Where a session or always approval's grant stands: `owed` until written, then `saved`; `skipped` once its person gave it
@@ -144,12 +145,19 @@ export type SkipReceipt =
   | { status: 'unfinished'; stands: boolean; saveError: string }
   | { status: 'refused'; error: ApprovalError }
 
+/**
+ * `skipped` names its reason: `no_response` where nobody answered the ask before it ran out, at its ten-minute lapse or its
+ * stated expiry (APPROVAL-36), which ends it without a denial; a grant-save skip names none.
+ */
 export type EventType =
   | 'issued' | 'renewed' | 'abandoned' | 'answered' | 'denied'
-  | 'expired' | 'cancelled' | 'skipped' | 'spent' | 'revoked'
+  | 'cancelled' | 'skipped' | 'spent' | 'revoked'
 
 /** Why an ask was cancelled, where this process saw it go; `session_ended`: its session ended, as at idle. */
-export type EventReason = 'caller_cancelled' | 'evicted' | 'withdrawn_by_owner' | 'session_ended'
+export type CancelReason = 'caller_cancelled' | 'evicted' | 'withdrawn_by_owner' | 'session_ended'
+
+/** Why an ask was cancelled, or skipped with no response (`no_response`). */
+export type EventReason = CancelReason | 'no_response'
 
 export interface LifecycleEvent {
   eventId: string

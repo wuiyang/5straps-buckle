@@ -600,7 +600,7 @@ describe('the serve terminal\'s question', () => {
     vi.setSystemTime(new Date('2026-10-21T14:22:02Z'))
     expect(describeLocalExpiry('2026-10-21T14:32:00.000Z')).toBe('expires in 9m 58s (at 22:32:00)')
     expect(describeLocalExpiry('2026-10-21T17:00:00.000Z')).toBe('expires in 157m 58s (at 2026-10-22 01:00:00)')
-    expect(describeLocalExpiry('2026-10-21T14:00:00.000Z')).toBe('expired (at 22:00:00)')
+    expect(describeLocalExpiry('2026-10-21T14:00:00.000Z')).toBe('skipped: no response (at 22:00:00)')
     expect(describeLocalExpiry(APPROVAL_NO_DEADLINE)).toBe('no expiry; waiting for an owner decision')
   })
 
@@ -699,16 +699,17 @@ describe('the serve terminal\'s question', () => {
     await vi.waitFor(() => expect(terminal.shown()).toMatch(/\[The site\] Your choice: x \[deny\]\n$/))
   })
 
-  it('ends the row with [timeout] by the clock, whatever ended the question', async () => {
+  // APPROVAL-36 (owner, 2026-11-10): a question nobody answered before its ask ran out is skipped with no response.
+  it('ends the row with [skipped: no response] by the clock, whatever ended the question', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     const { terminal, end } = await shownQuestion(named(approval('t1', 60_000)))
     vi.setSystemTime(Date.now() + 61_000)
     await end()
-    expect(terminal.shown()).toMatch(/\[The site\] Your choice: \[timeout\]\n$/)
+    expect(terminal.shown()).toMatch(/\[The site\] Your choice: \[skipped: no response\]\n$/)
   })
 
   // Fix brief 1, H3: the requester's timer, set from the clock, can fire a millisecond before the clock reaches the expiry.
-  it.each<[number, string]>([[1, '[timeout]'], [200, '[no longer waiting]']])('ends a question %d ms before its expiry with %s', async (early, tag) => {
+  it.each<[number, string]>([[1, '[skipped: no response]'], [200, '[no longer waiting]']])('ends a question %d ms before its expiry with %s', async (early, tag) => {
     vi.useFakeTimers({ toFake: ['Date'] })
     const ask = approval('t1', 60_000)
     const { terminal, end } = await shownQuestion(named(ask))
@@ -728,7 +729,7 @@ describe('the serve terminal\'s question', () => {
     vi.setSystemTime(Date.now() + 61_000)
     stop.abort()
     await asked
-    expect(terminal.shown()).toMatch(/12\r\n\u001b\[1A\u001b\[25G\u001b\[0J\[timeout\]\n$/)
+    expect(terminal.shown()).toMatch(/12\r\n\u001b\[1A\u001b\[25G\u001b\[0J\[skipped: no response\]\n$/)
   })
 
   // Fix brief 1, H1: the logger writes an event a microtask after it is logged, and the setup face's withdrawal logs in the
@@ -836,7 +837,7 @@ describe('the serve terminal\'s question', () => {
       vi.setSystemTime(Date.now() + 61_000)
       stop.abort()
       await asked
-      expect(terminal.shown()).toMatch(/Your choice: 12\r\n\[The site\] Your choice: \[timeout\]\n$/)
+      expect(terminal.shown()).toMatch(/Your choice: 12\r\n\[The site\] Your choice: \[skipped: no response\]\n$/)
       expect(terminal.shown()).not.toContain('\u001b')
     })
 
@@ -879,7 +880,7 @@ describe('the serve terminal\'s question', () => {
     stop.abort()
     await asked
     // `[\u8bbe\u8ba1\u7a3f] Your choice: ` is 19 code units and 22 columns.
-    expect(terminal.shown()).toMatch(/\r\n\u001b\[1A\u001b\[23G\u001b\[0J\[timeout\]\n$/)
+    expect(terminal.shown()).toMatch(/\r\n\u001b\[1A\u001b\[23G\u001b\[0J\[skipped: no response\]\n$/)
   })
 
   it('draws the prompt row again with an unknown key and [deny] where the workspace name is in wide characters', async () => {
@@ -918,7 +919,7 @@ describe('the serve terminal\'s question', () => {
 
   // The 400 ms poll withdraws a question whose ask left the queue, and the queue drops an expired ask, so at its expiry a
   // question often ends cancelled before the requester's own timer fires: the clock decides, not the outcome.
-  it('shows [timeout] where the poll withdraws an expired question before the requester\'s own timer', async () => {
+  it('shows [skipped: no response] where the poll withdraws a question past its expiry before the requester\'s own timer', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     const terminal = silentTerminal()
     const queue = stubQueue([approval('t1', 60_000)])
@@ -926,7 +927,7 @@ describe('the serve terminal\'s question', () => {
     await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: $/), { timeout: 3_000 })
     // Past the expiry on the clock, with the requester's timer still a minute out.
     vi.setSystemTime(Date.now() + 61_000)
-    await vi.waitFor(() => expect(terminal.shown()).toContain('Your choice: [timeout]\n'), { timeout: 3_000 })
+    await vi.waitFor(() => expect(terminal.shown()).toContain('Your choice: [skipped: no response]\n'), { timeout: 3_000 })
     expect(await call).toMatchObject({ settled: false })
   })
 })

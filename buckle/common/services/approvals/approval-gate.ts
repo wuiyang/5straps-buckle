@@ -1,4 +1,4 @@
-import type { GrantRecord, GrantSubject, PermissionRuleId } from '@5straps/protocol'
+import type { ApprovalRequest, GrantRecord, GrantSubject, PermissionRuleId } from '@5straps/protocol'
 import type { GrantLookup } from '../../domain/permission/decision.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
@@ -44,6 +44,8 @@ export interface ApprovalGate {
   ask(input: ApprovalAskInput): Promise<ApprovalWaitResult>
   wasDenied(tokens: string[]): boolean
   withdraw(tokens: string[]): Promise<void>
+  /** The asks among these that left the queue skipped with no response (APPROVAL-36), read only where a call needs it. */
+  unanswered(approvals: ApprovalRequest[]): string[]
   /** One session's onces not yet spent, whichever actor asked, each naming it: what `buckle check-url --session` shows the owner. */
   unspent(sessionId: string): UnspentOnce[]
 }
@@ -79,6 +81,7 @@ export function createApprovalGate(input: { ledger: ApprovalRegistry; grants: Le
     ask: request => service.request(request),
     wasDenied: tokens => ledger.wasDenied(tokens),
     withdraw: tokens => service.withdraw(tokens),
+    unanswered: approvals => service.unanswered(approvals),
     unspent: sessionId => ledger.unspent(sessionId),
   }
 }

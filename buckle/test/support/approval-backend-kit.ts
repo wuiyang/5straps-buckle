@@ -84,7 +84,7 @@ export function fakeHost(input: { routed: FullAsk[]; receipt?: (decision: Decisi
 }
 
 export const live = (): SubmitContext => ({ signal: new AbortController().signal, resend: false })
-export const event = (token: string, type: LifecycleEvent['type'] = 'answered'): LifecycleEvent => ({ eventId: `e-${token}-${type}`, type, token, at: new Date().toISOString() })
+export const event = (token: string, type: LifecycleEvent['type'] = 'answered', reason?: LifecycleEvent['reason']): LifecycleEvent => ({ eventId: `e-${token}-${type}`, type, token, at: new Date().toISOString(), ...(reason === undefined ? {} : { reason }) })
 export const tick = () => new Promise(resolve => setTimeout(resolve, 0))
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 const tokensOf = (host: FakeHost) => host.decided.map(input => input.decision.token)

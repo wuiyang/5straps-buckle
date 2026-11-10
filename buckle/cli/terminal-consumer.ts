@@ -61,9 +61,9 @@ export interface ApprovalQuestion extends ShownAsk {
 }
 
 /**
- * How close to its expiry a question that ends still timed out: the requester's timer is set from the clock, and on a
- * busy loop it fires up to a millisecond before the clock reaches the expiry (fix brief 1, H3). Far below the 400 ms poll
- * that withdraws an expired ask, so an answer given elsewhere this late is the rare case.
+ * How close to its expiry a question that ends still ran out unanswered: the requester's timer is set from the clock, and
+ * on a busy loop it fires up to a millisecond before the clock reaches the expiry (fix brief 1, H3). Far below the 400 ms
+ * poll that withdraws an ask past its expiry, so an answer given elsewhere this late is the rare case.
  */
 const TIMER_JITTER_MS = 50
 
@@ -106,14 +106,15 @@ export function createTerminalConsumer(options: TerminalOptions = {}): TerminalC
   }
 
   /**
-   * Why a question on screen ended unanswered: nothing after Ctrl-C, as the shutdown lines follow; `[timeout]` by the
-   * clock, within TIMER_JITTER_MS, since the poll that withdraws an expired ask often ends its question before the
-   * requester's own timer does;
-   * `[stopped]` once the process stops; `[no longer waiting]` for an answer given elsewhere or a call withdrawn.
+   * Why a question on screen ended unanswered: nothing after Ctrl-C, as the shutdown lines follow; `[skipped: no response]`
+   * by the clock, within TIMER_JITTER_MS, as nobody answered its ask before it ran out (APPROVAL-36), since the poll that
+   * withdraws such an ask often ends its question before the requester's own timer does; `[stopped]` once the process
+   * stops; `[no longer waiting]` for an answer given elsewhere, a call withdrawn, or an ask that lapsed before its stated
+   * expiry, which the node log names as skipped.
    */
   const ending = (question: ApprovalQuestion): string | null => {
     if (interrupted.signal.aborted) return null
-    if (remainingMs(question.expiresAt) <= TIMER_JITTER_MS) return '[timeout]'
+    if (remainingMs(question.expiresAt) <= TIMER_JITTER_MS) return '[skipped: no response]'
     return stopping ? '[stopped]' : '[no longer waiting]'
   }
 
@@ -127,7 +128,7 @@ export function createTerminalConsumer(options: TerminalOptions = {}): TerminalC
       const question = approvalQuestion(request)
       const cancelled = AbortSignal.any([signal, interrupted.signal])
       cancelled.throwIfAborted()
-      // A request that expired while it queued resolves no longer: not worth showing, its wait ends it.
+      // A request that ran out while it queued resolves no longer: not worth showing, its wait ends it.
       if (remainingMs(question.expiresAt) === 0) return new Promise<never>((_, reject) => cancelled.addEventListener('abort', () => reject(cancelled.reason), { once: true }))
       const readline = createInterface({ input, output, historySize: 0 })
       const keys = watchKeys(input)

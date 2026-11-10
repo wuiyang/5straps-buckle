@@ -62,7 +62,8 @@ const resolvedSchema = z.object({
   grant: lastingGrantSchema.optional(),
 })
 const deliverySchema = z.object({ id: z.string().uuid(), workspace: z.string(), notice: ApprovalNoticeSchema, expiresAt: z.iso.datetime() })
-// An ask a session end withdrew, kept as long as an answer is, so a process that did not end the session reads why it left.
+// An ask a session end withdrew, or one nobody answered before it ran out (APPROVAL-36), kept as long as an answer is, so a
+// process that did not end the session or drop the ask reads why it left.
 const endedAskSchema = z.object({ workspace: z.string(), token: z.string(), expiresAt: z.iso.datetime() })
 export type ApprovalDelivery = Omit<z.infer<typeof deliverySchema>, 'workspace'>
 
@@ -73,6 +74,7 @@ export const approvalLedgerSchema = z.object({
   resolved: z.array(resolvedSchema),
   outbox: z.array(deliverySchema).default([]),
   ended: z.array(endedAskSchema).default([]),
+  noResponse: z.array(endedAskSchema).default([]),
 })
 export type ApprovalLedgerState = z.infer<typeof approvalLedgerSchema>
 export type ResolvedEntry = ApprovalLedgerState['resolved'][number]

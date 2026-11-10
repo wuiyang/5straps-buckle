@@ -471,7 +471,7 @@ describe('a lasting denial', () => {
 
   it.each([
     ['waking the webhook sender', (fail: () => void) => ({ durableNotices: true, onNoticeQueued: fail })],
-    ['reporting an expired ask', (fail: () => void) => ({ onExpired: fail })],
+    ['reporting an ask skipped with no response', (fail: () => void) => ({ onNoResponse: fail })],
   ])('keeps its denial in force once its decision is on disk, when %s fails after', async (_step, hooks) => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-ledger-denial-'))
     roots.push(root)
@@ -535,7 +535,7 @@ describe('a lasting denial', () => {
     const store = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'workspace-id' })
     let armed = false
     const grants = { ...store, grant: async () => { throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }) } }
-    const registry = createApprovalRegistry(grants, join(root, 'approvals.json'), 0, { onExpired: () => { if (armed) throw new Error('A step after the update failed') } })
+    const registry = createApprovalRegistry(grants, join(root, 'approvals.json'), 0, { onNoResponse: () => { if (armed) throw new Error('A step after the update failed') } })
     const call = { arguments: {}, cwd: '/workspace', description: null, complete: true as const }
     const [secret] = (await registry.ask({ tool: 'fs_read', sessionId: 's', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'sensitive_path', subject: '/workspace/.env', reason: 'secret', offeredScopes: ['once'] }], call })).requests
     const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() - 60 * 60_000)

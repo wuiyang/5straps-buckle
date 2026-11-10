@@ -89,7 +89,7 @@ describe('the core approval API', () => {
 
   it('says why the decision guard refused, in its own words', async () => {
     const { service } = await asked(HOST)
-    expect(await service.decide({ source: 'cli', decision: { token: 'no-such-token', outcome: 'deny', scope: 'once' } })).toEqual({ status: 'refused', step: 'decision', decision: { token: 'no-such-token', approved: false, scope: 'once' }, error: { code: 'unknown_ask', message: 'Approval token is unknown or expired', retryable: false } })
+    expect(await service.decide({ source: 'cli', decision: { token: 'no-such-token', outcome: 'deny', scope: 'once' } })).toEqual({ status: 'refused', step: 'decision', decision: { token: 'no-such-token', approved: false, scope: 'once' }, error: { code: 'unknown_ask', message: 'Approval token is unknown or no longer waiting', retryable: false } })
   })
 
   it('approves a decision an enrolled key signed as the devices source, recording the key and its proof deadline', async () => {

@@ -87,10 +87,10 @@ describe('the terminal backend', () => {
     const backend = await opened(terminal.requestCli, host)
     const submitted = backend.submit(asks, live())
     await tick()
-    await backend.notify([event('b', 'expired'), event('a', 'cancelled')])
+    await backend.notify([event('b', 'skipped', 'no_response'), event('a', 'cancelled')])
     await submitted
     expect(terminal.asked.map(request => request.id)).toEqual(['approval:w-1:a', 'approval:w-1:c'])
-    await backend.notify([event('c', 'expired')])
+    await backend.notify([event('c', 'skipped', 'no_response')])
     await backend.submit([askFor('c', { idempotencyKey: 'key-2' })], live())
     expect(terminal.asked.map(request => request.id)).toEqual(['approval:w-1:a', 'approval:w-1:c', 'approval:w-1:c'])
   })
@@ -145,7 +145,7 @@ describe('the terminal backend', () => {
     const submitted = backend.submit(asks, live())
     await vi.waitFor(() => expect(terminal.asked.map(request => request.id)).toEqual(['approval:w-1:a', 'grant_save:w-1:a:1', 'grant_save:w-1:a:2']))
     host.closedTokens.add('a')
-    await backend.notify([event('a', 'expired')])
+    await backend.notify([event('a', 'skipped', 'no_response')])
     await submitted
     expect(host.decided).toHaveLength(2)
     expect(host.logged).toEqual([{ level: 'warn', message: 'Left unsaved: nothing was denied.' }])

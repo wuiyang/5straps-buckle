@@ -247,18 +247,19 @@ describe('how the service tells the terminal an ask left the queue', () => {
     await service.close()
   })
 
-  it('says it expired', async () => {
+  // APPROVAL-36 (owner, 2026-11-10): an ask nobody answered before it ran out is skipped with no response.
+  it('says it was skipped, no response, at its stated expiry', async () => {
     const terminal = holdingBackend()
     const { service, registry } = setUp(terminal.backend)
     await service.request(call())
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(Date.now() + 11 * MINUTE)
     await registry.sweep()
-    await vi.waitFor(() => expect(terminal.events()).toEqual([{ type: 'expired' }]))
+    await vi.waitFor(() => expect(terminal.events()).toEqual([{ type: 'skipped', reason: 'no_response' }]))
     await service.close()
   })
 
-  it('says it expired when it lapsed ten minutes after its caller left, though it states no deadline', async () => {
+  it('says it was skipped, no response, when it lapsed ten minutes after its caller left, though it states no deadline', async () => {
     const terminal = holdingBackend()
     const { service, registry } = setUp(terminal.backend, null)
     const leaving = new AbortController()
@@ -269,7 +270,22 @@ describe('how the service tells the terminal an ask left the queue', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(Date.now() + 11 * MINUTE)
     await registry.sweep()
-    await vi.waitFor(() => expect(terminal.events()).toEqual([{ type: 'expired' }]))
+    await vi.waitFor(() => expect(terminal.events()).toEqual([{ type: 'skipped', reason: 'no_response' }]))
+    await service.close()
+  })
+
+  it('says it was skipped, no response, when another process dropped it at its lapse', async () => {
+    const terminal = holdingBackend()
+    const { service, registry, root } = setUp(terminal.backend, null)
+    const leaving = new AbortController()
+    const waiting = service.request(call({ signal: leaving.signal, resends: true }))
+    await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
+    leaving.abort()
+    await expect(waiting).rejects.toThrow()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.now() + 11 * MINUTE)
+    await otherProcess(root).sweep()
+    await vi.waitFor(() => expect(terminal.events()).toEqual([{ type: 'skipped', reason: 'no_response' }]))
     await service.close()
   })
 

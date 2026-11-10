@@ -68,7 +68,9 @@ describe('the checks against the ask', () => {
   })
 
   it.each<[string, DecisionClaim, LedgerView, GuardRefusalCode, string]>([
-    ['a token nothing waits for', claim(approve()), {}, 'unknown_ask', 'Approval token is unknown or expired'],
+    ['a token nothing waits for', claim(approve()), {}, 'unknown_ask', 'Approval token is unknown or no longer waiting'],
+    // APPROVAL-36: an ask nobody answered before it ran out is skipped with no response, and says so to a late answer.
+    ['an ask skipped with no response', claim(approve()), { closed: 'no_response' }, 'ask_closed', 'This ask was skipped: no response. Nobody answered it before it ran out, so its call did not run; the call sent again asks afresh'],
     ['a challenge other than the ask\'s', claim(approve(), { challenge: 'f'.repeat(64) }), waiting(), 'action_mismatch', 'The decision names another challenge than this ask\'s: fetch the challenge again and decide on what it shows'],
     ['a challenge for an ask shown under none', claim(deny(), { challenge: SHOWN }), waiting({}, { complete: false, challenges: [] }), 'action_mismatch', 'The decision names another challenge than this ask\'s: fetch the challenge again and decide on what it shows'],
     ['an approval of an ask recorded without its whole call', claim(approve()), waiting({}, { complete: false }), 'incomplete_action', `This ask was ${RECORDED_BEFORE_NOTE}`],

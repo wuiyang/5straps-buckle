@@ -9,7 +9,7 @@ import { SOURCES, type Assurance } from '../../types/ports/approval-source.js'
 import type { DecisionRefusal, OpenedDecision } from './approval-envelope.js'
 import { isDeviceProof, spendDeviceProof, type DeviceProof } from './device-proof.js'
 import type { ChallengeListing, ListedApproval } from '../../domain/approval/challenges.js'
-import type { GroupSelector, GroupWithdrawal, Resolution, SkipResolution } from './approval-registry.js'
+import type { Departure, GroupSelector, GroupWithdrawal, Resolution, SkipResolution } from './approval-registry.js'
 import type { ApprovalAnswer } from '../../domain/approval/answer.js'
 
 /** What a core client sends. Core holds the source its tag names, and the decision guard checks it as any backend's. */
@@ -68,6 +68,11 @@ export interface CoreApprovalApi {
   waiting(): PendingAsk[]
   /** One ask still waiting, with its call, read alone: what `buckle approve` shows. */
   waitingAsk(token: string): PendingAsk | undefined
+  /**
+   * How an ask that left the queue left, while the ledger keeps its end: answered, denied, cancelled, or skipped with no
+   * response (APPROVAL-36); undefined for one still waiting or no longer known.
+   */
+  departure(token: string): Departure | undefined
   /** The waiting requests as a listing carries them: each group's whole call once, named by `callRef` from each of its asks. */
   listing(): ListedApproval[]
   /**

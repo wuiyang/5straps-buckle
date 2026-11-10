@@ -1,13 +1,17 @@
-import type { ApprovalNotice, ApprovalRequest, ApprovalSkipReason, GrantScope } from '@5straps/protocol'
+import type { ApprovalNotice, ApprovalSkipReason, GrantScope } from '@5straps/protocol'
 import type { ApprovalRegistry } from './approval-registry.js'
 import { alreadyReported } from '../../adapters/json-file-store.js'
 import { logger } from '../../runtime/log.js'
 
+/** Why a call stopped waiting while its ask stays pending; `no_response`, which ends an ask, is the ledger's alone. */
+export type WaitSkipReason = Exclude<ApprovalSkipReason, 'no_response'>
+
 export interface ApprovalNotices {
   answered(input: { token: string; approved: boolean; scope: GrantScope; consumeNotAfter?: string }): void
-  expired(requests: ApprovalRequest[]): void
+  /** The asks nobody answered before they ran out: each skipped with the reason no_response (APPROVAL-36). */
+  noResponse(tokens: string[]): void
   cancelled(tokens: string[]): void
-  skipped(tokens: string[], reason: ApprovalSkipReason): void
+  skipped(tokens: string[], reason: WaitSkipReason): void
   flush(): Promise<void>
   settle(): Promise<void>
 }
@@ -29,7 +33,7 @@ export function createApprovalNotices(send?: (notices: ApprovalNotice[]) => Prom
   const now = () => new Date().toISOString()
   return {
     answered: input => deliver([{ token: input.token, event: input.approved ? 'answered' : 'denied', at: now(), scope: input.scope, ...(input.consumeNotAfter === undefined ? {} : { consumeNotAfter: input.consumeNotAfter }) }]),
-    expired: requests => deliver(requests.map(request => ({ token: request.token, event: 'expired', at: now() }))),
+    noResponse: tokens => deliver(tokens.map(token => ({ token, event: 'skipped', at: now(), reason: 'no_response' }))),
     cancelled: tokens => deliver(tokens.map(token => ({ token, event: 'cancelled', at: now() }))),
     skipped: (tokens, reason) => deliver(tokens.map(token => ({ token, event: 'skipped', at: now(), reason }))),
     flush: async () => { await Promise.allSettled([...inFlight]) },
@@ -89,7 +93,7 @@ function createDurableNotices(input: {
     }
   }
 
-  function skipped(tokens: string[], reason: ApprovalSkipReason): void {
+  function skipped(tokens: string[], reason: WaitSkipReason): void {
     if (closed || tokens.length === 0) return
     const at = new Date().toISOString()
     const enqueue = input.registry.enqueueSkippedNotices(tokens.map(token => ({ token, event: 'skipped', at, reason })))
@@ -116,7 +120,7 @@ function createDurableNotices(input: {
   void flush()
   return {
     answered: () => { void flush() },
-    expired: () => { void flush() },
+    noResponse: () => { void flush() },
     cancelled: () => { void flush() },
     skipped,
     flush,

@@ -397,9 +397,22 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
     held: () => approvals.heldSessions(),
     sessions: { endSessions: end => approvalService.endSessions(end) },
   })
+  const auditHealth = input.auditHealth ?? createAuditHealth()
+  // Each entry carries the workspace's name as it stands, beside its id (D85, Q15). Opened before the ledger, so an ask its
+  // first update skips for no response is recorded too.
+  const actions = createFileActionLog(actionsPath(config), { lockDeadlineMs, health: auditHealth, workspaceId, workspaceName: () => config.serverName, purgeable: true, ...(input.serving ? { serving: input.serving } : {}) })
+  await actions.recoverInterrupted()
+  // Every route's decisions, in this workspace's own log through the log service, which never holds up an answer.
+  const decisionAudit = createLoggedDecisionAudit({ actions, workspaceId })
   const approvals = createApprovalRegistry(grantFile, approvalsPath(config), config.approvalTimeoutMs, {
     lockDeadlineMs, durableNotices: webhook !== null,
-    onExpired: requests => notices?.expired(requests),
+    // An ask nobody answered before it ran out is skipped with no response (APPROVAL-36): the webhook is told, the audit log
+    // records it, and the node log says so, by the process whose update dropped it.
+    onNoResponse: (asks) => {
+      notices?.noResponse(asks.map(ask => ask.request.token))
+      for (const { request, attempt } of asks) decisionAudit.noResponse({ token: request.token, call: { rule: request.rule, subject: request.subject, ...(attempt === undefined ? {} : { attempt }) } })
+      logger.info('Skipped approvals nobody answered before they ran out', { reason: 'no_response', asks: asks.length, workspaceId })
+    },
     onNoticeQueued: () => { void notices?.flush() },
     live: () => ({ forms: formsInForce() }),
     onActivity: (session) => { history.touchActivity(session); sessionIdle.saw(session) },
@@ -413,10 +426,6 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
   input.onApprovalCleanup(() => noticeOwner.settle())
   // Before any call runs here, so an ask an earlier build kept is answerable and a grant left owed is in force.
   await approvals.recover()
-  const auditHealth = input.auditHealth ?? createAuditHealth()
-  // Each entry carries the workspace's name as it stands, beside its id (D85, Q15).
-  const actions = createFileActionLog(actionsPath(config), { lockDeadlineMs, health: auditHealth, workspaceId, workspaceName: () => config.serverName, purgeable: true, ...(input.serving ? { serving: input.serving } : {}) })
-  await actions.recoverInterrupted()
   // Replay protection for sealed decisions from Rings: on disk once a key is paired.
   const approvalNonces = config.ringsApprovalKey ? await openFileNonceStore({ filePath: approvalNoncesPath(config) }) : createMemoryNonceClaims()
   const interaction: InteractionSource = input.interaction ?? (async () => undefined)
@@ -429,8 +438,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
     hold: async () => (await interaction())?.hold, terminal,
     announce: webhook ? createWebhookNotifier(webhook) : undefined,
     notices, decisionKey: config.ringsApprovalKey, nonces: approvalNonces,
-    // Every route's decisions, in this workspace's own log through the log service, which never holds up an answer.
-    decisionAudit: createLoggedDecisionAudit({ actions, workspaceId }),
+    decisionAudit,
     idleCheck: session => sessionIdle.check(session),
     // A call held for a person's answer holds its session and its ask in the executing mark, as a running tool holds its
     // session. The hold's end is the session's activity, recorded before the mark lets go of it, so no other process
