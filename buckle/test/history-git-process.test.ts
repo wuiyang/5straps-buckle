@@ -2,10 +2,11 @@ import { ChildProcess, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'pathe'
+import { dirname, join } from 'pathe'
 import { PassThrough } from 'node:stream'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createCommandCapture } from '../common/services/history/command-capture.js'
+import { RAW_ATTRIBUTES } from '../common/services/history/git-files.js'
 import { historyGitProgram, isolatedGit, runProgram } from '../common/services/history/git-process.js'
 import { openChangeHistory } from '../common/services/history/journal.js'
 import { openObjectStore } from '../common/services/history/object-store.js'
@@ -115,19 +116,45 @@ it('retries command setup if writing safety attributes fails after git init comp
   const { workspace, directory } = fixture()
   const commands = createCommandCapture({ directory, objects: openObjectStore(directory), excluded: () => [directory], allowed: () => true, maxFileBytes: () => 1_048_576 })
   const privateGit = join(directory, 'commands', createHash('sha256').update(workspace).digest('hex').slice(0, 24))
-  let interrupted = false
+  const info = join(privateGit, 'info')
+  let interruptions = 0
+  let temporary: string | undefined
+  let partialBytes = 0
   vi.mocked(writeFileSync).mockImplementation((...args: Parameters<typeof writeFileSync>) => {
-    if (!interrupted && typeof args[0] === 'string' && args[0].endsWith(join('info', 'attributes'))) { interrupted = true; throw Object.assign(new Error('fixture setup interruption'), { code: 'EPERM' }) }
+    if (!interruptions && args[1] === RAW_ATTRIBUTES) {
+      const partial = RAW_ATTRIBUTES.slice(0, 12)
+      if (typeof args[0] === 'number') {
+        const opened = actualFs.fstatSync(args[0], { bigint: true })
+        temporary = actualFs.readdirSync(info).map(name => join(info, name)).find(path => {
+          const named = actualFs.lstatSync(path, { bigint: true })
+          return named.isFile() && named.dev === opened.dev && named.ino === opened.ino
+        })
+        if (!temporary) throw new Error('Fixture could not locate the safety attributes file')
+        partialBytes = actualFs.writeSync(args[0], partial)
+      } else if (typeof args[0] === 'string' && dirname(args[0]) === info) {
+        temporary = args[0]
+        actualFs.writeFileSync(args[0], partial, args[2])
+        partialBytes = Buffer.byteLength(partial)
+      } else return actualFs.writeFileSync(...args)
+      interruptions++
+      throw Object.assign(new Error('fixture setup interruption'), { code: 'EPERM' })
+    }
     return actualFs.writeFileSync(...args)
   })
   await expect(commands.baseline([workspace], { deadline: Date.now() + 10_000 })).rejects.toMatchObject({ code: 'EPERM' })
+  expect(interruptions).toBe(1)
+  expect(partialBytes).toBe(12)
+  if (!temporary) throw new Error('Safety attributes failure injection did not locate its file')
+  expect(existsSync(temporary)).toBe(false)
   expect(existsSync(join(privateGit, 'HEAD'))).toBe(true)
+  expect(existsSync(join(info, 'attributes'))).toBe(false)
   expect(existsSync(join(privateGit, 'buckle-setup-complete'))).toBe(false)
   const retried = await commands.baseline([workspace], { deadline: Date.now() + 10_000 })
   expect(retried).toHaveLength(1)
   expect(retried[0]).toMatchObject({ root: workspace, partial: false, tree: expect.stringMatching(/^[a-f0-9]{40}$/) })
-  expect(existsSync(join(privateGit, 'info', 'attributes'))).toBe(true)
+  expect(actualFs.readFileSync(join(info, 'attributes'), 'utf8')).toBe(RAW_ATTRIBUTES)
   expect(existsSync(join(privateGit, 'buckle-setup-complete'))).toBe(true)
+  expect(interruptions).toBe(1)
 })
 
 // Slice F2, item 5 (A9): a collection that fails saves its attempt, so the next write does not start it again at once.
