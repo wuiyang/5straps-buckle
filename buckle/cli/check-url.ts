@@ -2,7 +2,7 @@ import { parseArgs } from 'node:util'
 import { normaliseUrl, UrlNormaliseError } from '../common/domain/url-normalise.js'
 import { describeGrantScope, judgeUrl, type NetworkApproval, type UrlVerdictKind } from '../common/domain/url-verdict.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { WorkspaceError } from '../common/services/workspaces/workspace-manager.js'
+import { WorkspaceError } from '../common/domain/workspace-error.js'
 
 export interface CliResult {
   exitCode: number

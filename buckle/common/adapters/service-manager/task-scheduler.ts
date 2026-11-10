@@ -7,7 +7,7 @@ import type { ProcessRunner } from '../../types/ports/process-runner.js'
 import { ServiceManagerError, type InstalledService, type NodeLocation, type ServiceDefinition, type ServiceManager } from '../../types/ports/service-manager.js'
 import { SKIP_OWNER_ONLY_FLAG } from '../../domain/global-flags.js'
 import { replaceFile } from '../json-file-store.js'
-import { taskDefinitionCopy } from '../../services/node-service/serve-record.js'
+import { taskDefinitionCopy } from '../../domain/node-service-paths.js'
 
 /** The one Buckle task a machine has (Phase 3, Q4, D73 experimental), in a folder of its own in Task Scheduler. */
 export const TASK_NAME = '\\5straps\\Buckle'

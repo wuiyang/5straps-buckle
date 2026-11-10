@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'pathe'
 import type { WorkbenchTerminal, WorkbenchTerminalEvent, WorkbenchTerminalEvents } from '@5straps/protocol'
-import type { PtyProcess, PtySpawner, PtySpawnRequest } from '../../types/ports/pty-process.js'
+import { PtyUnavailableError, type PtyProcess, type PtySpawner, type PtySpawnRequest } from '../../types/ports/pty-process.js'
 import { logger } from '../../runtime/log.js'
 import { WorkbenchError, writeWorkbenchJson, type StoredWorkbench } from './storage.js'
 
@@ -98,7 +98,10 @@ export function createWorkbenchTerminals(options: TerminalManagerOptions) {
       const auditId = await options.audit(record, 'terminal_lifetime', actorId, { terminalId: terminal.id }, 'attempt')
       let process: PtyProcess
       try { process = await options.spawn(request) }
-      catch (error) { await options.audit(record, 'terminal_lifetime', actorId, { terminalId: terminal.id }, 'result', auditId, 'error'); throw error }
+      catch (error) {
+        await options.audit(record, 'terminal_lifetime', actorId, { terminalId: terminal.id }, 'result', auditId, 'error')
+        throw error instanceof PtyUnavailableError ? new WorkbenchError(error.message, 503) : error
+      }
       record.terminals.push(terminal); record.revision++; record.reviewId = null; record.status = 'open'
       const state: RunningTerminal = { process, output: [], sequence: 0, bytes: 0, lastActivity: now(), createdAt: now(), auditId }
       running.set(terminal.id, state)

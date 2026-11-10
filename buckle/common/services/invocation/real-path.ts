@@ -2,6 +2,7 @@ import { lstatSync, readlinkSync, realpathSync, type Stats } from 'node:fs'
 import { basename } from 'pathe'
 import { childPath, isPlainName, nativePath, parentDirectory, pathRoot, refuseDrive, withForwardSlashes } from '../../domain/paths.js'
 import { ToolInputError } from '../../domain/tool.js'
+import { isMissingPathError } from '../../domain/filesystem-errors.js'
 
 /** How many links one path may pass through, as Linux allows (SYMLOOP_MAX). */
 const MAX_LINKS = 40
@@ -140,8 +141,4 @@ function tooManyLinks(path: string): ToolInputError {
 
 function isLinkLoop(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ELOOP'
-}
-
-export function isMissingPathError(error: unknown): boolean {
-  return error instanceof Error && 'code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')
 }

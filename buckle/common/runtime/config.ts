@@ -14,7 +14,8 @@ import { systemdGuardedPaths } from '../domain/systemd-unit.js'
 import { compileCommandGlob, CommandGlobError } from '../domain/command-glob.js'
 import { JUDGE_MODEL_NAME, JUDGE_MODES, JUDGE_PROVIDERS, type JudgeMode, type JudgeProvider } from '../types/ports/judge.js'
 import { QUICK_JUDGE_SCOPES, type QuickJudgeProvider, type QuickJudgeScope } from '../types/ports/quick-judge.js'
-import { MAX_TRANSFER_BYTES } from '../services/packs/browser/file-transfer.js'
+import { DEFAULT_MAX_TRANSFER_BYTES } from '../domain/file-transfer-limits.js'
+import { parseList } from '../domain/comma-list.js'
 import { MAX_MASS_DELETE_LIMIT, parseDeleteInWorkspace, parseMassDeleteLimit, type DeleteInWorkspace } from '../domain/delete-policy.js'
 import { parseSessionIdle, SESSION_IDLE_BOUNDS } from '../domain/approval/session-idle.js'
 import { recordedEnvironmentFiles } from './environment-files.js'
@@ -315,7 +316,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     environmentFile: environmentFilePath(environment, platform),
     recordedEnvironmentFiles: recordedEnvironmentFiles(stateDirectory),
     maxRequestBytes: parsePositiveInteger(environment.BUCKLE_MAX_REQUEST_BYTES, DEFAULT_MAX_REQUEST_BYTES),
-    maxTransferBytes: parsePositiveInteger(environment.BUCKLE_MAX_TRANSFER_BYTES, MAX_TRANSFER_BYTES),
+    maxTransferBytes: parsePositiveInteger(environment.BUCKLE_MAX_TRANSFER_BYTES, DEFAULT_MAX_TRANSFER_BYTES),
     defaultTimeoutMs: parsePositiveInteger(environment.BUCKLE_DEFAULT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
     maxTimeoutMs: parsePositiveInteger(environment.BUCKLE_MAX_TIMEOUT_MS, DEFAULT_MAX_TIMEOUT_MS),
   }
@@ -1001,11 +1002,6 @@ function parseAllowedHosts(value: string | undefined): string[] {
     }
   }
   return entries
-}
-
-export function parseList(value: string | undefined): string[] {
-  if (!value) return []
-  return value.split(',').map(item => item.trim()).filter(Boolean)
 }
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {

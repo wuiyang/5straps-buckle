@@ -8,6 +8,7 @@ import { acquireFileLock, acquireOwnershipLock } from '@5straps/runtime/sqlite'
 import { requireOwnerOnly } from '../../adapters/file-modes.js'
 import { replaceFile } from '../../adapters/json-file-store.js'
 import { SERVE_REFUSED_EXIT } from '../../types/ports/service-manager.js'
+import { serviceDirectory } from '../../domain/node-service-paths.js'
 
 /**
  * What started a serving process that runs on with no terminal (Phase 3 of the workspace-model slice): the systemd
@@ -22,21 +23,6 @@ export type ServiceManagerKind = typeof SERVICE_MANAGERS[number]
  */
 export const SERVE_MANAGERS = [...SERVICE_MANAGERS, 'terminal'] as const
 export type ServeManagerKind = typeof SERVE_MANAGERS[number]
-
-/** Where a node's service files live: owner-only, inside the state directory, so no agent tool reads or writes them. */
-export function serviceDirectory(stateDirectory: string): string {
-  return join(stateDirectory, 'service')
-}
-
-/** The Windows task's definition as Buckle wrote it, kept in the state directory, where no agent tool reads or writes it. */
-export function taskDefinitionCopy(stateDirectory: string): string {
-  return join(serviceDirectory(stateDirectory), 'task.xml')
-}
-
-/** The one rotating log a node running with no terminal writes, inside the state directory. */
-export function serviceLogPath(stateDirectory: string): string {
-  return join(stateDirectory, 'logs', 'buckle.log')
-}
 
 const RECORD_FILE = 'serve.json'
 const LOCK_FILE = 'serve.lock.sqlite'

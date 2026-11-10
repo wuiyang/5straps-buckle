@@ -10,7 +10,8 @@ import { replaceBeneath, sweepPartials } from '../../../adapters/replace-beneath
 import type { PathView } from '../../../domain/path-view.js'
 import { isInsideAny } from '../../../domain/paths.js'
 import { ToolInputError, type FileChannel, type IncomingFile, type OutgoingFile } from '../../../domain/tool.js'
-import { isMissingPathError, resolveTarget } from '../../invocation/real-path.js'
+import { isMissingPathError } from '../../../domain/filesystem-errors.js'
+import { resolveTarget } from '../../invocation/real-path.js'
 import { judgedPath } from '../judged-path.js'
 import type * as schemas from './schemas.js'
 

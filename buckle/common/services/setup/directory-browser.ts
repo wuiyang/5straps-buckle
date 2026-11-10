@@ -2,7 +2,7 @@ import { opendir, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, relative, resolve } from 'pathe'
 import { z } from 'zod'
 import { childPath, homeDirectory, isInside, isPlainName, nativePath, parentDirectory } from '../../domain/paths.js'
-import { WorkspaceError } from '../workspaces/workspace-manager.js'
+import { WorkspaceError } from '../../domain/workspace-error.js'
 
 export const DirectoryQuerySchema = z.object({
   path: z.string().max(4096).default('~/'),

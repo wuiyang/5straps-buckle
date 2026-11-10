@@ -3,7 +3,7 @@ import { dirname } from 'pathe'
 import { protectedStateRoots, type NodeConfig } from '../../runtime/config.js'
 import { MAX_OWNER_MOUNTS, mountTargetRefusal, SYSTEM_PROGRAM_FOLDERS, type OwnerMount } from '../../domain/mount-table.js'
 import { ignoresCase, isDriveRoot, isInsideComparable, nativePath, shareRoot, typedShare, WHOLE_DRIVE } from '../../domain/paths.js'
-import { WorkspaceError } from './registry.js'
+import { WorkspaceError } from '../../domain/workspace-error.js'
 
 /**
  * An existing directory as the disk names it: links followed, in the case the disk stores. On Windows a whole drive is

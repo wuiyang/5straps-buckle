@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { createRuntimeOwner } from '@5straps/runtime'
 import { describe, expect, it, vi } from 'vitest'
-import { AlreadyServingError, holdServe, readRecord, requestStop, runningNode, serviceDirectory, waitForStop, watchStopRequest } from '../common/services/node-service/serve-record.js'
+import { AlreadyServingError, holdServe, readRecord, requestStop, runningNode, waitForStop, watchStopRequest } from '../common/services/node-service/serve-record.js'
+import { serviceDirectory } from '../common/domain/node-service-paths.js'
 
 // Phase 3 of the workspace-model slice: a node serving with no terminal holds its state directory's serve lock for its
 // life, records its pid and address, and stops when a stop request names it, as Windows delivers it no SIGTERM.

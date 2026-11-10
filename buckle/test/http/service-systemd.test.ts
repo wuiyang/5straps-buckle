@@ -3,7 +3,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, inject, it } from 'vitest'
-import { readRecord, runningNode, serviceLogPath } from '../../common/services/node-service/serve-record.js'
+import { readRecord, runningNode } from '../../common/services/node-service/serve-record.js'
+import { serviceLogPath } from '../../common/domain/node-service-paths.js'
 import { freePort, spawnBuckle, waitForStatus } from '../support/buckle-process.js'
 
 // Phase 3, items 1 and 2 of the workspace-model slice: the built `buckle service` installs a systemd user unit and

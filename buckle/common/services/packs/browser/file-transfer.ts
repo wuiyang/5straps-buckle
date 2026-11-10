@@ -6,7 +6,7 @@ import { openRealDirectory, withFileBeneathAsync } from '../../../adapters/benea
 import { replaceBeneath, sweepPartials } from '../../../adapters/replace-beneath.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { ToolInputError, type ToolContext } from '../../../domain/tool.js'
-import { isMissingPathError } from '../../invocation/real-path.js'
+import { isMissingPathError } from '../../../domain/filesystem-errors.js'
 import { judgedPath } from '../judged-path.js'
 import { isPlainName } from '../../../domain/paths.js'
 

@@ -5,7 +5,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { settingsCommand } from '../cli/settings.js'
 import { createRuntimeOwner } from '@5straps/runtime'
 import { restartRoute, serviceInstalled } from '../common/services/node-service/installed.js'
-import { holdServe, taskDefinitionCopy, type ServeManagerKind } from '../common/services/node-service/serve-record.js'
+import { holdServe, type ServeManagerKind } from '../common/services/node-service/serve-record.js'
+import { taskDefinitionCopy } from '../common/domain/node-service-paths.js'
 
 // Phase 3, item 7 of the workspace-model slice: every line that says to restart Buckle names `buckle service restart`
 // where a service runs this node, and keeps its wording otherwise. Whether one does is read from disk: on Linux the

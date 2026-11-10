@@ -2,22 +2,9 @@ import { join } from 'pathe'
 import { z } from 'zod'
 import { SIGNED_WORKSPACE_MAX } from '@5straps/protocol/signed-request'
 import { createJsonFileStore, StateFileError } from '../../adapters/json-file-store.js'
-import type { ServiceFailure } from '../../types/service-failure.js'
+import { WorkspaceError, WorkspaceRegistryError } from '../../domain/workspace-error.js'
 import { NODE_SCOPE } from '../../types/ports/client-keys.js'
 import { looksLikeWorkspaceId } from './workspace-id.js'
-
-/** The code a transport tells an unreadable registry by, before it has authenticated anyone. */
-export const WORKSPACE_REGISTRY_UNREADABLE = 'WORKSPACE_REGISTRY_UNREADABLE'
-
-export class WorkspaceError extends Error implements ServiceFailure {
-  readonly code: string = 'WORKSPACE_REFUSED'
-  constructor(message: string, readonly status: 400 | 404 | 409 = 400) { super(message) }
-}
-
-/** workspaces.json will not parse. Its message names the file and fields, so only the owner's routes may show it. */
-export class WorkspaceRegistryError extends WorkspaceError {
-  override readonly code = WORKSPACE_REGISTRY_UNREADABLE
-}
 
 /** A workspace id: a UUID Buckle assigns (D85, Q15, workspaceIdFor), which nobody types, so it never names `node`, a key's scope for the whole node. */
 export const WorkspaceIdSchema = z.uuid('A workspace id is a UUID Buckle assigns')

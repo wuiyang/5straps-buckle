@@ -3,7 +3,8 @@ import { closeSync, constants, fchmodSync, lstatSync, readdirSync, rmSync } from
 import { isPlainName } from '../domain/paths.js'
 import { ToolInputError } from '../domain/tool.js'
 import { LinkAppearedError, openBeneath, type PinnedDirectory } from './beneath.js'
-import { isHeldOpen, replaceFile, type RenameIo } from './replace-file.js'
+import { replaceFile, type RenameIo } from './replace-file.js'
+import { isHeldOpen } from '../domain/filesystem-errors.js'
 
 /** The name a delivery is written into before it replaces its target: hidden, and new for each one. */
 export const PARTIAL_PREFIX = '.buckle-delivery-'

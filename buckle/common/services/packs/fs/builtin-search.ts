@@ -2,7 +2,7 @@ import { closeSync, constants, fstatSync, lstatSync, readSync, readdirSync, type
 import type { JsonObject, JsonValue } from '@5straps/protocol'
 import type { z } from 'zod'
 import { EntryAppearedError, isLinkedOnStateDevice, LinkAppearedError, openBeneath, openDirectoryBeneath, openRealDirectory, type PinnedDirectory } from '../../../adapters/beneath.js'
-import { isHeldOpen } from '../../../adapters/replace-file.js'
+import { isHeldOpen } from '../../../domain/filesystem-errors.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { childPath, isInsideAny, isPlainName, parentDirectory } from '../../../domain/paths.js'
 import { ToolExecutionError, ToolInputError } from '../../../domain/tool.js'

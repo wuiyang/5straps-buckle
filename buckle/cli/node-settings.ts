@@ -6,7 +6,7 @@ import { compileHostPattern, UrlPatternError } from '../common/domain/url-patter
 import { cidrRefusal } from '../common/domain/ip.js'
 import { parseSandboxMounts } from '../common/domain/sandbox-mounts.js'
 import { browserBlockRefusal, parseApprovalTimeout, parseBrowserArgs, parseBrowserCdp, parseBrowserProfile } from '../common/runtime/config.js'
-import { BUILTIN_PACKS, unmetPackPrerequisite } from '../common/services/packs/index.js'
+import { BUILTIN_PACKS, unmetPackPrerequisite } from '../common/services/packs/catalogue.js'
 import { JUDGE_MODEL_NAME, JUDGE_MODES, JUDGE_PROVIDERS } from '../common/types/ports/judge.js'
 import { QUICK_JUDGE_SCOPES } from '../common/types/ports/quick-judge.js'
 import { MAX_MASS_DELETE_LIMIT, parseDeleteInWorkspace, parseMassDeleteLimit } from '../common/domain/delete-policy.js'

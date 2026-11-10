@@ -13,7 +13,7 @@ import { compileCommandGlob } from '../../domain/command-glob.js'
 import { JUDGE_MODEL_NAME, JUDGE_MODES, JUDGE_PROVIDERS, type JudgeMode, type JudgeProvider } from '../../types/ports/judge.js'
 import { QUICK_JUDGE_PROVIDERS, QUICK_JUDGE_SCOPES, type QuickJudgeProvider, type QuickJudgeScope } from '../../types/ports/quick-judge.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
-import { BUILTIN_PACKS } from '../packs/index.js'
+import { BUILTIN_PACKS } from '../packs/catalogue.js'
 import { DEFAULT_IDLE_TIMEOUT_MS } from '../packs/browser/mode.js'
 import { DEFAULT_HISTORY_FILE_BYTES } from '../history/git-store.js'
 import { DEFAULT_HISTORY_KEEP_TURNS, DEFAULT_HISTORY_TURN_IDLE_MS } from '../history/turn-retention.js'
@@ -51,7 +51,7 @@ export function credentialLikeName(name: string): boolean {
   return isSecretName(name) || KEY_WORD.test(name)
 }
 
-const PACK_IDS = BUILTIN_PACKS.map(pack => pack.id)
+const PACK_IDS: readonly string[] = BUILTIN_PACKS.map(pack => pack.id)
 
 /**
  * A setting absent from workspace.json is unset, and the node's value stands for it, else Buckle's own (D85, Q3;

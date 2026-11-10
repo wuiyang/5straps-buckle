@@ -3,7 +3,8 @@ import { launchdAgentPath, readAgent } from '../../domain/launchd-agent.js'
 import { homeDirectory } from '../../domain/paths.js'
 import { readUnit, systemdUnitPaths } from '../../domain/systemd-unit.js'
 import { sameDirectory } from '../../runtime/config.js'
-import { runningNode, taskDefinitionCopy } from './serve-record.js'
+import { runningNode } from './serve-record.js'
+import { taskDefinitionCopy } from '../../domain/node-service-paths.js'
 
 /**
  * Whether a service definition for this node is installed, read from disk without starting a program: on Linux the unit

@@ -14,3 +14,5 @@ export interface PtyProcess {
   onExit(listener: (exitCode: number) => void): () => void
 }
 export type PtySpawner = (request: PtySpawnRequest) => Promise<PtyProcess>
+
+export class PtyUnavailableError extends Error {}

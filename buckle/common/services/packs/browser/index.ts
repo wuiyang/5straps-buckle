@@ -14,6 +14,7 @@ import { loadPackSkill } from '../pack-skill.js'
 import { browserAllowedDomains, type ApprovedList, type LoosenedEntry } from './allowed-domains.js'
 import { argumentOrder, browserEffects, flagRefusal, navigationTargets, refusedFlag } from './effects.js'
 import { prepareTransfer, sweepTransfers } from './file-transfer.js'
+import { BROWSER_INSTALL, BROWSER_UNAVAILABLE, BROWSER_UNTRUSTED } from './metadata.js'
 import { attachedChrome, containmentWarning, DEFAULT_IDLE_TIMEOUT_MS, FRESH_BROWSER, MODE_DESCRIPTIONS, modeFingerprint, profileSession, settingScrubber, type BrowserChoice, type BrowserMode } from './mode.js'
 import { describeProcessFailure } from '../process-failure.js'
 import { endpointClosed } from './endpoint-probe.js'
@@ -114,12 +115,6 @@ export interface BrowserPackOptions {
 /** The node's own default for the longest call, when the pack is built without one. */
 const DEFAULT_MAX_TIMEOUT_MS = 300_000
 
-/** Names the setting, never its value, which can be a path outside the workspace. */
-export const BROWSER_UNAVAILABLE = 'BUCKLE_AGENT_BROWSER_COMMAND names a path that holds no program Buckle can run'
-/** As BROWSER_UNAVAILABLE, for a command found where the agent writes. */
-export const BROWSER_UNTRUSTED = 'BUCKLE_AGENT_BROWSER_COMMAND names a program inside the workspace or a scratch root, where an agent can write, so Buckle does not run it'
-/** How the owner installs agent-browser where Buckle looks, outside any workspace (docs/user/how-to/browser-login.md). */
-export const BROWSER_INSTALL = 'install it with npm i -g agent-browser, then run agent-browser install'
 /** What runs without a shim: the native program agent-browser's package holds, or its script. */
 const BROWSER_EXECUTABLE = 'the agent-browser .exe or script inside its package'
 

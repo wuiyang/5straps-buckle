@@ -28,6 +28,7 @@ import type { ChangeHistory } from '../history/journal.js'
 import { createShellPack } from './shell/index.js'
 import { createWebPack } from './web/index.js'
 import type { AddressRange, NodeListener } from '../../domain/ip.js'
+import { BUILTIN_PACKS, unmetPackPrerequisite, type BuiltinPackId } from './catalogue.js'
 
 export interface BuiltinPackOptions {
   /** The workspace's mounts as the shell binds them (sandboxBinds). */
@@ -114,34 +115,6 @@ export interface BuiltinPackOptions {
   untrusted?: () => UntrustedRoots
 }
 
-/**
- * The built-in packs by id, in manifest order, for `buckle init` and `buckle settings`, which
- * name them without building any. A test keeps this list and `createBuiltinPacks` in step.
- */
-export const BUILTIN_PACKS: ReadonlyArray<{ id: string; summary: string }> = [
-  { id: 'fs', summary: 'read, write and search files' },
-  { id: 'history', summary: 'list the change history and restore the files to before a checkpoint, a person approving each restore' },
-  { id: 'web', summary: 'fetch URLs and search the web' },
-  { id: 'git', summary: 'read the repository: status, diff, log, blame, branches (needs host Git on)' },
-  { id: 'forge', summary: 'commit, revert a commit, push and open pull requests (needs host Git on and a forge token)' },
-  { id: 'dev', summary: 'language-server navigation and diagnostics' },
-  { id: 'browser', summary: 'drive a browser through agent-browser, fresh for each session by default' },
-  { id: 'shell', summary: 'run commands in the sandbox (needs the shell on)' },
-  { id: 'code', summary: 'run a script that calls the other tools, each call judged as a direct one' },
-  { id: 'environment', summary: 'validate environment configuration (needs BUCKLE_ENV_VALIDATOR_COMMAND)' },
-]
-
-/**
- * Why a built-in pack cannot be built from this configuration, or null when it can. `createBuiltinPacks`
- * builds by this check and `buckle settings` and `buckle init` refuse by it, so a pack the node would
- * call unknown at start is never written to `BUCKLE_PACKS`.
- */
-export function unmetPackPrerequisite(id: string, options: Pick<BuiltinPackOptions, 'environmentValidator'>): string | null {
-  if (id === 'environment' && !options.environmentValidator) return 'BUCKLE_ENV_VALIDATOR_COMMAND is not set'
-  // The code pack is always built: packs.code off withholds it with a reason, as packs.shell off does the shell.
-  return null
-}
-
 /** The only place built-in packs are constructed. Plugins are appended by the plugin loader. */
 export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
   // Each program a pack runs is resolved once, here, and spawned by that path; one found where an agent writes is refused.
@@ -152,16 +125,16 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
   // And each runs with a PATH that leads to no program an agent wrote, as a script it runs looks its interpreter up there.
   const environment = hostEnvironment(untrusted, options.programSearch?.platform, shares)
   const git = program('git')
-  const packs: Pack[] = [
-    createFsPack({
+  const factories: Record<BuiltinPackId, () => Pack | undefined> = {
+    fs: () => createFsPack({
       paths: options.paths, runProcess: options.runProcess, ripgrep: programOrNull(program('rg')), protectedRoots: options.hiddenPaths, environment,
       ...(options.maxTransferBytes === undefined ? {} : { maxTransferBytes: options.maxTransferBytes }),
       ...(options.maxTimeoutMs === undefined ? {} : { maxTimeoutMs: options.maxTimeoutMs }),
     }),
-    createHistoryPack({ paths: options.paths, history: options.history ?? null, unavailableReason: options.allowHistory === false ? HISTORY_OFF : null }),
-    createWebPack({ braveSearchApiKey: options.braveSearchApiKey, approved: options.approvedUrls, privateRanges: options.privateRanges, ...(options.listener === undefined ? {} : { listener: options.listener }) }),
-    createGitPack({ paths: options.paths, runProcess: options.runProcess, stateDirectory: options.stateDirectory, git, environment, ...(options.programSearch?.platform ? { platform: options.programSearch.platform } : {}) }),
-    createForgePack({
+    history: () => createHistoryPack({ paths: options.paths, history: options.history ?? null, unavailableReason: options.allowHistory === false ? HISTORY_OFF : null }),
+    web: () => createWebPack({ braveSearchApiKey: options.braveSearchApiKey, approved: options.approvedUrls, privateRanges: options.privateRanges, ...(options.listener === undefined ? {} : { listener: options.listener }) }),
+    git: () => createGitPack({ paths: options.paths, runProcess: options.runProcess, stateDirectory: options.stateDirectory, git, environment, ...(options.programSearch?.platform ? { platform: options.programSearch.platform } : {}) }),
+    forge: () => createForgePack({
       paths: options.paths,
       runProcess: options.runProcess,
       git,
@@ -177,8 +150,8 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       approved: options.approvedUrls,
       unavailableReason: forgeUnavailableReason(options, git),
     }),
-    createDevPack({ cwd: options.cwd, paths: options.paths, runProcess: options.runProcess, allowHostLsp: options.allowHostLsp, resolveProgram: program, environment }),
-    createBrowserPack({
+    dev: () => createDevPack({ cwd: options.cwd, paths: options.paths, runProcess: options.runProcess, allowHostLsp: options.allowHostLsp, resolveProgram: program, environment }),
+    browser: () => createBrowserPack({
       cwd: options.cwd,
       paths: options.paths,
       runProcess: options.runProcess,
@@ -200,44 +173,50 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       ...(options.browserInstance ? { instance: options.browserInstance } : {}),
       ...(options.workspaceName ? { workspaceName: options.workspaceName } : {}),
     }),
-  ]
 
-  // Always present, so `buckle manifest` explains an absent shell rather than silently omitting it.
-  packs.push(createShellPack({
-    paths: options.paths,
-    runProcess: options.runProcess,
-    sandbox: options.sandbox,
-    writableRoots: options.writableRoots,
-    hiddenPaths: options.hiddenPaths,
-    settingsFiles: options.settingsFiles,
-    readOnlyPaths: options.mountReadOnlyPaths,
-    mounts: options.sandboxMounts,
-    unavailableReason: shellUnavailableReason(options),
-    ...(options.commandEnvironment ? { commandEnvironment: options.commandEnvironment } : {}),
-    isolation: options.shellIsolation,
-    filesystemPolicy: options.filesystemPolicy,
-    // The shell's network is all or nothing, so a workspace with a URL list keeps its shell off the network.
-    allowNetwork: options.shellNetwork === true && !options.approvedUrls,
-    untrusted,
-    programSearch: { ...options.programSearch, shares },
-  }))
+    // Always present, so `buckle manifest` explains an absent shell rather than silently omitting it.
+    shell: () => createShellPack({
+      paths: options.paths,
+      runProcess: options.runProcess,
+      sandbox: options.sandbox,
+      writableRoots: options.writableRoots,
+      hiddenPaths: options.hiddenPaths,
+      settingsFiles: options.settingsFiles,
+      readOnlyPaths: options.mountReadOnlyPaths,
+      mounts: options.sandboxMounts,
+      unavailableReason: shellUnavailableReason(options),
+      ...(options.commandEnvironment ? { commandEnvironment: options.commandEnvironment } : {}),
+      isolation: options.shellIsolation,
+      filesystemPolicy: options.filesystemPolicy,
+      // The shell's network is all or nothing, so a workspace with a URL list keeps its shell off the network.
+      allowNetwork: options.shellNetwork === true && !options.approvedUrls,
+      untrusted,
+      programSearch: { ...options.programSearch, shares },
+    }),
 
-  // Built whether or not it may run, so `buckle manifest` explains a withheld one. Never withheld for want of an
-  // operating-system sandbox: its VM has no files, network, processes, timers, or modules (owner decision D82).
-  packs.push(createCodePack({
-    vm: options.scriptVm ?? createPiCodemodeVm({ workspace: workspaceStateKey(options.cwd) }),
-    reachableTools: options.reachableTools ?? (() => []),
-    ...(options.maxRequestBytes === undefined ? {} : { maxRequestBytes: options.maxRequestBytes }),
-    journalDirectory: journalDirectory({ stateDirectory: options.stateDirectory, cwd: options.cwd }),
-    unavailableReason: options.allowCode === false ? CODE_OFF : null,
-  }))
+    // Built whether or not it may run, so `buckle manifest` explains a withheld one. Never withheld for want of an
+    // operating-system sandbox: its VM has no files, network, processes, timers, or modules (owner decision D82).
+    code: () => createCodePack({
+      vm: options.scriptVm ?? createPiCodemodeVm({ workspace: workspaceStateKey(options.cwd) }),
+      reachableTools: options.reachableTools ?? (() => []),
+      ...(options.maxRequestBytes === undefined ? {} : { maxRequestBytes: options.maxRequestBytes }),
+      journalDirectory: journalDirectory({ stateDirectory: options.stateDirectory, cwd: options.cwd }),
+      unavailableReason: options.allowCode === false ? CODE_OFF : null,
+    }),
 
-  const validator = options.environmentValidator
-  if (validator !== undefined && unmetPackPrerequisite('environment', options) === null) {
-    // Named by its setting in a refusal the agent reads, never by its path, which may lie outside the workspace.
-    const resolved = resolveProgram(validator, { ...untrusted(), ...options.programSearch, shares, shownAs: 'The validator BUCKLE_ENV_VALIDATOR_COMMAND names' })
-    packs.push(createEnvironmentPack({ command: validator, validator: resolved, cwd: options.cwd, runProcess: options.runProcess, environment }))
+    environment: () => {
+      const validator = options.environmentValidator
+      if (validator === undefined) return undefined
+      // Named by its setting in a refusal the agent reads, never by its path, which may lie outside the workspace.
+      const resolved = resolveProgram(validator, { ...untrusted(), ...options.programSearch, shares, shownAs: 'The validator BUCKLE_ENV_VALIDATOR_COMMAND names' })
+      return createEnvironmentPack({ command: validator, validator: resolved, cwd: options.cwd, runProcess: options.runProcess, environment })
+    },
   }
+  const packs = BUILTIN_PACKS.flatMap(({ id }) => {
+    if (unmetPackPrerequisite(id, options) !== null) return []
+    const pack = factories[id]()
+    return pack === undefined ? [] : [pack]
+  })
   if (!options.allowHostGit) for (const pack of packs) {
     if (pack.id === 'git' || pack.id === 'forge') pack.unavailableReason = 'Host Git can read repository data outside per-file approval checks; the workspace setting packs.hostGit, on, explicitly trusts repository access outside the shell sandbox'
   }

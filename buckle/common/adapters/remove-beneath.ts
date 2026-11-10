@@ -4,11 +4,9 @@ import { MAX_COUNTED_ENTRIES, type TreeCount } from '../domain/effect.js'
 import { isPlainName } from '../domain/paths.js'
 import { ToolInputError } from '../domain/tool.js'
 import { openDirectoryBeneath, type PinnedDirectory } from './beneath.js'
-import { isHeldOpen } from './replace-file.js'
+import { isHeldOpen } from '../domain/filesystem-errors.js'
+import { HELD_FILE_ATTEMPTS, HELD_FILE_PAUSE_MS } from './filesystem-retry.js'
 
-/** How many times a removal Windows refuses as held is tried, and the pause before the next try, which grows each time (replace-file.ts). */
-const REMOVE_ATTEMPTS = 5
-const REMOVE_PAUSE_MS = 20
 /** How deep a folder removed whole is walked; each level holds one open directory while the walk is beneath it. */
 const MAX_REMOVE_DEPTH = 256
 
@@ -108,8 +106,8 @@ async function retried(removal: Removal, shown: string, remove: () => void): Pro
       return
     } catch (error) {
       if (removal.platform !== 'win32' || !isHeldOpen(error)) throw error
-      if (attempt >= REMOVE_ATTEMPTS) throw new ToolInputError(`${shown} is held open by another program, or Windows keeps it read-only, so it was not removed; close it and send the call again`, { code: 'ENTRY_HELD' })
-      await removal.io.pause(REMOVE_PAUSE_MS * attempt)
+      if (attempt >= HELD_FILE_ATTEMPTS) throw new ToolInputError(`${shown} is held open by another program, or Windows keeps it read-only, so it was not removed; close it and send the call again`, { code: 'ENTRY_HELD' })
+      await removal.io.pause(HELD_FILE_PAUSE_MS * attempt)
     }
   }
 }

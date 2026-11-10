@@ -5,7 +5,7 @@ import type { PathView } from '../../../domain/path-view.js'
 import { defineTool } from '../../../domain/tool.js'
 import type { ProcessRunner } from '../../../types/ports/process-runner.js'
 import { loadPackSkill } from '../pack-skill.js'
-import { MAX_TRANSFER_BYTES } from '../browser/file-transfer.js'
+import { DEFAULT_MAX_TRANSFER_BYTES } from '../../../domain/file-transfer-limits.js'
 import { findNames, listTree, patchedSize, patchFile, readFileEntry, writeFileEntry, writtenSize } from './operations.js'
 import * as schemas from './schemas.js'
 import { searchBuiltin } from './builtin-search.js'
@@ -28,7 +28,7 @@ export interface FsPackOptions {
   protectedRoots?: readonly string[]
   /** The environment ripgrep runs with (hostEnvironment); the workspace's own roots alone when absent. */
   environment?: HostEnvironment
-  /** The largest file one `buckle cp` moves (BUCKLE_MAX_TRANSFER_BYTES); MAX_TRANSFER_BYTES when absent. */
+  /** The largest file one `buckle cp` moves (BUCKLE_MAX_TRANSFER_BYTES); DEFAULT_MAX_TRANSFER_BYTES when absent. */
   maxTransferBytes?: number
   /** The longest a call may run (BUCKLE_MAX_TIMEOUT_MS): a copy is given all of it, and a partial twice its age is swept. */
   maxTimeoutMs?: number
@@ -36,7 +36,7 @@ export interface FsPackOptions {
 
 export function createFsPack(options: FsPackOptions): Pack {
   const context = { paths: options.paths, ...(options.protectedRoots ? { protectedRoots: options.protectedRoots } : {}) }
-  const transfer = { ...context, maxTransferBytes: options.maxTransferBytes ?? MAX_TRANSFER_BYTES }
+  const transfer = { ...context, maxTransferBytes: options.maxTransferBytes ?? DEFAULT_MAX_TRANSFER_BYTES }
   const maxTimeoutMs = options.maxTimeoutMs ?? DEFAULT_MAX_TIMEOUT_MS
 
   const tools = [

@@ -1,7 +1,7 @@
 import { once } from 'node:events'
 import { createLogger, createRotatingFileSink, createStderrJsonSink, levelRank, LOG_LEVELS, type LogFields, type Logger, type LoggerConfig, type LoggerRoot, type LogLevel, type LogPushOptions, type LogSink } from '@5straps/runtime'
 import { maskHeld, maskHeldJson, masksHeld } from '../services/secrets/mask.js'
-import { parseList } from './config.js'
+import { parseList } from '../domain/comma-list.js'
 import { createConsoleWriter, type ConsoleWriter } from './console.js'
 import { LOG_CLOSE_DEADLINE_MS, PROCESS_LOG_QUEUE } from './log-budget.js'
 import { isVerbose, renderEvent } from './log-render.js'

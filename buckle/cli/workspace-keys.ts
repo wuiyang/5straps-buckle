@@ -1,6 +1,6 @@
 import { MountPathSchema } from '@5straps/protocol'
 import { parseApprovalTimeout, parseBrowserCdp, parseBrowserProfile } from '../common/runtime/config.js'
-import { BUILTIN_PACKS } from '../common/services/packs/index.js'
+import { BUILTIN_PACKS } from '../common/services/packs/catalogue.js'
 import { compileCommandGlob, CommandGlobError } from '../common/domain/command-glob.js'
 import { BROWSER_IDLE_BOUNDS, BUILT_IN_SETTINGS, MAX_LISTED_SECRET_FILES, MAX_PRIVATE_RANGES, withMount, type WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
 import { cidrRefusal } from '../common/domain/ip.js'

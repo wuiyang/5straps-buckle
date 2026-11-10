@@ -1,9 +1,7 @@
 import { renameSync } from 'node:fs'
 import { setTimeout as delay } from 'node:timers/promises'
-
-/** How many times a rename over a file is tried, and the pause before the next try, which grows each time. */
-const RENAME_ATTEMPTS = 5
-const RENAME_PAUSE_MS = 20
+import { isHeldOpen } from '../domain/filesystem-errors.js'
+import { HELD_FILE_ATTEMPTS, HELD_FILE_PAUSE_MS } from './filesystem-retry.js'
 
 /** The rename and the pause replaceFile uses; a test hands in its own. */
 export interface RenameIo {
@@ -24,13 +22,8 @@ export async function replaceFile(from: string, to: string, io: RenameIo = SYSTE
       io.rename(from, to)
       return
     } catch (error) {
-      if (attempt >= RENAME_ATTEMPTS || !isHeldOpen(error)) throw error
-      await io.pause(RENAME_PAUSE_MS * attempt)
+      if (attempt >= HELD_FILE_ATTEMPTS || !isHeldOpen(error)) throw error
+      await io.pause(HELD_FILE_PAUSE_MS * attempt)
     }
   }
-}
-
-/** Whether a rename failed because another handle holds a file open, as Windows reports it. */
-export function isHeldOpen(error: unknown): boolean {
-  return error instanceof Error && 'code' in error && (error.code === 'EPERM' || error.code === 'EBUSY')
 }

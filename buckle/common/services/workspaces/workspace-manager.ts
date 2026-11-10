@@ -19,35 +19,19 @@ import { bearerDigest, digestMatches, mintToken, tokenDigest, tokenMatches } fro
 import { storedGrantMatches, workbenchesDirectory, workbenchGrant } from '../workbench/storage.js'
 import { createAuditHealth } from '../audit/audit-health.js'
 import { createExecutionBudget } from '../invocation/executions.js'
-import { unmetPackPrerequisite } from '../packs/index.js'
+import { unmetPackPrerequisite } from '../packs/catalogue.js'
 import { cdpEndpointKey, profileFolderKey } from '../packs/browser/mode.js'
 import type { ActionLog } from '../../types/ports/action-log.js'
 import { activeElsewhere, activeWorkDirectory } from './active-work.js'
 import { migrateNode, movedOntoWorkspaces, type AskName } from './migration.js'
-import { NewWorkspaceNameSchema, openRegistry, sameName, touched, WorkspaceError, WorkspaceRegistryError, type Registry, type StoredWorkspace } from './registry.js'
+import { NewWorkspaceNameSchema, openRegistry, sameName, touched, type Registry, type StoredWorkspace } from './registry.js'
+import { WorkspaceError, WorkspaceRegistryError, WorkspaceNameTakenError, WorkspaceNameRefusedError } from '../../domain/workspace-error.js'
 import { assertNoHostExposure, canonicalDirectory, checkedMountSource, exposedRoots, mountGuardsOf, overlaps, refuseMountJoining, type MountGuards } from './workspace-dirs.js'
 import { NODE_SCOPE } from '../../types/ports/client-keys.js'
 import { workspaceIdFor } from './workspace-id.js'
 import { assertNodeDefaults, browserInForceRefusal, defaultSettings, openSettingsFile, ownerMounts, ownMount, resolveSettings, scopeOf, settingsPath, withOwnerMounts, withPolicy, WorkspaceSettingsError, type WorkspaceSettings } from './workspace-settings.js'
 import type { OwnerMount } from '../../domain/mount-table.js'
 import type { FaceSession } from './face-session.js'
-
-export { WorkspaceError, WorkspaceRegistryError, WORKSPACE_REGISTRY_UNREADABLE } from './registry.js'
-
-/** A name another workspace holds already (D85, Q15): the owner is asked for another at a terminal, and refused without one. */
-export class WorkspaceNameTakenError extends WorkspaceError {
-  override readonly code = 'WORKSPACE_NAME_TAKEN'
-  constructor(name: string) { super(`A workspace is already named ${name}; choose another name`, 409) }
-}
-
-/**
- * A name the registry would refuse, the folder's own or one given (D85, Q15): the owner is asked for another at a
- * terminal, and refused naming --name without one. Raised before anything is written, so a refused name leaves no records.
- */
-export class WorkspaceNameRefusedError extends WorkspaceError {
-  override readonly code = 'WORKSPACE_NAME_REFUSED'
-  constructor(name: string, reasons: string, source: 'folder' | 'given') { super(`${source === 'folder' ? `The folder's name ${name}` : `The name ${name}`} cannot be a workspace name: ${reasons}`, 400) }
-}
 
 /** Said where a workspace was registered again while its earlier registration's runtime has work: no path, as an agent reads it. */
 const REGISTERED_AGAIN = 'This workspace was registered again while work under its earlier registration is active; it serves its new registration once that work is resolved, or after buckle serve restarts, so call again then'

@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, inject, it, vi } from 'vitest'
-import { readRecord, requestStop, serviceLogPath } from '../../common/services/node-service/serve-record.js'
+import { readRecord, requestStop } from '../../common/services/node-service/serve-record.js'
+import { serviceLogPath } from '../../common/domain/node-service-paths.js'
 import { freePort, waitForStatus } from '../support/buckle-process.js'
 
 // Phase 3, item 1 of the workspace-model slice: `buckle serve --background` starts a node detached from the terminal,

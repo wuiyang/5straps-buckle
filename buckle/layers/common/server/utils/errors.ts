@@ -1,7 +1,7 @@
 import { HTTPError } from 'h3'
 import type { AGENT_READABLE_CODES } from '../../../../common/services/agent-failure.js'
 import type { STATE_BUSY_MESSAGE } from '../../../../common/services/state-busy.js'
-import type { WORKSPACE_REGISTRY_UNREADABLE } from '../../../../common/services/workspaces/workspace-manager.js'
+import type { WORKSPACE_REGISTRY_UNREADABLE } from '../../../../common/domain/workspace-error.js'
 import type { ServiceFailure } from '../../../../common/types/service-failure.js'
 import type { OWNER_RECORD_UNAVAILABLE, OwnerRecordError } from '../../../../common/adapters/action-log/file-action-log.js'
 

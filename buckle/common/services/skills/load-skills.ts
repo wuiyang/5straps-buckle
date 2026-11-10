@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join, resolve } from 'pathe'
-import { buildSkill, type LoadedSkill } from './skill.js'
-import { isMissingPathError } from '../services/invocation/real-path.js'
-import { isPlainName } from './paths.js'
+import { buildSkill, type LoadedSkill } from '../../domain/skill.js'
+import { isMissingPathError } from '../../domain/filesystem-errors.js'
+import { isPlainName } from '../../domain/paths.js'
 
 /** Operator-supplied skills from configured directories, alongside the skills packs ship. */
 export async function loadSkills(directories: string[]): Promise<LoadedSkill[]> {
