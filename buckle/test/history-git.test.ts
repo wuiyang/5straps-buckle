@@ -374,6 +374,51 @@ it.skipIf(process.platform === 'win32')('replaces linked command setup metadata 
   } finally { await history.close() }
 })
 
+for (const matching of [false, true]) it.skipIf(process.platform === 'win32')(`replaces linked command excludes with ${matching ? 'matching' : 'different'} bytes without changing the target`, async () => {
+  const { root, workspace, directory, history, details } = await fixture()
+  const file = join(workspace, 'file'); writeFileSync(file, 'original\r\n')
+  const protectedFile = join(workspace, 'protected'); writeFileSync(protectedFile, 'protected original')
+  history.configure({ excluded: [protectedFile] })
+  const exclude = join(commandGit(directory, workspace), 'info', 'exclude')
+  const target = join(root, 'exclude-target')
+  try {
+    await history.run(details, async () => {})
+    const guarded = readFileSync(exclude, 'utf8')
+    expect(guarded).toBe('/protected\n')
+    const targetContent = matching ? guarded : 'owner file must stay unchanged'
+    writeFileSync(target, targetContent)
+    rmSync(exclude); symlinkSync(target, exclude)
+    await history.run({ ...details, stageId: 'two' }, async () => { writeFileSync(file, 'changed\r\n'); writeFileSync(protectedFile, 'protected changed') })
+    const captured = (await history.list()).at(-1)!
+    expect(captured).toMatchObject({ restorable: true, paths: [file] })
+    expect(readFileSync(target, 'utf8')).toBe(targetContent)
+    expect(lstatSync(exclude).isSymbolicLink()).toBe(false)
+    expect(lstatSync(exclude).isFile()).toBe(true)
+    expect(readFileSync(exclude, 'utf8')).toBe(guarded)
+    await history.restore(captured.id)
+    expect(readFileSync(file, 'utf8')).toBe('original\r\n')
+    expect(readFileSync(protectedFile, 'utf8')).toBe('protected changed')
+  } finally { await history.close() }
+})
+
+it('repairs same-size corrupted command excludes without recording protected content', async () => {
+  const { workspace, directory, history, details } = await fixture()
+  const file = join(workspace, 'file'); writeFileSync(file, 'original')
+  const protectedFile = join(workspace, 'protected'); writeFileSync(protectedFile, 'protected original')
+  history.configure({ excluded: [protectedFile] })
+  const exclude = join(commandGit(directory, workspace), 'info', 'exclude')
+  try {
+    await history.run(details, async () => {})
+    const guarded = readFileSync(exclude, 'utf8')
+    writeFileSync(exclude, ' '.repeat(Buffer.byteLength(guarded)))
+    await history.run({ ...details, stageId: 'two' }, async () => { writeFileSync(file, 'changed'); writeFileSync(protectedFile, 'protected changed') })
+    const captured = (await history.list()).at(-1)!
+    expect(captured).toMatchObject({ restorable: true, paths: [file] })
+    expect(readFileSync(exclude, 'utf8')).toBe('/protected\n')
+    expect(storedObjects(directory).some(content => content.includes('protected original') || content.includes('protected changed'))).toBe(false)
+  } finally { await history.close() }
+})
+
 
 it('repairs same-size corrupted command safety attributes and restores exact CRLF bytes', async () => {
   const { workspace, directory, history, details } = await fixture()

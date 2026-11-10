@@ -137,7 +137,10 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
     const protect = input.excluded().filter(path => isInside(root, path) && path !== root).map(path => relative(root, path))
     const excludes = protect.map(name => `/${escapeIgnore(name)}`).join('\n') + '\n'
     const file = join(state.git, 'info', 'exclude')
-    if (readText(file) !== excludes) writeFileSync(file, excludes, { mode: 0o600 })
+    if (!regularFile(file, Buffer.byteLength(excludes)) || readGitMetadata(file) !== excludes) {
+      rmSync(file, { force: true })
+      writeFileSync(file, excludes, { mode: 0o600, flag: 'wx' })
+    }
     const owner = ownerGitDirectory(root)
     const own = owner === undefined ? undefined : join(owner, 'info', 'exclude')
     return { ...state, protect, extra: own !== undefined && regularFile(own) ? ['-c', `core.excludesFile=${own}`] : [] }
