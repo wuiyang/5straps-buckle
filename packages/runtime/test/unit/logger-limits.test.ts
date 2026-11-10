@@ -17,6 +17,13 @@ async function logOnce(fields: Record<string, unknown>, options: { omitKeys?: st
   return sink.events[0]!
 }
 
+function threadCpuMilliseconds(work: () => unknown): number {
+  const started = process.threadCpuUsage()
+  work()
+  const used = process.threadCpuUsage(started)
+  return (used.user + used.system) / 1_000
+}
+
 const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
 // AWS example keys use the base64 letters, digits and '/' without '+'.
 const AWS_SECRET = BASE64.replace('+', '')
@@ -433,12 +440,9 @@ describe('what an approval display hides (owner ruling B)', () => {
     ['a long name with no =', `A${'b'.repeat(1_048_000)}`],
     ['deep JSON', `${'['.repeat(500_000)}${']'.repeat(500_000)}`],
     ['a long named JSON value', `{"token":[${'1,'.repeat(500_000)}1]}`],
-  ])('reads a 1 MiB value of %s in one pass', (_, text) => {
+  ])('reads a 1 MiB value of %s in one pass under 1,000 ms of CPU', (_, text) => {
     for (const context of ['value', 'text', 'json'] as const) {
-      const started = process.threadCpuUsage()
-      redactCredentials(text, context)
-      const elapsed = process.threadCpuUsage(started)
-      expect((elapsed.user + elapsed.system) / 1_000, context).toBeLessThan(1_000)
+      expect(threadCpuMilliseconds(() => redactCredentials(text, context)), context).toBeLessThan(1_000)
     }
   })
 })
@@ -732,12 +736,6 @@ describe('bounded redaction scans (URL pattern super-linear)', () => {
     'trailing punctuation in a URL parameter': `https://x.example/?token=${fill(').', 'x')}`,
   }
 
-  function elapsedMs(work: () => unknown): number {
-    const start = performance.now()
-    work()
-    return performance.now() - start
-  }
-
   it('redactText scans at most 8 KB and marks the rest as truncated', () => {
     const redacted = redactText(`${'x'.repeat(8_000)} Bearer abcdefghijklmnop ${'y'.repeat(LENGTH)}`)
     expect(redacted).not.toContain('abcdefghijklmnop')
@@ -745,14 +743,14 @@ describe('bounded redaction scans (URL pattern super-linear)', () => {
     expect(Buffer.byteLength(redacted)).toBeLessThan(8_300)
   })
 
-  it.each(Object.entries(adversarial))('redactText finishes a 100k-character %s string under 100 ms', (_, text) => {
-    expect(elapsedMs(() => redactText(text))).toBeLessThan(100)
+  it.each(Object.entries(adversarial))('redactText finishes a 100k-character %s string under 100 ms of CPU', (_, text) => {
+    expect(threadCpuMilliseconds(() => redactText(text))).toBeLessThan(100)
   })
 
-  it.each(Object.entries(adversarial))('a logger allowed 200 KB strings builds a 100k-character %s event under 100 ms', async (_, text) => {
+  it.each(Object.entries(adversarial))('a logger allowed 200 KB strings builds a 100k-character %s event under 100 ms of CPU', async (_, text) => {
     const sink = memorySink()
     const root = createLogger({ component: 'test', sinks: [sink], maxStringBytes: 200_000, maxEventBytes: 400_000 })
-    expect(elapsedMs(() => root.logger.info('adversarial', { note: text }))).toBeLessThan(100)
+    expect(threadCpuMilliseconds(() => root.logger.info('adversarial', { note: text }))).toBeLessThan(100)
     await root.flush()
     expect(sink.events).toHaveLength(1)
   })
