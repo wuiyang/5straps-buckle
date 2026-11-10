@@ -1,7 +1,7 @@
 import { OWNER_RECORD_FAILED, type OwnerRecordError } from '../common/adapters/action-log/file-action-log.js'
 import { IGNORE_WARNING_FLAG } from '../common/domain/global-flags.js'
 import { RECORD_FAILED_EXIT } from './exit-codes.js'
-import type { CliResult } from './main.js'
+import type { CliResult } from './result.js'
 
 /** The owner's command stopped before it ran: what failed, the write's own error, and how to run it anyway. */
 export function stoppedForRecord(error: OwnerRecordError): CliResult {

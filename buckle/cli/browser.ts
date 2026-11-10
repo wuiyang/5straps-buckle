@@ -1,19 +1,13 @@
+export { isBrowserClose } from './usage.js'
+import { BROWSER_CLOSE_USAGE as USAGE } from './usage.js'
+export { BROWSER_CLOSE_USAGE as USAGE } from './usage.js'
+import type { CliResult } from './result.js'
 import type { BrowserCloseCounts } from '../common/domain/pack.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
-export interface CliResult {
-  exitCode: number
-  detail?: string
-}
 
-export const USAGE = `Usage: buckle browser close [--workspace <name>]
-Closes every browser the workspace's agents left open, in every Buckle process on this machine, and drops the secret
-values their pages hold. It needs no running node; a running node finds them gone at its next call.`
 
-/** Whether a command line is the owner's `buckle browser close`, never a browser tool, which `buckle browser command` runs. */
-export function isBrowserClose(command: string, argv: readonly string[]): boolean {
-  return command === 'browser' && argv[0] === 'close'
-}
+
 
 /**
  * `buckle browser close` (Slice F4, item 6): every browser the workspace recorded is closed under the sessions lock, a

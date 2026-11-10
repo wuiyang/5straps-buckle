@@ -1,3 +1,7 @@
+import { answerWithoutConfiguration } from './help.js'
+export { answerWithoutConfiguration } from './help.js'
+import { APPROVALS_USAGE, APPROVE_USAGE, GRANTS_USAGE, PLUGIN_USAGE, WORKSPACES_USAGE } from './usage.js'
+import type { CliResult } from './result.js'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { actionsPath, environmentFilePath, loadConfig, type NodeConfig } from '../common/runtime/config.js'
 import { NODE_SCOPE } from '../common/types/ports/client-keys.js'
@@ -13,7 +17,6 @@ import { approveCommand, denyCommand, describeAction, describeApprovalRequest, d
 import { RECORDED_BEFORE_NOTE } from '../common/domain/approval/recorded-before-note.js'
 import { auditOf, judgeNoteOf } from '../common/services/judge/judge-gate.js'
 import { floorCause } from '../common/domain/permission/judged.js'
-import type { JudgeAudit } from '../common/types/ports/action-log.js'
 import { shownCall } from '../common/domain/approval/asked-call.js'
 import type { PendingAsk } from '../common/services/approvals/approval-registry.js'
 import { saveEndingLine, settleUnsaved, unsavedOf, type SaveEnding, type Unsaved } from '../common/adapters/approval/grant-save-question.js'
@@ -32,17 +35,16 @@ import { withOperationScope } from '@5straps/runtime'
 import { logger } from '../common/runtime/log.js'
 import { setupCli } from './setup.js'
 import { buildToolArgs, commandToToolName, parseArgsOptions, toolNameToCommand } from './arguments.js'
-import { policyCommand, repairStoredPolicy, USAGE as POLICY_USAGE } from './policy.js'
+import { policyCommand, repairStoredPolicy } from './policy.js'
 import { takeTarget, TargetError, type CommandTarget } from './target.js'
-import { keysCommand, USAGE as KEYS_USAGE } from './keys.js'
+import { keysCommand } from './keys.js'
 import { StoredPolicyError } from '../common/domain/policy.js'
 import { isStateBusy } from '../common/services/state-busy.js'
 import { watchApprovals } from './approvals-watch.js'
-import { badInput, CHECK_URL_BAD_INPUT, checkUrlCommand, checkUrlUnreadable, USAGE as CHECK_URL_USAGE } from './check-url.js'
-import { workspaceRegistryCommand, USAGE as WORKSPACE_USAGE } from './workspace.js'
-import { historyCommand, USAGE as HISTORY_USAGE } from './history.js'
-import { browserCloseCommand, isBrowserClose, USAGE as BROWSER_CLOSE_USAGE } from './browser.js'
-import { helpLines, MODES_HELP } from './dangerously-allow-words.js'
+import { badInput, CHECK_URL_BAD_INPUT, checkUrlCommand, checkUrlUnreadable } from './check-url.js'
+import { workspaceRegistryCommand } from './workspace.js'
+import { historyCommand } from './history.js'
+import { browserCloseCommand, isBrowserClose } from './browser.js'
 import { asksForHelp } from './help-request.js'
 import { runInit } from './init.js'
 import { settingsCommand } from './settings.js'
@@ -51,18 +53,8 @@ import { StateFileError } from '../common/adapters/json-file-store.js'
 import { runProcess } from '../common/adapters/process-runner.js'
 import { serviceManagerFor } from '../common/adapters/service-manager/index.js'
 import { builtMainPath } from '../common/runtime/package-root.js'
-import { BUCKLE_BUILD } from '../common/runtime/version.js'
 import { terminalChooseSave, terminalConfirm, type ChooseSave, type Confirm } from './terminal-consumer.js'
 
-export interface CliResult {
-  exitCode: number
-  /** For the command's audit entry: what a widened approval covers. */
-  detail?: string
-  /** For the command's audit entry: what the decision AI said at the owner's request (D91). */
-  judge?: JudgeAudit
-  /** For the command's audit entry: the decision applied though its grant did not save, so an exit of 5 still reads ok. */
-  applied?: true
-}
 
 /**
  * Needs no node config beyond where the audit log lives: init is what writes the configuration. The config is checked
@@ -100,20 +92,10 @@ export function runServiceCommand(argv: string[], options: { skipOwnerOnlyCheck?
     manager: location => serviceManagerFor({ platform: process.platform, environment, run: runProcess, location }) }))
 }
 
-/** Help and the version, which need no configuration; null for every other command. */
-export function answerWithoutConfiguration(argv: string[]): CliResult | null {
-  const [command, ...rest] = argv
-  if (!command || command === 'help' || command === '--help' || command === '-h') return printUsage()
-  if (command === '--version' || command === '-v') return printVersion()
-  // A help request on an owner's command is answered here, before any workspace is found or any entry is written to the log.
-  const usage = COMMAND_USAGE.get(command)
-  if (usage !== undefined && (asksForHelp(rest) || (rest[0] === 'help' && HELP_WORD_COMMANDS.includes(command)))) return printCommandUsage(usage)
-  // `buckle browser` runs the browser's tools; only its `close` is the owner's own command.
-  if (isBrowserClose(command, rest) && asksForHelp(rest)) return printCommandUsage(BROWSER_CLOSE_USAGE)
-  return null
-}
+
 
 export type { ChooseSave, Confirm } from './terminal-consumer.js'
+export type { CliResult } from './result.js'
 
 /** What an owner's command asks at this process's terminal: null for each where the process has none. */
 interface OwnerPrompts { confirm: Confirm | null; chooseSave: ChooseSave | null }
@@ -337,82 +319,6 @@ function dispatchRuntimeCommand(input: CommandContext): CliResult | Promise<CliR
   throw new Error(`No handler for the owner command ${command}`)
 }
 
-function printVersion(): CliResult {
-  process.stdout.write(`${BUCKLE_BUILD}\n`)
-  return { exitCode: 0 }
-}
-
-function printCommandUsage(usage: string): CliResult {
-  process.stdout.write(usage.endsWith('\n') ? usage : `${usage}\n`)
-  return { exitCode: 0 }
-}
-
-function printUsage(): CliResult {
-  process.stdout.write(`buckle ${BUCKLE_BUILD}, the 5straps execution node
-
-  buckle init                        Set this machine's node up once, and serve the current folder as a
-                                     workspace; prints its agent token once
-  buckle serve [--background]        Serve every online workspace over HTTP: native RPC and MCP; detached
-                                     from this terminal with --background
-  buckle service install [--now] | uninstall | start | stop | restart | status [--json] | logs [-f] [-n N]
-                                     Run the node with no terminal, starting at every login
-  buckle mcp [--workspace <name> | --dir <path>]   Serve one workspace's MCP over stdio
-
-  A command acts on the workspace --workspace <name> or --dir <path> names, else on the one whose
-  folder holds the current directory. A workspace's name is the folder's by default; its id is taken too.
-
-  buckle tools                       List available tools
-  buckle manifest                    Print the full manifest
-  buckle skills [name]               List skills, or print one
-
-  buckle <group> <verb> [args]       Run a tool, e.g. buckle fs read src/app.ts
-  buckle call <tool> --json '{...}'  Run a tool with raw JSON arguments
-  buckle cp <from> <to> [--node <url>] [--token-file <file>]
-                                     Copy one file between here and a workspace on a node, as
-                                     <path> and <workspace>:<path>; see buckle cp --help
-
-  buckle approvals [--json] [--workspace <name> | --all]   Requests waiting for a decision (the current workspace, or every online one)
-  buckle approvals --watch [--workspace <name> | --all]    Ask about each request as it arrives
-  buckle approvals show <token> [--json] [--workspace <name>]
-                                   One request whole, and the code_run script that made it
-  buckle approvals judge <token> [--approve-if-safe] [--workspace <name>]
-                                   The decision AI's verdicts on one request, beside its whole action;
-                                   --approve-if-safe approves an interpreter request, or an allowed command the
-                                   quick stage turned into an ask, once where the thorough stage rates it safe
-                                   at 0.8 or above, and never one at the destructive floor
-  buckle approve <token> [--scope once|session|always] [--host '*.example.com' | --below] [--deny] [--workspace <name> | --all]
-                                   Shows the whole action, then approves only once you confirm at a terminal
-  buckle check-url <url|host> [--session <id>] [--workspace <name>]   Exits 0 approved, 1 denied, 3 asks, 4 not listed
-  buckle grants list | revoke <id>
-  buckle workspace init [--dir <path>] [--name <name>] | add <dir> [--name <name>] | list | show [--json]
-  buckle workspace enable <name> | disable <name> | rename <name> <new-name> | remove <name> [--purge]
-  buckle workspace set <key> <value> | unset <key>
-  buckle workspace token create [--label <text>] | list | revoke <token-id>
-  buckle workspaces list | inspect <id> | publish <id> | discard <id> | prune
-  buckle history list [--last <n>] | restore <id> | restore-stage <stage> <session> | recover <id> | prune
-                                   The change history; --last shows n checkpoints back from the current one
-  buckle browser close [--workspace <name>]   End every browser the workspace's agents left open, and the
-                                   secret values their pages hold
-  buckle log [--limit N] [--json]    Show what this node actually did
-  buckle plugin list | add <id> <specifier> | remove <id>
-  buckle policy show | allow-command | deny-command | allow-url | mount | ...
-  buckle policy deny-tool <tool> | allow-tool <tool>   Refuse a tool outright, or lift that
-  buckle policy dangerously-allow on|safe|off
-${helpLines({ text: `DANGEROUS: allow asks in the workspace without a person; ${MODES_HELP}. See buckle policy --help`, indent: 35, width: 92 })}
-  buckle settings show | set <key> <value> | unset <key>   Node settings in the environment file
-  buckle keys enroll <public-key> --purpose <p> --workspace <w> | list | revoke <key-id>
-                                   Client keys trusted for signed setup and approvals, by scope
-  buckle client keygen | key | request <METHOD> <url> | approve <node-url> <token>
-                                   This device's signing key, a signed request with it, and a signed approval
-
-  buckle --version                   Print the version
-  buckle <command> --skip-owner-only-check   Warn about, rather than refuse, a state directory or key file other users can reach
-  buckle <command> --ignore-warning   Run an owner's command whose record the audit log cannot take, which otherwise
-                                     stops naming the error (exit 6); its record is still tried. Never a tool call
-`)
-  return { exitCode: 0 }
-}
-
 /** The audit view. Every attempt appears, so a refusal is as visible as a success. */
 function printLog(runtime: BuckleRuntime, argv: string[]): CliResult {
   const { values } = parseArgs({
@@ -485,12 +391,6 @@ interface CommandInput {
   argv: string[]
 }
 
-/**
- * The queue a person answers from. `buckle approve` needs a token, and a request only reaches a
- * terminal when a prompt was on screen there, so without this the tokens waiting on a node were
- * readable through the admin API alone.
- */
-const APPROVALS_USAGE = 'Usage: buckle approvals [--json] [--watch] [--workspace <name> | --all], buckle approvals show <token> [--json] [--workspace <name> | --all], or buckle approvals judge <token> [--approve-if-safe] [--workspace <name> | --all]'
 
 function approvalsArguments(argv: string[]) {
   return parseArgs({ args: argv, options: { json: { type: 'boolean' }, watch: { type: 'boolean' }, 'approve-if-safe': { type: 'boolean' } }, allowPositionals: true })
@@ -695,25 +595,8 @@ async function watch(input: { runtimes: () => Promise<BuckleRuntime[]>; pinned?:
   }
 }
 
-/**
- * Decides one ask at the node. Owner decision D17: the whole action is printed first, as `buckle approvals`
- * shows it, and an approval is recorded only after the person at a terminal confirms it. Without a terminal
- * nothing is approved (a denial still is), and an ask recorded before this build, whose whole call was never
- * kept, can only be denied (review H2).
- */
-const APPROVE_USAGE = "Usage: buckle approve <token> [--scope once|session|always] [--host '*.example.com' | --below] [--deny] [--workspace <name> | --all]"
 
-const GRANTS_USAGE = 'Usage: buckle grants | grants revoke <id>\nLists the standing grants, or revokes one by its id.'
-const PLUGIN_USAGE = 'Usage: buckle plugin | plugin add <id> <module-specifier> | plugin remove <id>\nLists the plugins, adds one, or removes one.'
-const WORKSPACES_USAGE = 'Usage: buckle workspaces list | inspect <id> | publish <id> | discard <id> | prune'
 
-/** The usage each audited owner command prints for a help request. */
-const COMMAND_USAGE: ReadonlyMap<string, string> = new Map([
-  ['approve', APPROVE_USAGE], ['approvals', APPROVALS_USAGE], ['check-url', CHECK_URL_USAGE], ['grants', GRANTS_USAGE], ['workspaces', WORKSPACES_USAGE],
-  ['history', HISTORY_USAGE], ['plugin', PLUGIN_USAGE], ['policy', POLICY_USAGE], ['workspace', WORKSPACE_USAGE], ['keys', KEYS_USAGE],
-])
-/** The commands whose own first word `help` also asks for the usage. */
-const HELP_WORD_COMMANDS: readonly string[] = Object.freeze(['policy', 'workspace'])
 
 function approveArguments(argv: string[]) {
   return parseArgs({ args: argv, options: { scope: { type: 'string' }, deny: { type: 'boolean' }, host: { type: 'string' }, below: { type: 'boolean' } }, allowPositionals: true })
@@ -763,6 +646,7 @@ type CliDecision = Extract<CoreDecisionInput, { source: 'cli' }>
 
 /** What `buckle approve` prints of a recorded decision, and the line its audit entry keeps of a widened one. */
 function recordedLine(input: { receipt: Exclude<CoreDecisionReceipt, { status: 'refused' }>; decision: DecisionBody; workspaceName: string }): { line: string; detail?: string } {
+  /** For the command's audit entry: what a widened approval covers. */
   const { decision: { token, scope }, workspaceName } = input
   const applied = input.receipt.status === 'applied' ? input.receipt : undefined
   if (applied?.granted !== undefined) return { line: `Approved ${token} (${scope}) for ${printable(applied.granted)}, every delete in that folder and its subfolders, in workspace ${workspaceName}`, detail: `write_scope ${scope} approval widened to the folder and its subfolders` }

@@ -1,3 +1,6 @@
+import { SERVICE_USAGE } from './usage.js'
+export { SERVICE_USAGE } from './usage.js'
+import type { CliResult } from './result.js'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { setTimeout as delay } from 'node:timers/promises'
 import { dirname, join } from 'pathe'
@@ -18,20 +21,7 @@ import type { ProcessRunner } from '../common/types/ports/process-runner.js'
 import { ServiceManagerError, type InstalledService, type NodeLocation, type ServiceDefinition, type ServiceManager } from '../common/types/ports/service-manager.js'
 import { asksForHelp } from './help-request.js'
 
-export interface CliResult {
-  exitCode: number
-  /** For the command's audit entry. */
-  detail?: string
-}
 
-export const SERVICE_USAGE = `Usage: buckle service install [--now] | uninstall | start | stop | restart | status [--json] | logs [-f] [-n <lines>]
-
-Runs this machine's node with no terminal, starting at login: a systemd user unit on Linux, a launchd agent on
-macOS, a Task Scheduler task on Windows (docs/user/how-to/service.md). One node per machine. install writes the
-definition and enables it, and --now starts it too; --skip-owner-only-check on install is kept in the definition.
-uninstall stops it and removes the definition, keeping the state directory. Where no service manager answers,
-buckle serve --background runs the node until it stops, and stop, status, and logs work on that node too.
-`
 
 /** How long a command waits for the node to listen after a start, and to end after a stop. */
 const START_WAIT_MS = 30_000
@@ -86,6 +76,7 @@ export const UNSUPPORTED_EXIT = 2
  * fixed list besides. A change is audited in the node's log, where the node has a state directory.
  */
 export async function serviceCommand(input: ServiceCommandInput): Promise<CliResult> {
+  /** For the command's audit entry. */
   const out = input.out ?? (text => void process.stdout.write(text))
   const err = input.err ?? (text => void process.stderr.write(text))
   const [action, ...rest] = input.argv

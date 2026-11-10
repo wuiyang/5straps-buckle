@@ -1,3 +1,6 @@
+import { POLICY_USAGE as USAGE } from './usage.js'
+export { POLICY_USAGE as USAGE } from './usage.js'
+import type { CliResult } from './result.js'
 import { readFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { allowedInterpreters, destructivePatterns, emptyWorkspacePolicy, ToolNameSchema, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
@@ -12,45 +15,11 @@ import type { BuckleRuntime, DangerouslyAllowState } from '../common/services/wo
 import type { DangerouslyAllowMode } from '../common/types/ports/dangerously-allow-store.js'
 import type { OwnerRecordChoice } from '../common/types/ports/action-log.js'
 import { ownMount, withPolicy, WorkspaceSettingsInvalidError, type FloorEntries, type SettingSource } from '../common/services/workspaces/workspace-settings.js'
-import { coversOf, EARLIER_BUILD, helpLines, MODES_HELP } from './dangerously-allow-words.js'
+import { coversOf, EARLIER_BUILD } from './dangerously-allow-words.js'
 import type { CommandTarget } from './target.js'
 import { mountTableText } from './workspace.js'
 
-export interface CliResult {
-  exitCode: number
-  /** For the audit entry: the tool a switch names. Other policy arguments stay out of the log. */
-  detail?: string
-}
 
-export const USAGE = `Usage: buckle policy <action> [--workspace <name> | --dir <path>]
-Acts on the workspace named, or else on the one whose folder holds the current directory.
-
-  buckle policy show [--json]                 The workspace's policy, and its mount table
-  buckle policy allow-command <glob>          Only matching command lines may run
-  buckle policy deny-command <glob>           Matching command lines are refused; deny wins
-  buckle policy destructive-command <glob>    Matching command lines ask first, once or per session
-  buckle policy allow-interpreter <name>      Read calls of this interpreter (python3, node) as ordinary
-                                              commands; any other runs code Buckle cannot read
-  buckle policy remove-interpreter <name>     Read that interpreter as unknown again
-  buckle policy allow-url <host|url-prefix>   Only listed hosts and URLs may be reached
-  buckle policy mount <path> | unmount        Show the workspace to the agent as this path
-  buckle policy deny-tool <tool>              Refuse this tool outright, whatever its pack allows
-  buckle policy allow-tool <tool>             Lift that refusal; a tool in a withheld pack stays withheld
-  buckle policy remove <pattern>              Drop a pattern from every list
-  buckle policy import <file.json>            Replace the workspace's policy from a file
-  buckle policy export                        Print the workspace's policy as JSON
-  buckle policy clear                         Empty every list
-  buckle policy dangerously-allow on|safe|off
-${helpLines({ text: `DANGEROUS: allow asks in the workspace without a person, bound to the workspace root, or its mount when one is set; ${MODES_HELP}`, indent: 46, width: 98 })}
-
-Exits 0 when done, 1 when the node refuses the change or the input, and 2 when the change conflicts
-with the node's state (the refusals the setup face answers 409): active work, or a policy file that
-names the dangerously-allow switch.
-
-A command glob is matched one shell word at a time. 'pnpm {build,test} *' allows 'pnpm build'
-with any arguments after it: * stands for one word, and a trailing * for the rest of the line.
-An allow glob must cover the whole line; a deny glob covers every line starting with it.
-`
 
 /**
  * Edits the policy of the workspace the command targets (D83 addendum (7)), in its workspace.json. Each change is
@@ -345,6 +314,7 @@ async function saveTool(runtime: BuckleRuntime, action: string, tool: string, po
   const pack = runtime.manifest().packs.find(candidate => candidate.toolNames.includes(tool))
   if (!pack) process.stdout.write(`\n${tool} is not a tool on this node now; the switch is stored and applies if a pack brings it.\n`)
   else if (pack.unavailableReason) process.stdout.write(`\n${tool} stays unavailable: its pack ${pack.id} is withheld. ${pack.unavailableReason}\n`)
+  /** For the audit entry: the tool a switch names. Other policy arguments stay out of the log. */
   return { ...result, detail: `${action} ${tool}` }
 }
 

@@ -1,3 +1,5 @@
+import { INIT_USAGE as USAGE } from './usage.js'
+import type { CliResult } from './result.js'
 import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { createInterface } from 'node:readline/promises'
@@ -31,27 +33,7 @@ import { runningNode, type RunningNode } from '../common/services/node-service/s
 import { homeDirectory } from '../common/domain/paths.js'
 import { wordList } from '../common/domain/word-list.js'
 
-export interface CliResult {
-  exitCode: number
-}
 
-const USAGE = `Usage: buckle init [--dir <dir>] [--mount <path>] [--volume <local>:<sandbox>[:ro]]... [--name <name>] [--port <n>]
-                  [--out <file>] [--yes] [--force]
-
-Sets this machine's node up once, then serves a folder as one of its workspaces: the current directory, or --dir
-(--root is its earlier name), seen by the agent at /workspace, or at --mount. Each --volume shares another host
-folder or file at a sandbox path, read-write unless :ro, as buckle workspace mount add does; a folder a workspace
-serves already takes none here, and mount add adds to that workspace. --name names the node.
-
-The node's settings go to buckle.env in the state directory (~/.5straps/buckle, or BUCKLE_STATE_DIR), owner-only;
---out or BUCKLE_ENV_FILE selects a custom file instead, which buckle mcp reads only inside the state directory. They
-hold its name, host, port and admin credential, and a node already set up keeps them unless --force writes them
-again. The workspace's own settings go to its workspace.json. In a terminal, init asks for the folder, more folders
-to mount, which packs to offer, the shell, host Git, and the approved hosts; --yes, or no terminal, takes the
-defaults and the --volume mounts alone, and says what it kept. Change them later with buckle workspace set,
-buckle workspace mount, and buckle policy. The workspace's agent token is printed once; buckle workspace token create
-mints more.
-`
 
 /** Where the questions are asked. A terminal by default; a test hands in scripted answers. */
 export interface InitPrompt {

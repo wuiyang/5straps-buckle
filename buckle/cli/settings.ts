@@ -1,3 +1,4 @@
+import type { CliResult } from './result.js'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { resolve } from 'pathe'
 import { parseEnv } from 'node:util'
@@ -16,11 +17,6 @@ import { homeDirectory, isInside } from '../common/domain/paths.js'
 import { asksForHelp } from './help-request.js'
 import { findNodeSetting, NODE_SETTINGS, normaliseSetting, ROOT_SETTING, type NodeSetting } from './node-settings.js'
 
-export interface CliResult {
-  exitCode: number
-  /** For the command's audit entry: the key written and the value it now holds. */
-  detail?: string
-}
 
 const usageText = (restart: RestartRoute) => `Usage:
   buckle settings show                 Node settings, their values and where each came from
@@ -178,6 +174,7 @@ async function write(context: SettingsContext, name: string, raw: string | null)
   process.stdout.write(`${restartLine(context.restart)}\n`)
   const note = AFTER_CHANGE.get(setting.key)
   if (note !== undefined) process.stdout.write(`${note}\n`)
+  /** For the command's audit entry: the key written and the value it now holds. */
   return { exitCode: 0, detail: next === null ? `${setting.key} unset` : setting.logsValue === false ? `${setting.key} set` : `${setting.key}=${next}` }
 }
 

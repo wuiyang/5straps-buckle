@@ -1,3 +1,6 @@
+import { HISTORY_USAGE as USAGE } from './usage.js'
+export { HISTORY_USAGE as USAGE } from './usage.js'
+import type { CliResult } from './result.js'
 import { parseArgs } from 'node:util'
 import { relative } from 'pathe'
 import { printable } from '../common/domain/approval-instruction.js'
@@ -6,11 +9,7 @@ import { SnapshotConflictError } from '../common/services/history/snapshot.js'
 import { RECENT_CHECKPOINTS_MAX, RestoreRefusedError, withConflictPath, type CheckpointSummary } from '../common/services/history/journal.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
-export interface CliResult {
-  exitCode: number
-}
 
-export const USAGE = 'Usage: buckle history list [--last <n>] | restore <id> | restore-stage <stage> <session> | recover <id> | prune [--legacy] [--force]'
 /** How many files `list --last` names for one checkpoint before it counts the rest. */
 const SHOWN_FILES = 10
 

@@ -1,12 +1,12 @@
+import { CHECK_URL_USAGE as USAGE } from './usage.js'
+export { CHECK_URL_USAGE as USAGE } from './usage.js'
+import type { CliResult } from './result.js'
 import { parseArgs } from 'node:util'
 import { normaliseUrl, UrlNormaliseError } from '../common/domain/url-normalise.js'
 import { describeGrantScope, judgeUrl, type NetworkApproval, type UrlVerdictKind } from '../common/domain/url-verdict.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { WorkspaceError } from '../common/domain/workspace-error.js'
 
-export interface CliResult {
-  exitCode: number
-}
 
 /**
  * 0 approved and 1 denied, like a test; 3 is the code a gated CLI call already exits with, and
@@ -16,8 +16,6 @@ const EXIT_CODES: Record<UrlVerdictKind, number> = { approved: 0, denied: 1, ask
 /** Anything that stops a verdict being reached. Never 1, which would read as a denial. */
 export const CHECK_URL_BAD_INPUT = 2
 
-export const USAGE = `Usage: buckle check-url <url|host> [--session <id>] [--workspace <name> | --dir <path>]
-Exits 0 approved, 1 denied, 3 asks, 4 not listed, 2 when no verdict could be reached.`
 
 /**
  * `buckle check-url`: what the network rules would answer for one URL or host, in one line. It is

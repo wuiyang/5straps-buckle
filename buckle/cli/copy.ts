@@ -1,3 +1,6 @@
+import { COPY_USAGE } from './usage.js'
+export { COPY_USAGE } from './usage.js'
+import type { CliResult } from './result.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { closeSync, constants, fstatSync, lstatSync, openSync, read, readSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { open, type FileHandle } from 'node:fs/promises'
@@ -17,31 +20,7 @@ import type { RunningNode } from '../common/services/node-service/serve-record.j
 import { TARGET_IS_DIRECTORY } from '../common/services/packs/fs/transfer.js'
 import { copyNode, copyToken, CopyRefusal, CopyUsageError, parseEnd, refuseTokenArgument, type CopyEnd } from './copy-ends.js'
 
-export interface CliResult { exitCode: number }
 
-export const COPY_USAGE = `Usage: buckle cp <from> <to> [--node <url>] [--token-file <file>]
-
-Copies one file between this machine and a workspace on a Buckle node. The bytes go over the node's HTTP face, never
-through an agent, and the node judges each copy as it judges fs_write and fs_read: a copy that needs a person waits
-here until it is approved at the node, or denied, sent again under the same request; Ctrl-C stops it.
-
-  <path> or local:<path>     a file on this machine
-  <workspace>:<path>         a file in that workspace, by its name or id; <path> as fs_write takes it there,
-                             relative to the workspace's folder or under its mount such as /workspace;
-                             <workspace>: alone is the workspace's folder
-
-  A slash before the first colon keeps an end on this machine (./notes:2026.txt). On Windows, C:\\ or C:/ is a
-  drive here, so a workspace named with one letter is written by its id. A workspace whose name holds a colon is
-  written by its id too. A <to> that is a folder takes the file's own name; a <to> whose folder does not exist is
-  refused, as no folder is made. Two files on this machine: use cp. Two workspaces: not yet, as a token opens one
-  workspace; copy the file out to this machine, then into the other. Workspaces on two nodes: not yet.
-
-  --node <url>        The node, such as http://127.0.0.1:4320; else BUCKLE_NODE_URL; else the node buckle serve runs here
-  --token-file <file> An owner-only file with a BUCKLE_AUTH_TOKEN=<token> line, the workspace's agent token; else
-                      BUCKLE_AUTH_TOKEN. The token is never taken from the command line.
-
-Exits 0 once copied, 1 when the node or the copy refuses, 2 on a command line it cannot read.
-`
 
 /** How long a connection to the node may take, as buckle client waits (cli/client.ts). */
 const CONNECT_TIMEOUT_MS = 30_000

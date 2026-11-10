@@ -1,3 +1,6 @@
+import { KEYS_USAGE as USAGE } from './usage.js'
+export { KEYS_USAGE as USAGE } from './usage.js'
+import type { CliResult } from './result.js'
 import { parseArgs } from 'node:util'
 import { ClientKeyError, createFileClientKeys, describeScope } from '../common/adapters/keys/file-client-keys.js'
 import { loadNodeKey } from '../common/adapters/keys/file-node-key.js'
@@ -6,21 +9,7 @@ import { createSetupSessions } from '../common/services/access/setup-sessions.js
 import { NODE_SCOPE, type KeyPurpose } from '../common/types/ports/client-keys.js'
 import type { WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 
-export interface CliResult {
-  exitCode: number
-  /** For the audit entry: the verb and the key's fingerprint, never the key. */
-  detail?: string
-}
 
-export const USAGE = `Usage:
-  buckle keys enroll <public-key> --purpose setup|approval --workspace <name>|node [--label <text>]
-                                                     Trust a person's client key for signed setup changes
-                                                     or approval decisions, on one workspace or the whole
-                                                     node (the registry needs node); one key, one purpose
-  buckle keys list [--json]                          The enrolled keys with their scope, revoked ones included
-  buckle keys revoke <key-id>                        Stop trusting a key, at once, and close its setup sessions
-  buckle keys sessions                               The setup sessions keys hold open
-  buckle keys node                                   This node's own public key, for a person's client to pin`
 
 /**
  * The node's trusted client keys (owner ruling H4 of 2026-09-28): the SSH model, where a person's
@@ -28,6 +17,7 @@ export const USAGE = `Usage:
  * enrolls, lists or revokes a key.
  */
 export async function keysCommand(input: { config: NodeConfig; workspaces: Pick<WorkspaceManager, 'lookup'>; argv: string[] }): Promise<CliResult> {
+  /** For the audit entry: the verb and the key's fingerprint, never the key. */
   const keys = createFileClientKeys({ filePath: clientKeysPath(input.config), lockDeadlineMs: input.config.stateLockDeadlineMs })
   const sessions = () => createSetupSessions({ filePath: setupSessionsPath(input.config), lockDeadlineMs: input.config.stateLockDeadlineMs })
   const [verb, ...rest] = input.argv

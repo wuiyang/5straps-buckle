@@ -1,3 +1,5 @@
+import { CLIENT_USAGE as USAGE } from './usage.js'
+import type { CliResult } from './result.js'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join } from 'pathe'
 import { parseArgs } from 'node:util'
@@ -14,9 +16,6 @@ import { stoppedForNodeRecord } from './ignore-warning.js'
 import { OWNER_RECORD_UNAVAILABLE } from '../common/adapters/action-log/file-action-log.js'
 import { IGNORE_WARNING_QUERY } from '../common/domain/global-flags.js'
 
-export interface CliResult {
-  exitCode: number
-}
 
 export const CLIENT_KEY_FILE = 'client-key.pem'
 /**
@@ -28,26 +27,6 @@ const PinSchema = z.object({ serverId: z.string().min(1).max(200), publicKey: Pu
 const TrustedNodesSchema = z.object({ version: z.literal(2), nodes: z.record(z.string(), PinSchema) })
 type Pin = z.infer<typeof PinSchema>
 
-const USAGE = `Usage:
-  buckle client keygen [--force]      Make this device's signing key; prints the public key to enroll
-  buckle client key                   Print this device's public key and its fingerprint
-  buckle client request <METHOD> <url> [--body <json>] [--purpose setup|approval] [--node <server-id>] [--session <id>]
-                                      Send one request to a pinned node's setup face, signed with this device's key;
-                                      --node, when given, must name the node pinned for the URL
-  buckle client session open <node-url> [--workspace <name>]
-  buckle client session close <node-url> <session-id> [--workspace <name>]
-                                      A setup session: signed setup changes name it with --session
-  buckle client trust <node-url> <server-id> <node-public-key>
-                                      Pin the node at that URL, as \`buckle keys node\` prints it on that node
-  buckle client approvals <node-url> --workspace <name>
-  buckle client approve <node-url> <token> [--deny] [--scope once|session|always] --workspace <name>
-                                      Show the whole action an ask is, as the pinned node signed it, and decide on exactly that
-
---ignore-warning asks the node to make a change its audit log cannot record (ignoreWarning=true in the signed query);
-without it the node refuses the change, 503, and the command prints the write's error and exits 6.
-
-The key and the pinned nodes live in BUCKLE_CLIENT_DIR (an absolute path), ~/.5straps/client by default, owner-only.
-A request is signed only for the node pinned for the URL typed, never for what the URL says it is.`
 
 /**
  * The person's side of proof of possession (owner ruling H4 of 2026-09-28): this device keeps its

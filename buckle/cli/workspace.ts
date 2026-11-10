@@ -1,3 +1,6 @@
+import { WORKSPACE_USAGE as USAGE } from './usage.js'
+export { WORKSPACE_USAGE as USAGE } from './usage.js'
+import type { CliResult } from './result.js'
 import { createInterface } from 'node:readline/promises'
 import { parseArgs } from 'node:util'
 import { isAbsolute } from 'node:path'
@@ -21,11 +24,6 @@ import { SETTING_KEYS, SettingValueError, type SettingKey } from './workspace-ke
 import { formatMount, formatMountRow, parseMountSpec, type MountRow, type OwnerMount } from '../common/domain/mount-table.js'
 import { takeTarget, TargetError, type CommandTarget } from './target.js'
 
-export interface CliResult {
-  exitCode: number
-  /** For the audit entry: what changed, never a token or a variable's value. */
-  detail?: string
-}
 
 /** Where `init` and `add` ask for another name when the one they would use is taken (D85, Q15): a terminal, unless a test scripts the answers. */
 export interface NamePrompt {
@@ -34,34 +32,6 @@ export interface NamePrompt {
   close(): void
 }
 
-export const USAGE = `Usage: buckle workspace <verb>. A verb that takes no name acts on the workspace --workspace <name> names, or
-the one whose folder holds --dir <path>, or else the current directory. <name> is a workspace's name, or its id.
-
-  buckle workspace init [--dir <path>] [--name <name>] [--volume <local>:<sandbox>[:ro]]... [--yes]
-                                       Serve a folder as a workspace, and print its agent token once;
-                                       each --volume shares another host folder or file, as mount add does
-  buckle workspace add <dir> [--name <name>] [--yes] [--fresh]
-                                       The same, with the folder named first; --fresh leaves any removed records behind
-  buckle workspace prune [--yes]       The removed workspaces whose records are still kept; --yes deletes them
-  buckle workspace list [--json]       Every workspace, online or not
-  buckle workspace show [--json]       Its settings; no token is ever shown
-  buckle workspace enable <name> | disable <name>
-                                       Serve it, or stop serving it, as an MCP server is switched
-  buckle workspace rename <name> <new-name>
-                                       Give it another name; its id never changes
-  buckle workspace remove <name> [--purge]
-                                       Forget it; its records stay (adding the folder again takes them up) unless --purge
-  buckle workspace mount add <local>:<sandbox>[:ro] [--read-only] | remove <sandbox> | list [--json]
-                                       Share a host folder or file at a sandbox path, read-write unless :ro;
-                                       take one away; list the table as source:target:access
-  buckle workspace set <key> <value> | unset <key>
-                                       Change one setting: name, env.<NAME>, or a key buckle workspace show lists
-  buckle workspace token create [--label <text>] | list | revoke <token-id>
-                                       Mint an agent token, shown once; list them; refuse one from now on
-  buckle workspace judge-cache clear   Forget the decision AI's kept verdicts and Socket summaries
-
-A name that another workspace holds is asked about at a terminal; with --yes, or none, the command is refused.
-`
 
 /**
  * The owner's workspace commands (D83 (2) to (6), the workspace-model brief, item 4). `BUCKLE-D12` names the admin
@@ -70,6 +40,7 @@ A name that another workspace holds is asked about at a terminal; with --yes, or
  * by its name wherever a verb takes one (D85, Q15); its id is accepted too.
  */
 export async function workspaceRegistryCommand(input: { config: NodeConfig; workspaces: WorkspaceManager; argv: string[]; cwd: string; prompt?: NamePrompt }): Promise<CliResult> {
+  /** For the audit entry: what changed, never a token or a variable's value. */
   if (!input.config.adminToken) return fail('This node has no admin credential. Set BUCKLE_ADMIN_TOKEN, or run buckle init, before minting workspace credentials.')
   let target: CommandTarget
   let argv: string[]
