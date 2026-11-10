@@ -261,8 +261,9 @@ async function stop(context: ServiceContext): Promise<CliResult> {
   if (running.record?.manager === 'terminal') return fail(context.err, `${atTerminal(running)}.`)
   const { manager } = context
   if (manager?.stop && running.record?.manager === manager.kind) {
+    const originalPid = running.record.pid
     await manager.stop()
-    if (!await waitForStop(context.location.stateDirectory, STOP_WAIT_MS)) return fail(context.err, `Buckle${pidOf(running)} did not stop within ${STOP_WAIT_MS / 1000} seconds; buckle service logs shows what it is doing.`)
+    if (!await waitForStop(context.location.stateDirectory, STOP_WAIT_MS, originalPid)) return fail(context.err, `Buckle${pidOf(running)} did not stop within ${STOP_WAIT_MS / 1000} seconds; buckle service logs shows what it is doing.`)
     context.out(`Stopped Buckle${pidOf(running)}.\n`)
     return { exitCode: 0, detail: `stop ${manager.kind}` }
   }
@@ -297,8 +298,9 @@ async function stopDefinition(context: ServiceContext): Promise<CliResult> {
 async function askToStop(context: ServiceContext, running: RunningNode | null): Promise<string | null> {
   if (running === null) return null
   if (running.record === null) return 'Buckle is still starting; run buckle service stop again in a moment.'
-  await requestStop(context.location.stateDirectory, running.record.pid)
-  if (await waitForStop(context.location.stateDirectory, STOP_WAIT_MS)) return null
+  const originalPid = running.record.pid
+  await requestStop(context.location.stateDirectory, originalPid)
+  if (await waitForStop(context.location.stateDirectory, STOP_WAIT_MS, originalPid)) return null
   return `Buckle${pidOf(running)} did not stop within ${STOP_WAIT_MS / 1000} seconds; buckle service logs shows what it is doing.`
 }
 

@@ -172,13 +172,18 @@ function requestedPid(file: string): number | null {
 }
 
 /** Waits until no process serves the state directory, or `timeoutMs` passes; true once it has stopped. */
-export async function waitForStop(stateDirectory: string, timeoutMs: number): Promise<boolean> {
+export async function waitForStop(stateDirectory: string, timeoutMs: number, originalPid?: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
-    if (await runningNode(stateDirectory) === null) return true
+    if (await runningNode(stateDirectory) === null && (originalPid === undefined || processHasExited(originalPid))) return true
     if (Date.now() >= deadline) return false
     await delay(100)
   }
+}
+
+function processHasExited(pid: number): boolean {
+  try { process.kill(pid, 0); return false }
+  catch (error) { return error instanceof Error && 'code' in error && error.code === 'ESRCH' }
 }
 
 /**
