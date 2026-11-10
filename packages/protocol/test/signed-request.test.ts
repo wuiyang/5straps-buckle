@@ -159,6 +159,17 @@ describe('an approval challenge the node signs (B24)', () => {
     expect(() => challengeBytes({ ...challenge, workspaceName: 'n'.repeat(WORKSPACE_NAME_MAX) })).not.toThrow()
   })
 
+  // APPROVAL-37: the folder and its subfolders a device may grant is signed with the rest, so a relay cannot widen it.
+  it('carries the ask\'s wider subject where the node sends one, which a relay cannot change', () => {
+    const wider: ApprovalChallenge = { ...challenge, widerSubject: 'delete-below:/srv/data' }
+    const signed = signChallenge({ challenge: wider, key: signingKeyFromPem(node.privateKeyPem).privateKey })
+    expect(readChallenge({ signed: signed.signed, nodeKey: publicKeyFrom(node.publicKey) })).toEqual({ challenge: wider, digest: signed.digest })
+    expect(signed.digest).not.toBe(challengeBytes(challenge).digest)
+    const [, signature] = signed.signed.split('.')
+    const widened = Buffer.from(JSON.stringify({ ...wider, widerSubject: 'delete-below:/' })).toString('base64url')
+    expect(readChallenge({ signed: `${widened}.${signature}`, nodeKey: publicKeyFrom(node.publicKey) })).toBeNull()
+  })
+
   it('does not verify under another key, altered, or as a signed request of the same bytes', () => {
     const signed = signChallenge({ challenge, key: signingKeyFromPem(node.privateKeyPem).privateKey }).signed
     expect(readChallenge({ signed, nodeKey: publicKeyFrom(owner.publicKey) })).toBeNull()

@@ -60,8 +60,19 @@ describe('an ask under write_scope with a prefixed subject', () => {
     expect(ApprovalRequestSchema.safeParse(ask(`delete:${FOLDER}`, { widerSubject: '' })).success).toBe(false)
   })
 
-  it('is never signed into a challenge, which stays the 0.1.7 shape a device parses strictly', () => {
-    expect(ApprovalChallengeSchema.shape).not.toHaveProperty('widerSubject')
+  // APPROVAL-37: a device offers the folder and its subfolders too, so the node signs the wider subject into the challenge
+  // of a device that asks for it. A challenge without it reads as before; a device's strict parse refuses one with it,
+  // which is why a node sends it only on request.
+  it('is signed into a challenge where the node sends it, and a challenge without it reads as before', () => {
+    const challenge = {
+      v: 1, purpose: 'buckle-approval-challenge', node: 'node-1', workspace: 'w1', token: 't1', requestId: null, sessionId: 's1', actor: null,
+      tool: 'fs_delete', rule: 'write_scope', subject: `delete:${FOLDER}`, reason: 'asks', offeredScopes: ['once', 'session', 'always'],
+      arguments: { paths: [`${FOLDER}/a.txt`] }, cwd: '/w', callDigest: 'a'.repeat(64), description: null, effects: [], expiresAt: '2026-10-28T12:00:00.000Z',
+    }
+    expect(ApprovalChallengeSchema.parse({ ...challenge, widerSubject: `delete-below:${FOLDER}` }).widerSubject).toBe(`delete-below:${FOLDER}`)
+    expect(ApprovalChallengeSchema.parse(challenge)).not.toHaveProperty('widerSubject')
+    expect(ApprovalChallengeSchema.safeParse({ ...challenge, widerSubject: '' }).success).toBe(false)
+    expect(ApprovalChallengeSchema.omit({ widerSubject: true }).strict().safeParse({ ...challenge, widerSubject: `delete-below:${FOLDER}` }).success).toBe(false)
   })
 })
 

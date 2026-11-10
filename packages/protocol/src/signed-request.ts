@@ -327,6 +327,13 @@ export const ApprovalChallengeSchema = z.object({
   reason: z.string().min(1),
   offeredScopes: z.array(z.enum(['once', 'session', 'always'])).min(1),
   /**
+   * The ask's wider subject, which a person may grant for the session or always in place of `subject`: for a delete
+   * outside the workspace's folder, `delete-below:<folder>`, every later delete in that folder and its subfolders. A
+   * device's decision names it as its `subject` to grant it. Optional and additive, the version unchanged: a node sends it
+   * only to a device that asks for it, since a device from before it refuses a challenge with a field it does not know.
+   */
+  widerSubject: z.string().min(1).optional(),
+  /**
    * The call's whole arguments as the node shows them (owner decisions D9 and D17): canonical, with values
    * under credential-named keys and URL credentials redacted, and nothing cut. A call too large to show
    * whole is refused before it is asked. Null when callRef names its whole contents in the listing.
