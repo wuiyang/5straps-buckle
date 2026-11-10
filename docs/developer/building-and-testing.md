@@ -38,6 +38,10 @@ the packages it bundled in `.output/bundled-packages.json`. `pnpm dev` loads the
 root's `.env`, if there is one, into the node it starts. `cd buckle && npm link` puts the build on
 your `PATH` as `buckle`.
 
+**Development watch scope:** Rebuilds watch Buckle's `common`, `cli`, `mcp`, `layers`, `server`,
+and `skills` directories, plus `main.ts` and `nitro.config.ts`. Restart `pnpm dev` after changing
+protocol/runtime source, build scripts, package manifests, or TypeScript configuration.
+
 ## Typecheck
 
 ```bash
