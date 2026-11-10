@@ -61,6 +61,7 @@ const resolvedSchema = z.object({
   request: ApprovalRequestSchema.optional(), sessionId: z.string().optional(), ...joinKey, ...fingerprint, ...decidedBy, ...attempt,
   grant: lastingGrantSchema.optional(),
 })
+// notice: as queued, an end for no response kept as `expired`, which an older build reads (sentNotice).
 const deliverySchema = z.object({ id: z.string().uuid(), workspace: z.string(), notice: ApprovalNoticeSchema, expiresAt: z.iso.datetime() })
 // An ask a session end withdrew, or one nobody answered before it ran out (APPROVAL-36), kept as long as an answer is, so a
 // process that did not end the session or drop the ask reads why it left.

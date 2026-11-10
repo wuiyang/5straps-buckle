@@ -2,7 +2,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { ApprovalNoticeSchema } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { z } from 'zod'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { describeExpiry } from '../common/domain/approval-deadline.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
@@ -91,12 +93,25 @@ describe('an ask nobody answered before it ran out', () => {
     expect(registry.pending()).toHaveLength(1)
   })
 
-  it('still delivers an end an older node queued as expired', async () => {
+  // Finding 2 of the APPROVAL-36/37 review: a build from before APPROVAL-36 shares the state directory after a rollback, or
+  // as a serve still running beside a newer command, and its schema refuses the reason no_response, which would leave the
+  // whole file unread.
+  it('keeps its end in the outbox in the shape a build from before the ruling reads, and sends it as skipped, no response', async () => {
+    const { registry, file } = ledger(true)
+    const token = await ranOut(registry)
+    await registry.sweep()
+    const before = z.object({ outbox: z.array(z.object({ notice: ApprovalNoticeSchema.extend({ reason: z.enum(['caller_declined_wait', 'no_approver', 'wait_elapsed', 'shutdown']).optional() }) })) })
+    const saved = before.parse(JSON.parse(readFileSync(file, 'utf8')))
+    expect(saved.outbox.map(entry => entry.notice)).toEqual([{ token, event: 'expired', at: new Date(Date.now()).toISOString() }])
+    expect(registry.pendingDeliveries().map(entry => entry.notice)).toEqual([{ token, event: 'skipped', at: new Date(Date.now()).toISOString(), reason: 'no_response' }])
+  })
+
+  it('sends an end an older node queued as expired as skipped, no response', async () => {
     const { file, open } = ledger(true)
     const legacy = { id: randomUUID(), workspace: 'w-1', notice: { token: 't-old', event: 'expired', at: new Date().toISOString() }, expiresAt: new Date(Date.now() + 60 * MINUTE).toISOString() }
     writeFileSync(file, JSON.stringify({ version: 1, pending: [], once: [], resolved: [], outbox: [legacy], ended: [] }))
     const registry = open()
-    expect(registry.pendingDeliveries().map(entry => entry.notice)).toEqual([legacy.notice])
+    expect(registry.pendingDeliveries().map(entry => entry.notice)).toEqual([{ token: 't-old', event: 'skipped', at: legacy.notice.at, reason: 'no_response' }])
     await registry.sweep()
     expect(JSON.parse(readFileSync(file, 'utf8')).outbox).toHaveLength(1)
   })

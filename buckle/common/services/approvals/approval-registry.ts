@@ -460,7 +460,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       const at = new Date().toISOString()
       for (const entry of ranOut) {
         state.noResponse.push({ workspace: entry.workspace, token: entry.request.token, expiresAt: new Date(Date.now() + PENDING_TTL_MS).toISOString() })
-        if (notifies(entry)) enqueueOutcome(state, entry.workspace, { token: entry.request.token, event: 'skipped', at, reason: 'no_response' })
+        if (notifies(entry)) enqueueOutcome(state, entry.workspace, { token: entry.request.token, event: 'expired', at })
       }
       const value = await change(state, commit)
       const after = namedCalls(state)
@@ -468,7 +468,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       const added = state.outbox.filter(entry => !outboxBefore.has(entry.id))
       queued = added.some(entry => entry.workspace === workspace)
       // Said once per update, not once per end it kept: one sweep may skip hundreds of unreserved asks.
-      if (added.length > 0 && pastDeliveryLimits(state.outbox)) logger.warn('Approval outcome delivery is past its limits; the asks\' ends were kept anyway, and new asks wait until the receiver drains it', { entries: state.outbox.length, added: added.length, events: [...new Set(added.map(entry => entry.notice.event))] })
+      if (added.length > 0 && pastDeliveryLimits(state.outbox)) logger.warn('Approval outcome delivery is past its limits; the asks\' ends were kept anyway, and new asks wait until the receiver drains it', { entries: state.outbox.length, added: added.length, events: [...new Set(added.map(entry => sentNotice(entry.notice).event))] })
       nextExpiry = earliestExpiry(state)
       return value
     }, committed).finally(() => {
@@ -1379,7 +1379,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       if (Date.now() >= nextExpiry || calls.unnamed(namedCalls(state))) await registry.sweep()
     },
 
-    pendingDeliveries: () => read().outbox.filter(entry => entry.workspace === workspace && Date.parse(entry.expiresAt) > Date.now()).map(({ workspace: _workspace, ...entry }) => entry),
+    pendingDeliveries: () => read().outbox.filter(entry => entry.workspace === workspace && Date.parse(entry.expiresAt) > Date.now()).map(({ workspace: _workspace, notice, ...entry }) => ({ ...entry, notice: sentNotice(notice) })),
 
     acknowledgeDeliveries(ids) {
       const accepted = new Set(ids)
@@ -1674,8 +1674,18 @@ function assertDeliveryRoom(state: State, additional: readonly PendingEntry[], n
 }
 
 /**
+ * The notice as the webhook is sent it. The outbox keeps an ask nobody answered before it ran out as `expired`, the shape a
+ * build from before APPROVAL-36 reads, so that build still reads the file after a rollback or as a serve still running
+ * beside a newer command (finding 2 of the APPROVAL-36/37 review); it is sent as skipped with the reason no_response, as
+ * is one an older build queued.
+ */
+function sentNotice(notice: ApprovalNotice): ApprovalNotice {
+  return notice.event === 'expired' ? { token: notice.token, event: 'skipped', at: notice.at, reason: 'no_response' } : notice
+}
+
+/**
  * Whether a notice tells an ask's end: any event but a wait notice, which is skipped with the reason its call stopped
- * waiting; a skip for no response ends the ask (APPROVAL-36).
+ * waiting; a skip for no response ends the ask (APPROVAL-36), as does `expired`, the shape the outbox keeps it in.
  */
 function endsAsk(notice: ApprovalNotice): boolean {
   return notice.event !== 'skipped' || notice.reason === 'no_response'
