@@ -40,7 +40,6 @@ export interface NamePrompt {
  * by its name wherever a verb takes one (D85, Q15); its id is accepted too.
  */
 export async function workspaceRegistryCommand(input: { config: NodeConfig; workspaces: WorkspaceManager; argv: string[]; cwd: string; prompt?: NamePrompt }): Promise<CliResult> {
-  /** For the audit entry: what changed, never a token or a variable's value. */
   if (!input.config.adminToken) return fail('This node has no admin credential. Set BUCKLE_ADMIN_TOKEN, or run buckle init, before minting workspace credentials.')
   let target: CommandTarget
   let argv: string[]

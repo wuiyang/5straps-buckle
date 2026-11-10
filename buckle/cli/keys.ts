@@ -17,7 +17,6 @@ import type { WorkspaceManager } from '../common/services/workspaces/workspace-m
  * enrolls, lists or revokes a key.
  */
 export async function keysCommand(input: { config: NodeConfig; workspaces: Pick<WorkspaceManager, 'lookup'>; argv: string[] }): Promise<CliResult> {
-  /** For the audit entry: the verb and the key's fingerprint, never the key. */
   const keys = createFileClientKeys({ filePath: clientKeysPath(input.config), lockDeadlineMs: input.config.stateLockDeadlineMs })
   const sessions = () => createSetupSessions({ filePath: setupSessionsPath(input.config), lockDeadlineMs: input.config.stateLockDeadlineMs })
   const [verb, ...rest] = input.argv

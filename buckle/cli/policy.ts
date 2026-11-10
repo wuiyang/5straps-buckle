@@ -311,7 +311,6 @@ async function saveTool(runtime: BuckleRuntime, action: string, tool: string, po
   const pack = runtime.manifest().packs.find(candidate => candidate.toolNames.includes(tool))
   if (!pack) process.stdout.write(`\n${tool} is not a tool on this node now; the switch is stored and applies if a pack brings it.\n`)
   else if (pack.unavailableReason) process.stdout.write(`\n${tool} stays unavailable: its pack ${pack.id} is withheld. ${pack.unavailableReason}\n`)
-  /** For the audit entry: the tool a switch names. Other policy arguments stay out of the log. */
   return { ...result, detail: `${action} ${tool}` }
 }
 
