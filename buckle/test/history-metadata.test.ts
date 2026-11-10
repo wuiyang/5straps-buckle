@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
-import { readGitMetadata } from '../common/services/history/git-store.js'
+import { readGitMetadata } from '../common/services/history/git-files.js'
 
 const growth = vi.hoisted(() => ({ path: '', swap: '', replacement: '' }))
 vi.mock('node:fs', async (importOriginal) => {

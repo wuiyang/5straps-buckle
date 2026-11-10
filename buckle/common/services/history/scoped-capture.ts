@@ -4,7 +4,8 @@ import { openNoFollow } from '../../adapters/beneath.js'
 import { MAX_MASS_DELETE_LIMIT } from '../../domain/delete-policy.js'
 import { childPath, isInsideAny, isPlainName, parentDirectory } from '../../domain/paths.js'
 import { blobId, type ObjectStore } from './object-store.js'
-import type { Entry, Snapshot } from './snapshot.js'
+import type { Entry, Snapshot } from './snapshot-contract.js'
+import { modeOf } from './file-mode.js'
 
 const readDescriptor = promisify(readFile)
 
@@ -154,14 +155,6 @@ async function readStable(path: string, stat: Stats, platform: NodeJS.Platform):
 /** lstat without following the last link; undefined where nothing is there, null where it cannot be looked at. */
 function inspect(path: string): Stats | null | undefined {
   try { return lstatSync(path, { throwIfNoEntry: false }) } catch (error) { return isMissing(error) ? undefined : null }
-}
-
-/** A mode as history records it: the permission bits, read on Windows as its read-only flag gives them (git's 644 and 755). */
-export function modeOf(stat: Stats): number {
-  const mode = stat.mode & 0o777
-  if (process.platform !== 'win32' || stat.isSymbolicLink()) return mode
-  if (stat.isDirectory()) return mode & 0o200 ? 0o755 : 0o555
-  return mode & 0o200 ? 0o644 : 0o444
 }
 
 function isMissing(error: unknown): boolean {

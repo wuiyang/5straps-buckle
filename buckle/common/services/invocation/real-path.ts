@@ -62,11 +62,6 @@ export function resolveEntry(absolutePath: string, landing: LandingRead = {}): {
   return { path: childPath(directory, name), directory, name }
 }
 
-/** The same resolution for callers that await; kept async so a later non-blocking lookup changes no caller. */
-export async function realPathOrPlanned(absolutePath: string, landing: LandingRead = {}): Promise<string> {
-  return resolveTarget(absolutePath, landing)
-}
-
 /**
  * Where a walk ended: an existing directory, anything else that exists (a file), or a place that does
  * not exist yet. Only a directory has anything beneath it (review L2 of the second re-review).

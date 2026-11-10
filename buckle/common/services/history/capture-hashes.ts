@@ -1,5 +1,5 @@
 import { Worker } from 'node:worker_threads'
-import type { Snapshot } from './snapshot.js'
+import { type Snapshot } from './snapshot-contract.js'
 
 export interface HashCaptureInput { roots: string[]; excluded: string[]; maxFileBytes: number; hashFiles: boolean; platform: NodeJS.Platform }
 

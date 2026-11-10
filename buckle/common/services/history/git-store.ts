@@ -1,32 +1,22 @@
-import { spawn, type ChildProcess } from 'node:child_process'
-import { constants as systemConstants } from 'node:os'
 import { performance } from 'node:perf_hooks'
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, mkdirSync, readFileSync, readdirSync, readSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { basename as nativeBasename, isAbsolute as nativeIsAbsolute, relative as nativeRelative, sep as nativeSeparator } from 'node:path'
 import { dirname, join, relative, resolve } from 'pathe'
-import { z } from 'zod'
 import { requireOwnerOnly, setMode } from '../../adapters/file-modes.js'
-import { resolveProgram, rootsOf, type Program, type UntrustedRoots } from '../../domain/executable.js'
+import type { Program, UntrustedRoots } from '../../domain/executable.js'
 import { isInside, isPlainName } from '../../domain/paths.js'
 import { logger } from '../../runtime/log.js'
 import { captureHashes, historyCapturePath } from './capture-hashes.js'
-import { snapshotSchema, type Snapshot } from './snapshot.js'
+import type { Snapshot } from './snapshot-contract.js'
+import type { TreeCapture } from './tree-capture.js'
+import { escapeIgnore, ownerGitDirectory, RAW_ATTRIBUTES, readGitMetadata, regularFile } from './git-files.js'
+import { gitOperation, historyGitProgram, isolatedGit, runProgram } from './git-process.js'
 
-export const DEFAULT_HISTORY_FILE_BYTES = 32 * 1_048_576
-export const treeCaptureSchema = z.object({ root: z.string(), workTree: z.string(), selector: z.string(), git: z.string(), commit: z.string(), extra: snapshotSchema })
-export type TreeCapture = z.infer<typeof treeCaptureSchema>
 export interface CapturedState { snapshot: Snapshot; trees: TreeCapture[]; restorable: boolean; reason?: string }
 const HASH = /^[a-f0-9]{40,64}$/
 const CHECKPOINT_ID = /^change-[a-zA-Z0-9-]+$/
-/** Git reads every file as raw bytes: no line ending, filter, ident, or encoding change, so a blob id is the file's own. */
-export const RAW_ATTRIBUTES = '* -text -filter -ident -working-tree-encoding\n**/* -text -filter -ident -working-tree-encoding\n'
-
 const SETUP_MARKER = 'buckle-setup-complete'
-const GIT_OPERATIONS = ['init', 'ls-files', 'update-index', 'add', 'read-tree', 'write-tree', 'commit-tree', 'ls-tree', 'check-ignore', 'cat-file', 'update-ref', 'diff-tree', 'checkout-index', 'for-each-ref', 'rev-parse', 'verify-pack', 'rev-list', 'gc', 'repack', 'diff-files'] as const
-export type GitOperation = typeof GIT_OPERATIONS[number] | 'unknown'
-type GitFailure = 'start' | 'timeout' | 'output-limit' | 'exit' | 'aborted'
-interface GitFailureDetails { operation: GitOperation; failure: GitFailure; elapsedMs: number; exitCode?: number; errno?: string }
 interface CaptureTiming { captureHashesMs: number; resolveMs: number; gitSubprocessMs: number; commandCount: number }
 interface CheckpointTrees { id: string; beforeTrees?: TreeCapture[]; afterTrees?: TreeCapture[] }
 interface CommitShape { tree: string; parents: string[] }
@@ -34,32 +24,6 @@ const CHECKPOINT_REFS = 'refs/buckle/checkpoints/'
 const STAGING_REFS = 'refs/buckle/migrations/'
 const MAX_CACHED_COMMITS = 4096
 type GitCommand = (state: Pick<TreeCapture, 'git' | 'workTree'>, args: string[], data?: string | Buffer, extra?: Record<string, string>, acceptedCodes?: number[]) => Promise<Buffer>
-
-export class HistoryGitError extends Error {
-  override readonly name = 'HistoryGitError'
-  constructor(readonly details: GitFailureDetails) { super(`History git ${details.operation} failed (${details.failure}); inspect the checkpoint and retry`) }
-}
-
-export function historyGitProgram(input: { allowed: boolean; roots: string[]; untrusted?: UntrustedRoots }): Program | null {
-  if (!input.allowed) return null
-  const found = resolveProgram('git', { ...input.untrusted, untrustedRoots: [...input.untrusted?.untrustedRoots ?? [], ...rootsOf('workspace', input.roots)] })
-  return found.path === null ? null : found
-}
-
-/**
- * How every history git child runs, from `owned`, a folder only Buckle writes: no system or global config, no hooks,
- * fsmonitor, filters, prompts, or lazy fetch, no automatic gc or maintenance, and the workspace's own config never read.
- * `empty` is the empty template and hooks folder, `config` the empty file git reads as its global config.
- */
-export function isolatedGit(owned: string): { environment: Record<string, string>; safety: string[]; empty: string } {
-  mkdirSync(owned, { recursive: true, mode: 0o700 })
-  const empty = join(owned, 'empty'); mkdirSync(empty, { recursive: true, mode: 0o700 })
-  const config = join(owned, 'config'); writeFileSync(config, '', { mode: 0o600 })
-  const safeEnv = Object.fromEntries(['PATH', 'SystemRoot', 'WINDIR', 'TMP', 'TEMP', 'TMPDIR'].flatMap(key => process.env[key] === undefined ? [] : [[key, process.env[key]!]]))
-  const environment = { ...safeEnv, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: config, GIT_TERMINAL_PROMPT: '0', GIT_NO_LAZY_FETCH: '1', GIT_PAGER: '', GIT_ATTR_NOSYSTEM: '1', GIT_LITERAL_PATHSPECS: '1', GIT_AUTHOR_NAME: 'Buckle history', GIT_AUTHOR_EMAIL: 'history@buckle.invalid', GIT_COMMITTER_NAME: 'Buckle history', GIT_COMMITTER_EMAIL: 'history@buckle.invalid' }
-  const safety = ['-c', `core.hooksPath=${empty}`, '-c', 'core.fsmonitor=false', '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', '-c', 'core.ignoreStat=false', '-c', 'core.trustctime=true', '-c', 'core.untrackedCache=false', '-c', 'commit.gpgSign=false', '-c', 'gc.auto=0', '-c', 'gc.writeCommitGraph=false', '-c', 'core.commitGraph=false', '-c', 'maintenance.auto=false', '-c', 'submodule.recurse=false', '-c', 'protocol.allow=never', '-c', `core.attributesFile=${config}`, '-c', 'core.fileMode=true', '-c', 'core.symlinks=true']
-  return { environment, safety, empty }
-}
 
 export function createGitStore(input: { directory: string; excluded: string[]; maxFileBytes: () => number; allowed: () => boolean; untrusted?: () => UntrustedRoots; platform?: NodeJS.Platform }) {
   const owned = join(input.directory, 'git-private')
@@ -382,104 +346,9 @@ function ignoredAncestor(path: string, root: string, ignored: Set<string>): bool
   }
   return false
 }
-export function escapeIgnore(path: string): string { return path.replace(/[\\*?\[\] !#]/g, '\\$&') }
 function assertHash(hash: string): void { if (!HASH.test(hash)) throw new Error('Invalid history object') }
 function ownerObjects(workTree: string): string | undefined {
   const directory = ownerGitDirectory(workTree)
   const objects = directory === undefined ? undefined : join(directory, 'objects')
   return objects !== undefined && lstatSync(objects, { throwIfNoEntry: false })?.isDirectory() ? objects : undefined
-}
-/** The git folder of the repository `workTree` lies in, its common one for a linked worktree; undefined outside one. */
-export function ownerGitDirectory(workTree: string): string | undefined {
-  let root = workTree
-  while (true) {
-    const marker = join(root, '.git'); const stat = lstatSync(marker, { throwIfNoEntry: false })
-    if (stat) {
-      let directory: string
-      if (stat.isDirectory() || stat.isSymbolicLink()) { try { directory = realpathSync(marker) } catch { return undefined } }
-      else {
-        const pointer = readGitMetadata(marker)
-        if (!pointer || !/^gitdir: [^\0\r\n]+\n?$/.test(pointer)) return undefined
-        directory = resolve(root, pointer.slice(8).trim())
-      }
-      const common = join(directory, 'commondir')
-      if (existsSync(common)) { const pointer = readGitMetadata(common); if (!pointer || /[\0\r\n]./.test(pointer.trim())) return undefined; directory = resolve(directory, pointer.trim()) }
-      return directory
-    }
-    if (dirname(root) === root) return undefined
-    root = dirname(root)
-  }
-}
-export function readGitMetadata(path: string): string | undefined {
-  const stat = lstatSync(path, { throwIfNoEntry: false })
-  if (!stat?.isFile() || stat.size > 8192) return undefined
-  let descriptor: number | undefined
-  try {
-    descriptor = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0))
-    const opened = fstatSync(descriptor)
-    if (!opened.isFile() || opened.size > 8192 || opened.ino !== stat.ino || opened.dev !== stat.dev) return undefined
-    const content = Buffer.alloc(8193)
-    let bytes = 0
-    while (bytes < content.length) {
-      const read = readSync(descriptor, content, bytes, content.length - bytes, null)
-      if (!read) break
-      bytes += read
-    }
-    const final = fstatSync(descriptor)
-    if (bytes > 8192 || final.size !== opened.size || final.mtimeMs !== opened.mtimeMs || final.ctimeMs !== opened.ctimeMs) return undefined
-    return content.toString('utf8', 0, bytes)
-  } catch { return undefined }
-  finally { if (descriptor !== undefined) closeSync(descriptor) }
-}
-export function regularFile(path: string, size?: number): boolean {
-  const stat = lstatSync(path, { throwIfNoEntry: false })
-  return stat?.isFile() === true && stat.nlink === 1 && (size === undefined || stat.size === size)
-}
-export function gitOperation(args: string[]): GitOperation {
-  let index = 0
-  while (args[index] === '-c') index += 2
-  return GIT_OPERATIONS.find(operation => operation === args[index]) ?? 'unknown'
-}
-function safeErrno(error: unknown): string | undefined {
-  return error instanceof Error && 'code' in error && typeof error.code === 'string' && Object.hasOwn(systemConstants.errno, error.code) ? error.code : undefined
-}
-/**
- * Runs one git child and answers its stdout. `timeoutMs` (10 s unless given) stops it, and so does `signal` (X14); a
- * timer or a cancellation never releases the caller while the child can still write.
- */
-/** `errors`: given, each chunk git writes to stderr, which is otherwise dropped; the caller bounds what it keeps. */
-export function runProgram(input: { program: Program; operation: GitOperation; args: string[]; cwd: string; environment: NodeJS.ProcessEnv; data?: string | Buffer; acceptedCodes?: number[]; timeoutMs?: number; signal?: AbortSignal; errors?: (chunk: Buffer) => void }): Promise<Buffer> {
-  const started = performance.now()
-  const details = (failure: GitFailure, code?: number | null, errno?: string): GitFailureDetails => ({ operation: input.operation, failure, elapsedMs: Math.round(performance.now() - started), ...(code !== null && code !== undefined && Number.isSafeInteger(code) && code >= 0 ? { exitCode: code } : {}), ...(errno ? { errno } : {}) })
-  return new Promise((resolve, reject) => {
-    let child: ChildProcess
-    try { child = spawn(input.program.path, [...input.program.args, ...input.args], { argv0: input.program.argv0, cwd: input.cwd, env: input.environment, shell: false, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }) }
-    catch (error) { reject(new HistoryGitError(details('start', undefined, safeErrno(error)))); return }
-    const output: Buffer[] = []; let bytes = 0
-    let failure: GitFailure | undefined; let errno: string | undefined
-    let force: ReturnType<typeof setTimeout> | undefined
-    const signal = (value: NodeJS.Signals): void => { try { child.kill(value) } catch (error) { errno ??= safeErrno(error) } }
-    const stop = (reason: 'timeout' | 'output-limit' | 'aborted'): void => {
-      if (failure) return
-      failure = reason
-      signal('SIGTERM')
-      force = setTimeout(() => { logger.warn('History waits for Git exit before continuing', { ...details(reason, undefined, errno) }); signal('SIGKILL') }, 1_000)
-    }
-    const timeout = setTimeout(() => stop('timeout'), input.timeoutMs ?? 10_000)
-    const abort = (): void => stop('aborted')
-    if (input.signal?.aborted) abort()
-    else input.signal?.addEventListener('abort', abort, { once: true })
-    child.stdout!.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > 64 * 1_048_576) stop('output-limit'); else output.push(chunk) })
-    if (input.errors) child.stderr!.on('data', input.errors)
-    else child.stderr!.resume()
-    child.on('error', error => { failure ??= 'start'; errno ??= safeErrno(error) })
-    // A timer must never release the mutation lock while Git can still write.
-    child.on('close', code => {
-      clearTimeout(timeout); clearTimeout(force); input.signal?.removeEventListener('abort', abort)
-      if (!failure && code !== null && (input.acceptedCodes ?? [0]).includes(code)) resolve(Buffer.concat(output))
-      else reject(new HistoryGitError(details(failure ?? 'exit', code, errno)))
-    })
-    child.stdin!.on('error', () => undefined)
-    child.stdin!.end(input.data)
-  })
 }

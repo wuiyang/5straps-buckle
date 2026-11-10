@@ -5,7 +5,7 @@ import type { PathView } from '../../domain/path-view.js'
 import { missingMountReason, mountSourceState } from '../../domain/sandbox-mounts.js'
 import { ToolExecutionError, ToolInputError } from '../../domain/tool.js'
 import { RestoreRefusedError, withConflictPath, type ChangeHistory } from '../history/journal.js'
-import { realPathOrPlanned, resolveEntry } from './real-path.js'
+import { resolveTarget, resolveEntry } from './real-path.js'
 
 /**
  * Turns declared effects into the absolute, symlink-resolved form rules judge. Resolution
@@ -64,7 +64,7 @@ async function resolveOne(effect: Exclude<ToolEffect, { kind: 'restore_checkpoin
   if (effect.kind === 'read_path' || effect.kind === 'write_path') {
     // A host path the tool settled is judged as resolveHostRead judges one, never through the agent's view.
     const named = effect.kind === 'write_path' && effect.host ? effect.path : paths.resolve(effect.path)
-    const path = await realPathOrPlanned(named, { shares: paths.shares })
+    const path = await resolveTarget(named, { shares: paths.shares })
     if (effect.kind === 'write_path') refuseMissingMount(path, paths)
     return { kind: effect.kind, path, directory: await containingDirectory(path) }
   }
@@ -102,7 +102,7 @@ function refuseMissingMount(path: string, paths: PathView): void {
  * the path is already the host's, and a mount would take it for one of its own names.
  */
 export async function resolveHostRead(path: string, shares: readonly string[] = []): Promise<ResolvedEffect> {
-  const target = await realPathOrPlanned(path, { shares })
+  const target = await resolveTarget(path, { shares })
   return { kind: 'read_path', path: target, directory: await containingDirectory(target) }
 }
 

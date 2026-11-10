@@ -1,9 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { Checkpoint } from './records.js'
 
-export const DEFAULT_HISTORY_KEEP_TURNS = 10
-export const DEFAULT_HISTORY_TURN_IDLE_MS = 60_000
-
 export function turnFor(input: { records: Checkpoint[]; sessionId: string; stageId: string | undefined; now: number; idleMs: number }): string {
   if (input.stageId !== undefined) {
     const same = input.records.find(record => record.sessionId === input.sessionId && record.turnStageId === input.stageId)

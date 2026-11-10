@@ -27,8 +27,8 @@ import { settleAuditLogs } from './support/action-log-writer.js'
 const gitAdd = vi.hoisted(() => ({ hook: undefined as (() => void) | undefined, slow: 0, cold: 0, held: false, indexes: [] as string[], ended: [] as string[], started: undefined as (() => void) | undefined }))
 // `gate`: each git init waits for it, as a slow one does while a background record makes its setup again (T1).
 const gitInit = vi.hoisted(() => ({ gate: undefined as Promise<void> | undefined }))
-vi.mock('../common/services/history/git-store.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../common/services/history/git-store.js')>()
+vi.mock('../common/services/history/git-process.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../common/services/history/git-process.js')>()
   const { existsSync } = await vi.importActual<typeof import('node:fs')>('node:fs')
   return { ...actual, runProgram: (input: Parameters<typeof actual.runProgram>[0]) => {
     const index = String(input.environment.GIT_INDEX_FILE)

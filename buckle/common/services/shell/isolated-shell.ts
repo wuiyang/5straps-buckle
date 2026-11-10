@@ -10,7 +10,8 @@ import { CodeChangedError } from '../../domain/permission/judged.js'
 import { sensitivePathReason } from '../../domain/permission/rules/sensitive-path-rule.js'
 import { LockWaitError, ToolExecutionError } from '../../domain/tool.js'
 import { logger } from '../../runtime/log.js'
-import { applySnapshot, changedPaths, sameEntry, snapshot, snapshotSchema, type Snapshot } from '../history/snapshot.js'
+import { applySnapshot, changedPaths, sameEntry, snapshot } from '../history/snapshot.js'
+import { snapshotSchema, type Snapshot } from '../history/snapshot-contract.js'
 import type { ChangeHistory, HistoryInput } from '../history/journal.js'
 
 export interface IsolatedShellOptions {

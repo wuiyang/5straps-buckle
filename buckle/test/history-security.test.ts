@@ -3,7 +3,7 @@ import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, r
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
-import { historyGitProgram } from '../common/services/history/git-store.js'
+import { historyGitProgram } from '../common/services/history/git-process.js'
 import { openChangeHistory } from '../common/services/history/journal.js'
 import { blobId } from '../common/services/history/object-store.js'
 import { applySnapshot, SnapshotConflictError } from '../common/services/history/snapshot.js'
@@ -111,7 +111,7 @@ it.skipIf(process.platform === 'win32')('does not block on FIFO .git or commondi
     execFileSync('mkfifo', [marker === '.git' ? join(workspace, '.git') : join(workspace, '.git', 'commondir')])
     const directory = join(root, `history-${marker.replace('.', '')}`)
     const moduleUrl = new URL('../common/services/history/journal.ts', import.meta.url).href
-    const metadataUrl = new URL('../common/services/history/git-store.ts', import.meta.url).href
+    const metadataUrl = new URL('../common/services/history/git-files.ts', import.meta.url).href
     const metadata = marker === '.git' ? join(workspace, '.git') : join(workspace, '.git', 'commondir')
     const source = `const { readGitMetadata } = await import(${JSON.stringify(metadataUrl)}); if (readGitMetadata(${JSON.stringify(metadata)}) !== undefined) throw new Error('Special metadata was read'); const { openChangeHistory } = await import(${JSON.stringify(moduleUrl)}); const history = await openChangeHistory({ directory: process.argv[1], excluded: [], maxBytes: 268435456 }); try { await history.run({sessionId:'s',tool:'test',roots:[process.argv[2]]}, async () => { (await import('node:fs')).writeFileSync(process.argv[2] + '/file', 'done') }); } finally { await history.close() }`
     await new Promise<void>((resolve, reject) => {

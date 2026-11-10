@@ -1,6 +1,6 @@
 import { z } from 'zod'
-import { snapshotSchema } from './snapshot.js'
-import { treeCaptureSchema } from './git-store.js'
+import { snapshotSchema } from './snapshot-contract.js'
+import { treeCaptureSchema } from './tree-capture.js'
 
 export const checkpointSchema = z.object({
   id: z.string(), sessionId: z.string(), stageId: z.string(), tool: z.string(), requestId: z.string().optional(), parentRequestId: z.string().optional(), baselineAvailable: z.boolean().default(true), createdAt: z.string(),

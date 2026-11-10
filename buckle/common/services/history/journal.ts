@@ -13,16 +13,20 @@ import { logger } from '../../runtime/log.js'
 import type { UntrustedRoots } from '../../domain/executable.js'
 import type { GrantHolder } from '../../domain/permission/grant-holder.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
-import { applySnapshot, assertSnapshotMatches, changedPaths, notRestorablePaths, sameEntry, SnapshotConflictError, uncapturedAt, type Entry, type Snapshot } from './snapshot.js'
+import { applySnapshot, assertSnapshotMatches, changedPaths, notRestorablePaths, sameEntry, SnapshotConflictError, uncapturedAt } from './snapshot.js'
+import { type Entry, type Snapshot } from './snapshot-contract.js'
 import { HistoryBusyError, OWNER_LOCK_WAIT_MS, withHistoryLock } from './execution-lock.js'
-import { createGitStore, DEFAULT_HISTORY_FILE_BYTES, HistoryGitError } from './git-store.js'
+import { createGitStore } from './git-store.js'
+import { HistoryGitError } from './git-process.js'
 import { readLegacyHistory } from './legacy.js'
 import { checkpointSchema, type Checkpoint } from './records.js'
 import { HistoryCaptureSafetyError } from './capture-hashes.js'
 import { BaselineWarmingError, createCommandCapture, FolderReplacedError, HostGitNeededError, type CaptureBudget, type CommandBaseline } from './command-capture.js'
-import { DEFAULT_HISTORY_KEEP_TURNS, DEFAULT_HISTORY_TURN_IDLE_MS, retainedTurns } from './turn-retention.js'
+import { retainedTurns } from './turn-retention.js'
+import { DEFAULT_HISTORY_FILE_BYTES, DEFAULT_HISTORY_KEEP_TURNS, DEFAULT_HISTORY_TURN_IDLE_MS } from './defaults.js'
 import { openHistoryActivity } from './activity.js'
 import { blobId, HistoryContentError, openObjectStore } from './object-store.js'
+import { checkpointObjectIds, unreferencedObjectFilter } from './object-retention.js'
 import { captureScope, missingParents, unknownChildren, type ScopePath } from './scoped-capture.js'
 export { HistoryBusyError } from './execution-lock.js'
 
@@ -453,10 +457,10 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     if (journalKey !== undefined && journal?.key !== journalKey) return undefined
     const indexed = commands.indexed()
     if (indexed === undefined) { logger.warn('History keeps every stored object: a command index is in a form it cannot read'); return undefined }
-    const named = namedObjects(state.checkpoints)
+    const unreferenced = unreferencedObjectFilter({ records: state.checkpoints, indexed })
     const listed = await objects.listing()
     const journals = (await readdir(input.directory)).filter(name => JOURNAL_TEMPORARY.test(name)).map(name => join(input.directory, name))
-    return { keepFrom, journal: journalKey, paths, indexes, ids: listed.ids.filter(id => !named.has(id) && !indexed.has(id)), temporaries: [...listed.temporaries, ...journals] }
+    return { keepFrom, journal: journalKey, paths, indexes, ids: listed.ids.filter(unreferenced), temporaries: [...listed.temporaries, ...journals] }
   }
   /** A checkpoint saved as its call begins; where the journal cannot take it, the call runs all the same (item 6). */
   async function savePending(record: Checkpoint): Promise<void> {
@@ -571,21 +575,12 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   /** The bytes on disk of the content the restorable checkpoints among `records` name, each object once. */
   function heldBytes(records: Checkpoint[]): number {
     let bytes = 0
-    for (const id of namedObjects(records)) {
+    for (const id of checkpointObjectIds(records)) {
       let size = sizes.get(id)
       if (size === undefined) { size = objects.stored(id) ?? 0; sizes.set(id, size) }
       bytes += size
     }
     return bytes
-  }
-  /** The objects a restore of a retained checkpoint reads: each file's content where its checkpoint is restorable. */
-  function namedObjects(records: Checkpoint[]): Set<string> {
-    const named = new Set<string>()
-    for (const record of records) {
-      if (record.content !== 'blobs' || record.status !== 'pending' && record.restorable === false) continue
-      for (const entry of [...Object.values(record.before), ...Object.values(record.after ?? {})]) if (entry.kind === 'file' && entry.hash) named.add(entry.hash)
-    }
-    return named
   }
   /**
    * Removes each object no restorable checkpoint names and no shadow index reuses for the next command's before state:
@@ -601,8 +596,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     removeJournalTemporaries()
     const indexed = commands.indexed()
     if (indexed === undefined) { logger.warn('History keeps every stored object: a command index is in a form it cannot read'); return }
-    const named = namedObjects(state.checkpoints)
-    const { refused } = removeObjects(objects.list().filter(id => !named.has(id) && !indexed.has(id)), 0, Infinity)
+    const unreferenced = unreferencedObjectFilter({ records: state.checkpoints, indexed })
+    const { refused } = removeObjects(objects.list().filter(unreferenced), 0, Infinity)
     if (refused !== undefined) logger.warn('History could not remove some stored objects; the next sweep tries again', { cause: causeOf(refused) })
   }
   /**

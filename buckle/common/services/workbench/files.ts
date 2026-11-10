@@ -11,8 +11,9 @@ import { sensitivePathReason } from '../../domain/permission/rules/sensitive-pat
 import { createToolRegistry } from '../../domain/tool-registry.js'
 import { createFsPack } from '../packs/fs/index.js'
 import { runProcess } from '../../adapters/process-runner.js'
-import { realPathOrPlanned } from '../invocation/real-path.js'
-import { applySnapshot, changedPaths, snapshot, snapshotSchema, type Snapshot } from '../history/snapshot.js'
+import { resolveTarget } from '../invocation/real-path.js'
+import { applySnapshot, changedPaths, snapshot } from '../history/snapshot.js'
+import { snapshotSchema, type Snapshot } from '../history/snapshot-contract.js'
 import { WorkbenchError, writeWorkbenchJson } from './storage.js'
 
 export interface WorkbenchFileOptions {
@@ -82,7 +83,7 @@ export function createWorkbenchFiles(options: WorkbenchFileOptions) {
   async function authorize(id: string, named: string, operation: 'read' | 'write'): Promise<string> {
     const view = createPathView({ root: root(id), mount: '/workspace' })
     const path = view.resolve(named)
-    const actual = await realPathOrPlanned(path)
+    const actual = await resolveTarget(path)
     if (!isInside(root(id), actual)) throw new WorkbenchError('Path is outside this workbench', 403)
     for (const item of [path, actual]) if (!permitted(relative(root(id), item) || '.', operation)) throw new WorkbenchError('Workspace permission does not allow this operation', 403)
     return actual
