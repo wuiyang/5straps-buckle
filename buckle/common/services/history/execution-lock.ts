@@ -33,7 +33,7 @@ export async function withHistoryLock<T>(input: { directory: string; label: stri
     if (holder && !processGone(holder.pid)) throw new HistoryBusyError(`Cannot force a live lock: pid ${holder.pid}, started ${holder.startedAt}, label ${holder.label}`)
   }
   try {
-    return await withFileLock({ path: join(input.directory, 'execution.lock.sqlite'), wait: { deadlineMs: input.deadlineMs, pollMs: 25 }, ...(input.signal ? { signal: input.signal } : {}) }, async () => {
+    return await withFileLock({ path: join(input.directory, 'execution.lock.sqlite'), wait: { deadlineMs: input.deadlineMs }, ...(input.signal ? { signal: input.signal } : {}) }, async () => {
       const holder: Holder = { nonce: randomUUID(), pid: process.pid, startedAt: new Date().toISOString(), label: input.label }
       try { writeFileSync(file, JSON.stringify(holder), { mode: 0o600 }); return await operation() }
       finally { if (readHistoryHolder(input.directory)?.nonce === holder.nonce) rmSync(file) }

@@ -1,5 +1,5 @@
 import { RuntimeError } from '@5straps/runtime'
-import { SqliteErrorCode } from '@5straps/runtime/sqlite'
+import { DEFAULT_LOCK_DEADLINE_MS, SqliteErrorCode } from '@5straps/runtime/sqlite'
 import type { ChangeKind, RestoreTarget } from '../../domain/effect.js'
 import { isInside, parentDirectory } from '../../domain/paths.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -237,7 +237,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   }
   function locked<T>(operation: () => Promise<T>, options: { owner?: boolean; force?: boolean; signal?: AbortSignal; immediate?: boolean } = {}): Promise<T> {
     if (closed) return Promise.reject(new RuntimeError(SqliteErrorCode.ownerClosed, 'History is closed'))
-    const deadlineMs = options.immediate ? 0 : options.owner ? Math.min(input.lockDeadlineMs ?? OWNER_LOCK_WAIT_MS, OWNER_LOCK_WAIT_MS) : input.lockDeadlineMs ?? 300_000
+    const deadlineMs = options.immediate ? 0 : options.owner ? Math.min(input.lockDeadlineMs ?? OWNER_LOCK_WAIT_MS, OWNER_LOCK_WAIT_MS) : input.lockDeadlineMs ?? DEFAULT_LOCK_DEADLINE_MS
     return withHistoryLock({ directory: input.directory, label: input.label ?? 'workspace mutation', deadlineMs, ...(options.signal ? { signal: options.signal } : {}), ...(options.force ? { force: true } : {}) }, async () => {
       holding = true
       try {
