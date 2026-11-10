@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { argvIdentity, commandSubject, envSplitWords, expansionShape, gitInvocation, hasFlag, holdsExpansion, parseArgv, shellScriptSource, shellStartupFiles, shellStatementList, shellTokens, shownCommand, sshCommandSetting, sshInvocation, statementPieces, suInvocation } from '../common/domain/argv.js'
+import { argvIdentity, commandSubject, envSplitWords, expansionShape, gitInvocation, hasFlag, holdsExpansion, parseArgv, shellScriptOperand, shellStartupFiles, shellStatementList, shellTokens, shownCommand, sshCommandSetting, sshInvocation, statementPieces, suInvocation } from '../common/domain/argv.js'
 import { commandForms, readLimitOf } from '../common/domain/command-forms.js'
 
 describe('parseArgv', () => {
@@ -32,8 +32,8 @@ describe('parseArgv', () => {
 
 // Slice 7h probes: a shell whose script arrives as data (a pipe, a redirection, xargs) runs what no reading sees, so
 // where a shell takes its script from is read as its options say.
-describe('shellScriptSource', () => {
-  it.each<[string[], ReturnType<typeof shellScriptSource>]>([
+describe('shellScriptOperand source', () => {
+  it.each<[string[], ReturnType<typeof shellScriptOperand>['source']]>([
     [['-c', 'git push'], 'command'],
     [['-ec', 'git push'], 'command'],
     [['-o', 'pipefail', '-c', 'git push'], 'command'],
@@ -66,7 +66,7 @@ describe('shellScriptSource', () => {
     [['scripts/build.sh'], 'file'],
     [['./stdin'], 'file'],
   ])('reads a shell given %j as taking its script from: %s', (args, source) => {
-    expect(shellScriptSource(args)).toBe(source)
+    expect(shellScriptOperand(args).source).toBe(source)
   })
 })
 

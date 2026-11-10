@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { describe, expect, it, vi } from 'vitest'
 import { runCli } from './support/cli.js'
-import { compilePolicy, mergePolicies, PolicyError } from '../common/domain/policy.js'
+import { compilePolicy, PolicyError } from '../common/domain/policy.js'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -148,15 +148,9 @@ describe('buckle policy allow-interpreter and remove-interpreter', () => {
 })
 
 describe('allowedInterpreters in a policy document', () => {
-  it('is absent from an older document, which reads as none, and unions across the sources', () => {
+  it('is absent from an older document, which reads as none', () => {
     const older = emptyWorkspacePolicy()
     expect(compilePolicy(older).commands.allowedInterpreters).toEqual(new Set())
-    const stored = emptyWorkspacePolicy()
-    stored.commands.allowedInterpreters = ['node', 'python3']
-    const other = emptyWorkspacePolicy()
-    other.commands.allowedInterpreters = ['python3', 'perl']
-    expect(mergePolicies(older, stored, other).commands.allowedInterpreters).toEqual(['node', 'python3', 'perl'])
-    expect(mergePolicies(older, older).commands).not.toHaveProperty('allowedInterpreters')
   })
 
   it('refuses a name no interpreter has when it compiles', () => {

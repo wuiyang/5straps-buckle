@@ -5,8 +5,8 @@ import { describe, expect, it } from 'vitest'
 import { AuditUnavailableError, createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { createAuditHealth } from '../common/services/audit/audit-health.js'
 import { summarizeEffect } from '../common/domain/effect.js'
-import { collectPrefixed } from '../common/domain/environment.js'
-import { redactArguments } from '../common/domain/redact.js'
+import { redactAuditArguments } from '../common/domain/redact.js'
+import type { JsonValue } from '@5straps/protocol'
 import { DECISION_TOOL } from '../common/domain/record-tools.js'
 import type { ActionLogEntry } from '../common/types/ports/action-log.js'
 
@@ -102,41 +102,29 @@ describe('the file action log', () => {
   })
 })
 
-describe('redactArguments', () => {
-  it('leaves paths and commands readable, which is the point of the log', () => {
-    expect(redactArguments({ path: 'src/app.ts', args: ['build', '--watch'] }))
-      .toEqual({ path: 'src/app.ts', args: ['build', '--watch'] })
-  })
-
-  it('replaces a value whose key is named like a credential', () => {
-    expect(redactArguments({ url: 'https://api.example.com', apiKey: 'sk-live-1234' }))
-      .toEqual({ url: 'https://api.example.com', apiKey: '[redacted]' })
-  })
-
-  it('replaces file contents with a length, so a write does not copy the file into the log', () => {
-    const content = 'x'.repeat(5000)
-    expect(redactArguments({ path: 'secrets.txt', content })).toEqual({
-      path: 'secrets.txt',
-      content: '[5000 characters]',
+describe('redactAuditArguments', () => {
+  it('hides arbitrary strings and credentials while retaining argument structure and scalar types', () => {
+    expect(redactAuditArguments({ path: 'private', token: 'credential', nested: { content: 'x'.repeat(5_000), list: ['hidden', true, 3, null] } })).toEqual({
+      path: '[7 characters]', token: '[redacted]', nested: { content: '[5000 characters]', list: ['[6 characters]', true, 3, null] },
     })
   })
 
-  it('redacts inside nested structures', () => {
-    expect(redactArguments({ files: [{ path: 'a.ts', token: 'abc' }] }))
-      .toEqual({ files: [{ path: 'a.ts', token: '[redacted]' }] })
-  })
-
-  it('caps a long array instead of recording every element', () => {
-    const result = redactArguments({ paths: Array.from({ length: 30 }, (_, index) => `f${index}.ts`) })
-    const paths = (result as { paths: string[] }).paths
-    expect(paths).toHaveLength(21)
-    expect(paths.at(-1)).toBe('[10 more]')
-  })
-
-  it('stops descending before a deeply nested object can bloat the entry', () => {
-    let nested: Record<string, unknown> = { value: 'deep' }
-    for (let depth = 0; depth < 10; depth += 1) nested = { nested }
-    expect(JSON.stringify(redactArguments(nested as never))).toContain('[nested]')
+  it('bounds arrays, records, keys, and nesting before arguments enter the audit log', () => {
+    let nested: JsonValue = { value: 'private' }
+    for (let depth = 0; depth < 20; depth++) nested = { nested }
+    const shown = redactAuditArguments({
+      files: Array.from({ length: 100 }, () => 'private'),
+      wide: Object.fromEntries(Array.from({ length: 100 }, (_, index) => [`field-${index}-${'k'.repeat(200)}`, 'private'])),
+      nested,
+    })
+    expect(shown).toHaveProperty('files.length', 20)
+    expect(JSON.stringify(shown)).toContain('[nested]')
+    expect(JSON.stringify(shown)).not.toContain('private')
+    if (shown === null || typeof shown !== 'object' || Array.isArray(shown)) throw new Error('Audit arguments lost their object shape')
+    const wide = shown.wide
+    if (wide === null || typeof wide !== 'object' || Array.isArray(wide)) throw new Error('Audit arguments lost their nested record shape')
+    expect(Object.keys(wide)).toHaveLength(40)
+    expect(Object.keys(wide).every(key => key.length <= 100)).toBe(true)
   })
 })
 
@@ -155,22 +143,6 @@ describe('summarizeEffect', () => {
     expect(summarizeEffect({ kind: 'exec', command: 'rm', args: ['-f', 'a b'] })).toBe("exec rm -f 'a b'")
     expect(summarizeEffect({ kind: 'exec', command: 'git', args: ['push', 'https://bot:tok-9q@host.example/r.git'] })).toBe("exec git push 'https://bot:[redacted]@host.example/r.git'")
     expect(summarizeEffect({ kind: 'network', url: new URL('https://bot:tok-9q@host.example/x?token=tok-9q') })).not.toContain('tok-9q')
-  })
-})
-
-describe('collectPrefixed', () => {
-  it('takes every variable under the prefix and nothing else', () => {
-    expect(collectPrefixed({ AGENT_BROWSER_HEADED: 'true', AGENT_BROWSER_PROXY: 'p', OTHER: 'x' }, 'AGENT_BROWSER_'))
-      .toEqual({ AGENT_BROWSER_HEADED: 'true', AGENT_BROWSER_PROXY: 'p' })
-  })
-
-  it('anchors at the start, so a variable merely containing the prefix is left out', () => {
-    expect(collectPrefixed({ MY_AGENT_BROWSER_X: 'x' }, 'AGENT_BROWSER_')).toEqual({})
-  })
-
-  it('skips variables with no value rather than forwarding undefined', () => {
-    expect(collectPrefixed({ AGENT_BROWSER_A: undefined, AGENT_BROWSER_B: 'b' }, 'AGENT_BROWSER_'))
-      .toEqual({ AGENT_BROWSER_B: 'b' })
   })
 })
 

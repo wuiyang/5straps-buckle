@@ -1,31 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
-import { compilePolicy, isRestrictive, mergePolicies, PolicyError } from '../common/domain/policy.js'
+import { compilePolicy, isRestrictive, PolicyError } from '../common/domain/policy.js'
 
-function policy(overrides: Partial<{ allow: string[]; deny: string[]; network: string[]; mount: string | null; updatedAt: string | null }>): WorkspacePolicy {
+function policy(overrides: Partial<{ allow: string[]; deny: string[]; network: string[]; mount: string | null }>): WorkspacePolicy {
   const base = emptyWorkspacePolicy()
   base.commands.allow = overrides.allow ?? []
   base.commands.deny = overrides.deny ?? []
   base.network.allow = overrides.network ?? []
   base.mount = overrides.mount ?? null
-  base.updatedAt = overrides.updatedAt ?? null
   return base
 }
-
-describe('merging the environment share with the stored share', () => {
-  it('unions every list, so neither source can loosen the other', () => {
-    const merged = mergePolicies(policy({ deny: ['curl'], allow: ['pnpm *'] }), policy({ deny: ['wget', 'curl'], network: ['example.com'] }))
-    expect(merged.commands.deny).toEqual(['curl', 'wget'])
-    expect(merged.commands.allow).toEqual(['pnpm *'])
-    expect(merged.network.allow).toEqual(['example.com'])
-  })
-
-  it('takes the last mount named and the newest timestamp', () => {
-    const merged = mergePolicies(policy({ mount: '/workspace', updatedAt: '2026-01-01T00:00:00.000Z' }), policy({ mount: '/app', updatedAt: '2026-02-01T00:00:00.000Z' }), null)
-    expect(merged.mount).toBe('/app')
-    expect(merged.updatedAt).toBe('2026-02-01T00:00:00.000Z')
-  })
-})
 
 describe('compiling', () => {
   it('refuses a pattern that is a regular expression, naming it and the migration', () => {

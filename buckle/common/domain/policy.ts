@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { allowedInterpreters, destructivePatterns, emptyWorkspacePolicy, MountPathSchema, type WorkspacePolicy } from '@5straps/protocol'
+import { allowedInterpreters, destructivePatterns, MountPathSchema, type WorkspacePolicy } from '@5straps/protocol'
 import { INTERPRETER_NAMES, isInterpreter } from './command-forms.js'
 import { compileCommandGlob, CommandGlobError, type CommandGlob } from './command-glob.js'
 import { compileUrlPatterns, UrlPatternError, type UrlMatcher } from './url-pattern.js'
@@ -108,34 +108,6 @@ export function refusedNetworkEntries(entries: string[]): RefusedEntry[] {
   })
 }
 
-/**
- * Both sources are the owner's, so the effective policy is their union: every deny from either,
- * every allow from either, and the last mount named. A later policy never loosens an earlier deny.
- */
-export function mergePolicies(...policies: Array<WorkspacePolicy | null>): WorkspacePolicy {
-  const merged = emptyWorkspacePolicy()
-  for (const policy of policies) {
-    if (!policy) continue
-    if (policy.tools) {
-      const previous = merged.tools
-      const currentAllow = policy.tools.allow
-      const allow = previous?.allow === undefined ? currentAllow
-        : currentAllow === undefined ? previous.allow : previous.allow.filter(name => currentAllow.includes(name))
-      merged.tools = { ...(allow !== undefined ? { allow: unique(allow) } : {}), deny: unique([...previous?.deny ?? [], ...policy.tools.deny]) }
-    }
-    if (policy.filesystem) merged.filesystem = { rules: [...merged.filesystem?.rules ?? [], ...policy.filesystem.rules] }
-    merged.commands.allow = unique([...merged.commands.allow, ...policy.commands.allow])
-    merged.commands.deny = unique([...merged.commands.deny, ...policy.commands.deny])
-    merged.commands.destructive = unique([...destructivePatterns(merged), ...destructivePatterns(policy)])
-    const interpreters = unique([...allowedInterpreters(merged), ...allowedInterpreters(policy)])
-    if (interpreters.length > 0) merged.commands.allowedInterpreters = interpreters
-    merged.network.allow = unique([...merged.network.allow, ...policy.network.allow])
-    if (policy.mount) merged.mount = policy.mount
-    if (policy.updatedAt && (!merged.updatedAt || policy.updatedAt > merged.updatedAt)) merged.updatedAt = policy.updatedAt
-  }
-  return merged
-}
-
 export function isRestrictive(policy: WorkspacePolicy): boolean {
   return policy.tools?.allow !== undefined || Boolean(policy.tools?.deny.length)
     || Boolean(policy.filesystem?.rules.length)
@@ -181,8 +153,4 @@ function validateMount(mount: string | null): string | null {
   const top = `/${mount.split('/')[1] ?? ''}`
   if (RESERVED_MOUNTS.has(top)) throw new PolicyError(`Cannot mount the workspace under ${top}: the sandbox needs it for the host's own tools`)
   return mount
-}
-
-function unique(items: string[]): string[] {
-  return [...new Set(items.map(item => item.trim()).filter(Boolean))]
 }

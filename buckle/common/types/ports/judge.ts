@@ -132,8 +132,3 @@ export function clippedReasoning(reasoning: string): string {
 export function clippedResult(result: JudgeResult): JudgeResult {
   return result.kind === 'verdict' ? { ...result, reasoning: clippedReasoning(result.reasoning) } : result
 }
-
-/** The judge of a node with none: every rating is unavailable. */
-export const nullJudge: Judge = {
-  judge: () => Promise.resolve({ kind: 'unavailable', reason: 'the judge is off' }),
-}

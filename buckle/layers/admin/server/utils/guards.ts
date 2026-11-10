@@ -129,10 +129,6 @@ async function sessionRefusal(input: { access: AdminAccess; payload: SignedReque
   return session ? null : 'session_closed'
 }
 
-export const requireInspection = (refusal: RefusalAudit = SETUP_REFUSED): Guard => requireAdmin('inspection', refusal)
-export const requireSetup = (refusal: RefusalAudit = SETUP_REFUSED): Guard => requireAdmin('setup', refusal)
-export const requireApproval = (refusal: RefusalAudit = SETUP_REFUSED): Guard => requireAdmin('approval', refusal)
-
 /** A catch-all reads for GET and HEAD and changes for anything else. */
 export function accessFor(event: H3Event): AdminAccess {
   return isMutation(event) ? 'setup' : 'inspection'

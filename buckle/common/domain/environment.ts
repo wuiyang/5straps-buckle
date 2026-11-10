@@ -114,19 +114,6 @@ export function hostEnvironment(untrusted: () => UntrustedRoots, platform: NodeJ
   }
 }
 
-/**
- * Every variable under a prefix, for a pack that needs to configure the tool it wraps. The
- * prefix is named by the pack rather than added to INHERITED, so one tool's settings reach that
- * tool alone and the allowlist keeps meaning what it says for everything else.
- */
-export function collectPrefixed(parent: NodeJS.ProcessEnv, prefix: string): Record<string, string> {
-  const collected: Record<string, string> = {}
-  for (const [name, value] of Object.entries(parent)) {
-    if (value !== undefined && name.startsWith(prefix)) collected[name] = value
-  }
-  return collected
-}
-
 /** Used to redact values before they reach logs or tool output. */
 export function isSecretName(name: string): boolean {
   return SECRET_NAME_PATTERN.test(name)

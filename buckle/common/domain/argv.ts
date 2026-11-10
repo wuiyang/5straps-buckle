@@ -241,11 +241,6 @@ export function scriptOperandKind(operand: string): 'input' | 'descriptor' | 'fi
 /** Long options after which a shell prints and runs nothing. */
 const SHELL_INFO_OPTIONS = new Set(['--version', '--help'])
 
-/** Where a shell call takes its script from (shellScriptOperand). */
-export function shellScriptSource(args: readonly string[]): ShellScriptSource {
-  return shellScriptOperand(args).source
-}
-
 /**
  * Where a shell call takes its script from, and the operand that names it, its options read as shellBodyIndexes reads
  * them: with `c` among its options the first operand is the script, and with none the call has no script

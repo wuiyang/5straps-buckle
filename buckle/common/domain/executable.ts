@@ -652,14 +652,6 @@ export function realPathOr(path: string, platform: NodeJS.Platform = process.pla
   try { return nativePath(realpathSync.native(path), platform) } catch { return path }
 }
 
-export function hasExecutable(
-  binary: string,
-  environment?: NodeJS.ProcessEnv,
-  platform?: NodeJS.Platform,
-): boolean {
-  return findExecutable(binary, environment, platform) !== null
-}
-
 /**
  * Names to try on disk for one candidate path. Windows stores `git` as `git.exe`, so a bare name
  * has to be suffixed before it will ever be found. A shim is never among them (firstShim).
