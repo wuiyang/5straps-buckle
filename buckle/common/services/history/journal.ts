@@ -20,7 +20,6 @@ import { createGitStore } from './git-store.js'
 import { HistoryGitError } from './git-process.js'
 import { readLegacyHistory } from './legacy.js'
 import { checkpointSchema, type Checkpoint } from './records.js'
-import { HistoryCaptureSafetyError } from './capture-hashes.js'
 import { BaselineWarmingError, createCommandCapture, FolderReplacedError, HostGitNeededError, type CaptureBudget, type CommandBaseline } from './command-capture.js'
 import { retainedTurns } from './turn-retention.js'
 import { DEFAULT_HISTORY_FILE_BYTES, DEFAULT_HISTORY_KEEP_TURNS, DEFAULT_HISTORY_TURN_IDLE_MS } from './defaults.js'
@@ -114,7 +113,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   const settings = { keepTurns: input.keepTurns ?? DEFAULT_HISTORY_KEEP_TURNS, turnIdleMs: input.turnIdleMs ?? DEFAULT_HISTORY_TURN_IDLE_MS, maxFileBytes: input.maxFileBytes ?? DEFAULT_HISTORY_FILE_BYTES, allowHostGit: input.allowHostGit !== false, excluded: input.excluded }
   const objects = openObjectStore(input.directory)
   const scopeLimits = () => ({ maxFileBytes: settings.maxFileBytes, maxTreeBytes: input.maxBytes, excluded: [...settings.excluded, input.directory], ...(input.platform ? { platform: input.platform } : {}) })
-  const store = createGitStore({ directory: input.directory, excluded: input.excluded, maxFileBytes: () => settings.maxFileBytes, allowed: () => settings.allowHostGit, ...(input.untrusted ? { untrusted: input.untrusted } : {}), ...(input.platform ? { platform: input.platform } : {}) })
+  const store = createGitStore({ directory: input.directory, allowed: () => settings.allowHostGit, ...(input.untrusted ? { untrusted: input.untrusted } : {}) })
   const commands = createCommandCapture({ directory: input.directory, objects, excluded: () => [...settings.excluded, input.directory], allowed: () => settings.allowHostGit, maxFileBytes: () => settings.maxFileBytes, ...(input.untrusted ? { untrusted: input.untrusted } : {}) })
   /** Each running command's state before it ran, by checkpoint, until its finish reads what changed. */
   const baselines = new Map<string, CommandBaseline[]>()
@@ -895,7 +894,6 @@ function causeText(error: unknown): string {
   const code = systemCode(error)
   if (code) return `the file system answered ${code}`
   if (error instanceof HistoryContentError) return 'its content store is damaged'
-  if (error instanceof HistoryCaptureSafetyError) return error.message
   if (error instanceof FolderReplacedError) return 'a folder it records was replaced by a link or another folder'
   return error instanceof Error && error.constructor !== Error ? error.constructor.name : 'an unexpected error'
 }

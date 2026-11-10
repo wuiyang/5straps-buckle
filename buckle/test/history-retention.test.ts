@@ -179,7 +179,7 @@ it('migrates mixed linked and isolated records by actual parents across multiple
 for (const published of [false, true]) it(`recovers staged legacy migration ${published ? 'after' : 'before'} JSON publication before another write`, async () => {
   const { test, state } = await seedLegacy()
   const original = structuredClone(state)
-  const store = createGitStore({ directory: test.directory, excluded: [], maxFileBytes: () => 1_048_576, allowed: () => true })
+  const store = createGitStore({ directory: test.directory, allowed: () => true })
   expect(await store.isolate(state.checkpoints)).toBe(true)
   assertCanonical(original)
   expect(staging(state).length).toBeGreaterThan(0)
@@ -238,7 +238,7 @@ for (const failAfterSave of [false, true]) it(`preserves migrated pending recove
   assertPairs(durable); assertCanonical(durable)
   expect(staging(durable)).toEqual([])
   collect(durable)
-  const store = createGitStore({ directory: test.directory, excluded: [], maxFileBytes: () => 1_048_576, allowed: () => true })
+  const store = createGitStore({ directory: test.directory, allowed: () => true })
   const record = durable.checkpoints.find(row => row.id === target.id)!
   const content = await store.restoreContent({ trees: record.beforeTrees!, target: baseline, paths: [test.file] })
   expect([...content.values()].map(value => value.toString())).toContain('owner baseline\r\n')

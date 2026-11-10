@@ -28,37 +28,6 @@ vi.mock('node:fs', async (importOriginal) => {
   return { ...actual, ...replaced, default: { ...actual, ...replaced } }
 })
 
-vi.mock('node:worker_threads', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:worker_threads')>()
-  const fault = `
-    const heldFs = require('node:fs');
-    const heldDescriptors = new Set();
-    const heldOpen = heldFs.openSync;
-    const heldRead = heldFs.readSync;
-    const heldClose = heldFs.closeSync;
-    const heldBusy = () => Object.assign(new Error('held file'), { code: 'EBUSY' });
-    heldFs.openSync = function(path, ...options) {
-      if (String(path).endsWith('held-open')) throw heldBusy();
-      const descriptor = heldOpen(path, ...options);
-      if (String(path).endsWith('locked-range')) heldDescriptors.add(descriptor);
-      return descriptor;
-    };
-    heldFs.readSync = function(descriptor, ...options) {
-      if (heldDescriptors.has(descriptor)) throw heldBusy();
-      return heldRead(descriptor, ...options);
-    };
-    heldFs.closeSync = function(descriptor) {
-      heldDescriptors.delete(descriptor);
-      return heldClose(descriptor);
-    };
-  `
-  return { ...actual, Worker: class extends actual.Worker {
-    constructor(filename: ConstructorParameters<typeof actual.Worker>[0], options?: ConstructorParameters<typeof actual.Worker>[1]) {
-      super(typeof filename === 'string' && options?.eval ? fault + filename : filename, options)
-    }
-  } }
-})
-
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 

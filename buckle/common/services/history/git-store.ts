@@ -1,180 +1,35 @@
-import { performance } from 'node:perf_hooks'
-import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-import { basename as nativeBasename, isAbsolute as nativeIsAbsolute, relative as nativeRelative, sep as nativeSeparator } from 'node:path'
-import { dirname, join, relative, resolve } from 'pathe'
-import { requireOwnerOnly, setMode } from '../../adapters/file-modes.js'
+import { randomUUID } from 'node:crypto'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { join, relative } from 'pathe'
 import type { Program, UntrustedRoots } from '../../domain/executable.js'
-import { isInside, isPlainName } from '../../domain/paths.js'
-import { logger } from '../../runtime/log.js'
-import { captureHashes, historyCapturePath } from './capture-hashes.js'
+import { isInside } from '../../domain/paths.js'
 import type { Snapshot } from './snapshot-contract.js'
 import type { TreeCapture } from './tree-capture.js'
-import { escapeIgnore, ownerGitDirectory, RAW_ATTRIBUTES, readGitMetadata, regularFile } from './git-files.js'
 import { gitOperation, historyGitProgram, isolatedGit, runProgram } from './git-process.js'
 
-export interface CapturedState { snapshot: Snapshot; trees: TreeCapture[]; restorable: boolean; reason?: string }
 const HASH = /^[a-f0-9]{40,64}$/
 const CHECKPOINT_ID = /^change-[a-zA-Z0-9-]+$/
-const SETUP_MARKER = 'buckle-setup-complete'
-interface CaptureTiming { captureHashesMs: number; resolveMs: number; gitSubprocessMs: number; commandCount: number }
 interface CheckpointTrees { id: string; beforeTrees?: TreeCapture[]; afterTrees?: TreeCapture[] }
 interface CommitShape { tree: string; parents: string[] }
 const CHECKPOINT_REFS = 'refs/buckle/checkpoints/'
 const STAGING_REFS = 'refs/buckle/migrations/'
 const MAX_CACHED_COMMITS = 4096
-type GitCommand = (state: Pick<TreeCapture, 'git' | 'workTree'>, args: string[], data?: string | Buffer, extra?: Record<string, string>, acceptedCodes?: number[]) => Promise<Buffer>
 
-export function createGitStore(input: { directory: string; excluded: string[]; maxFileBytes: () => number; allowed: () => boolean; untrusted?: () => UntrustedRoots; platform?: NodeJS.Platform }) {
+export function createGitStore(input: { directory: string; allowed: () => boolean; untrusted?: () => UntrustedRoots }) {
   const owned = join(input.directory, 'git-private')
   // Made at the first git child, never at open: a history that holds no shadow-git checkpoint keeps none of its folders (Slice F2, item 7).
   let isolation: ReturnType<typeof isolatedGit> | undefined
   const isolated = () => isolation ??= isolatedGit(owned)
-  const primaryFile = join(owned, 'primary-root')
-  let primary: string | undefined = existsSync(primaryFile) ? readFileSync(primaryFile, 'utf8') : undefined
-  const exclusions = [...input.excluded, input.directory]
-  const warnedNames = new Set<string>()
   const commitShapes = new Map<string, CommitShape>()
 
-  const git = gitCommand()
-  function trustedProgram(roots: string[], timing?: CaptureTiming): Program | null {
-    const started = performance.now()
-    try { return historyGitProgram({ allowed: input.allowed(), roots, ...(input.untrusted ? { untrusted: input.untrusted() } : {}) }) }
-    finally { if (timing) timing.resolveMs += performance.now() - started }
+  function trustedProgram(roots: string[]): Program | null {
+    return historyGitProgram({ allowed: input.allowed(), roots, ...(input.untrusted ? { untrusted: input.untrusted() } : {}) })
   }
-  function gitCommand(timing?: CaptureTiming): GitCommand {
-    return async (state, args, data, extra = {}, acceptedCodes = [0]) => {
-      const program = trustedProgram(['root' in state && typeof state.root === 'string' ? state.root : state.workTree], timing)
-      if (!program) throw new Error('Content capture requires trusted host git')
-      const started = performance.now()
-      if (timing) timing.commandCount++
-      const { environment, safety } = isolated()
-      try { return await runProgram({ program, operation: gitOperation(args), args: [...safety, ...args], cwd: owned, environment: { ...environment, GIT_DIR: state.git, GIT_WORK_TREE: state.workTree, GIT_INDEX_FILE: join(state.git, 'index'), ...extra }, data, acceptedCodes }) }
-      finally { if (timing) timing.gitSubprocessMs += performance.now() - started }
-    }
-  }
-  function gitDirectory(root: string): string {
-    isolated()
-    primary = existsSync(primaryFile) ? readFileSync(primaryFile, 'utf8') : root
-    if (!existsSync(primaryFile)) writeFileSync(primaryFile, primary, { mode: 0o600 })
-    return root === primary ? join(input.directory, 'git') : join(input.directory, 'roots', createHash('sha256').update(root).digest('hex').slice(0, 24), 'git')
-  }
-  async function prepare(root: string, command: GitCommand): Promise<Pick<TreeCapture, 'root' | 'workTree' | 'selector' | 'git'>> {
-    const stat = lstatSync(root, { throwIfNoEntry: false })
-    let workTree = stat?.isDirectory() ? root : dirname(root)
-    while (!lstatSync(workTree, { throwIfNoEntry: false })?.isDirectory() && dirname(workTree) !== workTree) workTree = dirname(workTree)
-    const state = { root, workTree, selector: root === workTree ? '.' : relative(workTree, root), git: gitDirectory(root) }
-    const marker = join(state.git, SETUP_MARKER)
-    const attributes = join(state.git, 'info', 'attributes')
-    if (!regularFile(marker) || !regularFile(join(state.git, 'HEAD')) || !regularFile(attributes, Buffer.byteLength(RAW_ATTRIBUTES)) || readGitMetadata(attributes) !== RAW_ATTRIBUTES) {
-      rmSync(marker, { force: true })
-      mkdirSync(state.git, { recursive: true, mode: 0o700 }); setMode(state.git, 0o700); requireOwnerOnly(state.git, 'directory')
-      await command(state, ['init', '--quiet', `--template=${isolated().empty}`, state.git])
-      mkdirSync(join(state.git, 'info'), { recursive: true, mode: 0o700 }); mkdirSync(join(state.git, 'objects', 'info'), { recursive: true, mode: 0o700 })
-      rmSync(attributes, { force: true })
-      writeFileSync(attributes, RAW_ATTRIBUTES, { mode: 0o600, flag: 'wx' })
-      const objects = ownerObjects(workTree)
-      const alternates = join(state.git, 'objects', 'info', 'alternates')
-      if (objects && !existsSync(alternates)) writeFileSync(alternates, `${objects}\n`, { mode: 0o600, flag: 'wx' })
-      writeFileSync(marker, '', { mode: 0o600, flag: 'wx' })
-    }
-    return state
-  }
-  async function capture(details: { roots: string[]; excluded?: string[]; id: string; phase: 'before' | 'after'; parents?: TreeCapture[] }): Promise<CapturedState> {
-    const started = performance.now()
-    const timing: CaptureTiming = { captureHashesMs: 0, resolveMs: 0, gitSubprocessMs: 0, commandCount: 0 }
-    let outcome: 'ok' | 'error' = 'error'
-    try { const captured = await captureState(details, timing); outcome = 'ok'; return captured }
-    finally { logger.debug('History capture finished', { phase: details.phase, outcome, captureHashesMs: Math.round(timing.captureHashesMs), resolveMs: Math.round(timing.resolveMs), gitSubprocessMs: Math.round(timing.gitSubprocessMs), commandCount: timing.commandCount, captureMs: Math.round(performance.now() - started) }) }
-  }
-  async function captureState(details: Parameters<typeof capture>[0], timing: CaptureTiming): Promise<CapturedState> {
-    const roots = normalizedRoots(details.roots)
-    const program = trustedProgram(roots, timing)
-    const command = gitCommand(timing)
-    const hashStarted = performance.now()
-    let scanned: Snapshot
-    try { scanned = await captureHashes({ roots, excluded: [...exclusions, ...details.excluded ?? []], maxFileBytes: input.maxFileBytes(), hashFiles: !program, platform: input.platform ?? process.platform }) }
-    finally { timing.captureHashesMs += performance.now() - hashStarted }
-    for (const [path, entry] of Object.entries(scanned)) if (entry.kind === 'excluded' && !isPlainName(nativeBasename(path), input.platform ?? process.platform) && !warnedNames.has(path)) {
-      const root = roots.find(root => nativeInside(root, path))
-      if (root) { warnedNames.add(path); logger.warn('History leaves out a name Buckle would read as another path', { root, name: gitName(root, path) }) }
-    }
-    if (!program) return { snapshot: scanned, trees: [], restorable: false, reason: 'History records hashes only because content capture requires permitted trusted host git' }
-    const combined: Snapshot = {}
-    const trees: TreeCapture[] = []
-    for (const root of roots) {
-      const state = await prepare(root, command)
-      const selected = Object.fromEntries(Object.entries(scanned).filter(([path]) => nativeInside(root, path)))
-      const omitted = Object.entries(selected).filter(([, entry]) => entry.kind === 'excluded' || entry.kind === 'unreadable').map(([path]) => path)
-      const excluded = [...exclusions, ...details.excluded ?? [], ...omitted]
-      writeFileSync(join(state.git, 'info', 'exclude'), excluded.filter(path => nativeInside(state.workTree, path)).map(path => `/${escapeIgnore(gitName(state.workTree, path))}`).join('\n') + '\n', { mode: 0o600 })
-      const ignoredTracked = await command(state, ['ls-files', '-ci', '--exclude-standard', '-z'])
-      if (ignoredTracked.length) await command(state, ['update-index', '--force-remove', '-z', '--stdin'], ignoredTracked)
-      if (existsSync(root)) await command(state, ['add', '-A', '--', state.selector])
-      else await command(state, ['read-tree', '--empty'])
-      const tree = (await command(state, ['write-tree'])).toString().trim()
-      const parent = details.phase === 'after' ? details.parents?.find(value => value.root === root && value.git === state.git)?.commit : undefined
-      const commit = (await command(state, ['commit-tree', tree, ...parent ? ['-p', parent] : []], `Buckle ${details.id} ${details.phase}\n`)).toString().trim()
-      rememberShape(state.git, commit, { tree, parents: parent ? [parent] : [] })
-      const listed = await loadTree({ ...state, commit, extra: {} }, command)
-      const names = Object.keys(selected).filter(path => path !== state.workTree && isPlainName(nativeBasename(path), input.platform ?? process.platform)).map(path => gitName(state.workTree, path))
-      const checked = names.length ? (await command(state, ['check-ignore', '--no-index', '--stdin', '-z', '-v', '--non-matching'], Buffer.from(names.join('\0') + '\0'), { GIT_LITERAL_PATHSPECS: '0' }, [0, 1])).toString().split('\0') : []
-      const ignored = new Set<string>()
-      for (let index = 0; index + 3 < checked.length; index += 4) {
-        const source = checked[index]; const pattern = checked[index + 2]; const name = checked[index + 3]
-        if (source && pattern && name && !pattern.startsWith('!') && resolve(state.workTree, source) !== join(state.git, 'info', 'exclude')) ignored.add(join(state.workTree, name))
-      }
-      const extra: Snapshot = {}
-      for (const [path, entry] of Object.entries(selected)) {
-        if (entry.kind === 'excluded' && !isPlainName(nativeBasename(path), input.platform ?? process.platform)) { extra[path] = entry; continue }
-        const inheritedIgnore = ignoredAncestor(path, state.workTree, ignored)
-        if ((path !== root || entry.kind !== 'directory') && (ignored.has(path) || inheritedIgnore)) {
-          if (!inheritedIgnore) extra[path] = { kind: 'excluded', mode: entry.mode, reason: 'ignored' }
-          continue
-        }
-        if (entry.kind === 'directory' ? entry.mode !== 0o755 || !listed[path] : entry.kind === 'excluded' || entry.kind === 'unreadable') extra[path] = entry
-        else if (listed[path] && entry.mode !== listed[path]!.mode) extra[path] = { ...entry, hash: undefined }
-        if (listed[path]) listed[path] = { ...listed[path]!, mode: entry.mode, ...(entry.kind === 'symlink' ? { target: entry.target } : {}) }
-      }
-      Object.assign(listed, Object.fromEntries(Object.entries(extra).filter(([, entry]) => entry.kind !== 'file' && entry.kind !== 'symlink')))
-      Object.assign(combined, listed)
-      const captured: TreeCapture = { ...state, commit, extra }
-      trees.push(captured)
-      await reference({ capture: captured, id: details.id, phase: details.phase }, command)
-    }
-    return { snapshot: combined, trees, restorable: true }
-  }
-  async function loadTree(captured: TreeCapture, command: GitCommand = git): Promise<Snapshot> {
-    assertHash(captured.commit)
-    const result: Snapshot = {}
-    const raw = await command(captured, ['ls-tree', '-r', '-t', '-z', captured.commit])
-    for (const row of raw.toString().split('\0').filter(Boolean)) {
-      const tab = row.indexOf('\t'); const [mode, type, hash] = row.slice(0, tab).split(' '); const name = row.slice(tab + 1)
-      if (!hash || !mode || !type || !name || name.startsWith('/') || name.split('/').some(part => !isPlainName(part, input.platform ?? process.platform) || part === '.git')) throw new Error('Invalid path in history tree')
-      const path = join(captured.workTree, name)
-      if (!isInside(captured.root, path)) continue
-      if (type === 'tree') result[path] = { kind: 'directory', mode: 0o755 }
-      else if (mode === '120000') result[path] = { kind: 'symlink', mode: 0o777, target: (await command(captured, ['cat-file', 'blob', hash])).toString() }
-      else if (type === 'blob') result[path] = { kind: 'file', mode: mode === '100755' ? 0o755 : 0o644, hash }
-      else result[path] = { kind: 'excluded', mode: 0 }
-    }
-    if (captured.selector === '.') result[captured.root] ??= { kind: 'directory', mode: 0o755 }
-    for (const [path, entry] of Object.entries(captured.extra)) result[path] = { ...result[path], ...entry, ...(result[path]?.hash ? { hash: result[path]!.hash } : {}) }
-    return result
-  }
-  async function reference(input: { capture: TreeCapture; id: string; phase: 'before' | 'after' }, command: GitCommand = git): Promise<void> {
-    if (!CHECKPOINT_ID.test(input.id)) throw new Error('Invalid checkpoint reference')
-    await command(input.capture, ['update-ref', `refs/buckle/checkpoints/${input.id}${input.phase === 'before' ? '-before' : ''}`, input.capture.commit])
-  }
-  async function changed(before: TreeCapture[], after: TreeCapture[]): Promise<string[]> {
-    const result: string[] = []
-    for (const right of after) {
-      const left = before.find(value => value.root === right.root)
-      if (!left) continue
-      const names = await git(right, ['diff-tree', '--no-commit-id', '--no-ext-diff', '--no-textconv', '--name-only', '-r', '-z', left.commit, right.commit])
-      for (const name of names.toString().split('\0').filter(Boolean)) result.push(join(right.workTree, name))
-    }
-    return [...new Set(result)].sort()
+  async function git(state: Pick<TreeCapture, 'git' | 'workTree'>, args: string[], data?: string | Buffer, extra: Record<string, string> = {}, acceptedCodes: number[] = [0]): Promise<Buffer> {
+    const program = trustedProgram(['root' in state && typeof state.root === 'string' ? state.root : state.workTree])
+    if (!program) throw new Error('Content capture requires trusted host git')
+    const { environment, safety } = isolated()
+    return runProgram({ program, operation: gitOperation(args), args: [...safety, ...args], cwd: owned, environment: { ...environment, GIT_DIR: state.git, GIT_WORK_TREE: state.workTree, GIT_INDEX_FILE: join(state.git, 'index'), ...extra }, data, acceptedCodes })
   }
   async function restoreContent(input: { trees: TreeCapture[]; target: Snapshot; paths: string[] }): Promise<Map<string, Buffer>> {
     const content = new Map<string, Buffer>()
@@ -328,27 +183,9 @@ export function createGitStore(input: { directory: string; excluded: string[]; m
       await git(tree, ['-c', 'gc.reflogExpire=now', '-c', 'gc.reflogExpireUnreachable=now', 'gc', '--quiet', '--prune=now'])
     }
   }
-  return { capture, loadTree: (captured: TreeCapture) => loadTree(captured), changed, restoreContent, removeRefs, reconcile, isolate, borrowing, materialize, collect, get available() { return trustedProgram([]) !== null } }
+  return { restoreContent, removeRefs, reconcile, isolate, borrowing, materialize, collect, get available() { return trustedProgram([]) !== null } }
 }
 
 function shapeKey(directory: string, commit: string): string { return `${directory}\0${commit}` }
 function alternatesOf(directory: string): string { return join(directory, 'objects', 'info', 'alternates') }
-function nativeInside(root: string, path: string): boolean { const below = nativeRelative(root, path); return below === '' || below !== '..' && !below.startsWith(`..${nativeSeparator}`) && !nativeIsAbsolute(below) }
-function gitName(root: string, path: string): string { return historyCapturePath({ path: nativeRelative(root, path), platform: process.platform }) }
-function normalizedRoots(roots: string[]): string[] { return [...new Set(roots.map(root => resolve(root)))].filter(root => !roots.some(parent => parent !== root && lstatSync(parent, { throwIfNoEntry: false })?.isDirectory() && isInside(parent, root))) }
-function ignoredAncestor(path: string, root: string, ignored: Set<string>): boolean {
-  if (ignored.size === 0) return false
-  let parent = dirname(path)
-  while (isInside(root, parent)) {
-    if (ignored.has(parent)) return true
-    if (parent === root) break
-    parent = dirname(parent)
-  }
-  return false
-}
 function assertHash(hash: string): void { if (!HASH.test(hash)) throw new Error('Invalid history object') }
-function ownerObjects(workTree: string): string | undefined {
-  const directory = ownerGitDirectory(workTree)
-  const objects = directory === undefined ? undefined : join(directory, 'objects')
-  return objects !== undefined && lstatSync(objects, { throwIfNoEntry: false })?.isDirectory() ? objects : undefined
-}

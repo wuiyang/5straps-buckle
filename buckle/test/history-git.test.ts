@@ -3,10 +3,9 @@ import { createHash } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, expect, it } from 'vitest'
 import { createGitStore } from '../common/services/history/git-store.js'
 import { HOST_GIT_REASON, openChangeHistory } from '../common/services/history/journal.js'
-import { logger } from '../common/runtime/log.js'
 import { historyObjects } from './support/history-objects.js'
 import { shadowGitCheckpoint } from './support/shadow-git-checkpoint.js'
 
@@ -267,7 +266,7 @@ it('records and stores nothing of an ignored subtree', async () => {
 it('collects a packed-only shadow repository after every content reference has been dropped', async () => {
   const { workspace, directory, history } = await fixture()
   try {
-    const store = createGitStore({ directory, excluded: [], maxFileBytes: () => 32 * 1048576, allowed: () => true })
+    const store = createGitStore({ directory, allowed: () => true })
     writeFileSync(join(workspace, 'file'), 'packed checkpoint content')
     const captured = await shadowGitCheckpoint({ directory, roots: [workspace], sessionId: 's', stageId: 'packed', execute: () => {} })
     const git = (...args: string[]) => execFileSync('git', ['--git-dir', join(directory, 'git'), ...args], { encoding: 'utf8' })
@@ -301,38 +300,6 @@ it('retries interrupted command initialization after HEAD exists without safety 
     expect(treeDigest(join(workspace, '.git'))).toBe(ownerDigest)
   } finally { await history.close() }
 })
-
-it('captures an empty baseline when the root and its parents do not exist', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'buckle-history-missing-')); roots.push(root)
-  const workspace = join(root, 'workspace'); mkdirSync(workspace)
-  const missing = join(workspace, 'missing', 'child')
-  const store = createGitStore({ directory: join(root, 'history'), excluded: [], maxFileBytes: () => 1_048_576, allowed: () => true })
-  const before = await store.capture({ roots: [missing], id: 'change-missing-root', phase: 'before' })
-  expect(before).toMatchObject({ snapshot: {}, restorable: true })
-  mkdirSync(missing, { recursive: true }); writeFileSync(join(missing, 'file'), 'created')
-  const after = await store.capture({ roots: [missing], id: 'change-missing-root', phase: 'after', parents: before.trees })
-  expect(after.restorable).toBe(true)
-  expect(await store.changed(before.trees, after.trees)).toEqual([join(missing, 'file')])
-})
-
-it('keeps concurrent capture timing summaries isolated and omits private metadata', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'buckle-history-timing-')); roots.push(root)
-  const populated = join(root, 'populated'); mkdirSync(populated); writeFileSync(join(populated, 'private-file'), 'private-content')
-  const empty = join(root, 'empty'); mkdirSync(empty)
-  const first = createGitStore({ directory: join(root, 'first'), excluded: [], maxFileBytes: () => 1_048_576, allowed: () => true })
-  const second = createGitStore({ directory: join(root, 'second'), excluded: [], maxFileBytes: () => 1_048_576, allowed: () => true })
-  const debug = vi.spyOn(logger, 'debug').mockImplementation(() => {})
-  try {
-    await Promise.all([first.capture({ roots: [populated], id: 'change-private-first', phase: 'before' }), second.capture({ roots: [empty], id: 'change-private-second', phase: 'after' })])
-    const summaries = debug.mock.calls.filter(([message]) => message === 'History capture finished').map(([, fields]) => fields)
-    expect(summaries).toHaveLength(2)
-    expect(summaries).toContainEqual({ phase: 'before', outcome: 'ok', captureHashesMs: expect.any(Number), resolveMs: expect.any(Number), gitSubprocessMs: expect.any(Number), commandCount: 8, captureMs: expect.any(Number) })
-    expect(summaries).toContainEqual({ phase: 'after', outcome: 'ok', captureHashesMs: expect.any(Number), resolveMs: expect.any(Number), gitSubprocessMs: expect.any(Number), commandCount: 7, captureMs: expect.any(Number) })
-    expect(JSON.stringify(summaries)).not.toMatch(/private-file|private-content|change-private/)
-    expect(JSON.stringify(summaries)).not.toContain(root)
-  } finally { debug.mockRestore() }
-})
-
 
 for (const missing of ['HEAD', 'info/attributes']) it(`repairs stale command setup when ${missing} is missing and preserves earlier checkpoints`, async () => {
   const { workspace, directory, history, details } = await fixture()
@@ -375,7 +342,7 @@ it('preserves borrowed objects when migrating a pre-marker store after owner git
   writeFileSync(join(workspace, 'file'), 'new content')
   const originalDigest = treeDigest(originalGit)
   const nextDigest = treeDigest(nextGit)
-  const store = createGitStore({ directory, excluded: [], maxFileBytes: () => 1_048_576, allowed: () => true })
+  const store = createGitStore({ directory, allowed: () => true })
   await store.reconcile([first])
   expect(readFileSync(join(privateGit, 'objects', 'info', 'alternates'), 'utf8')).toBe(alternates)
   expect([...(await store.restoreContent({ trees: first.beforeTrees!, target: first.before, paths: [join(workspace, 'file')] })).values()].map(value => value.toString())).toContain('borrowed original')
