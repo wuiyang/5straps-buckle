@@ -2,6 +2,7 @@ import type { CliOutcome, RequestCli } from '@5straps/runtime'
 import { saveAnswerOf, saveEndingLine, settleUnsaved, unsavedOf, type SaveEnding, type Unsaved } from './grant-save-question.js'
 import type { ApprovalBackend, ApprovalHost, BackendCapabilities, DecisionBody, FullAsk, SubmitContext, SubmitResult } from '../../types/ports/approval-backend.js'
 import { questionFor, saveQuestionFor, type QuestionInput } from './terminal-question.js'
+import { tellQuestionEnding } from './question-endings.js'
 
 export interface TerminalBackendOptions {
   /** The asking operation's requester: this process's terminal, or undefined where nobody sits at one. */
@@ -29,7 +30,7 @@ export function createTerminalBackend(options: TerminalBackendOptions): Approval
   const closing = new AbortController()
   const inFlight = new Map<string, Promise<SubmitResult>>()
   const running = new Set<Promise<SubmitResult>>()
-  const questions = new Map<string, AbortController>()
+  const questions = new Map<string, { controller: AbortController; id?: string }>()
   const asking = new Set<string>()
   const closed = new Set<string>()
 
@@ -51,10 +52,11 @@ export function createTerminalBackend(options: TerminalBackendOptions): Approval
     if (stop.aborted) return 'stop'
     if (closed.has(ask.token) || host.ask(ask.token) === undefined) return 'next'
     const question = new AbortController()
-    questions.set(ask.token, question)
+    const request = questionFor(questionInputOf(ask, options.judgeApproves?.()))
+    questions.set(ask.token, { controller: question, id: request.id })
     let outcome: CliOutcome
     try {
-      outcome = await requestCli(questionFor(questionInputOf(ask, options.judgeApproves?.())), { signal: AbortSignal.any([stop, question.signal]) })
+      outcome = await requestCli(request, { signal: AbortSignal.any([stop, question.signal]) })
     } finally {
       questions.delete(ask.token)
     }
@@ -103,7 +105,7 @@ export function createTerminalBackend(options: TerminalBackendOptions): Approval
     if (input.unsaved.kind !== 'denial') return input.requestCli(saveQuestionFor(input), { signal: closing.signal })
     if (closed.has(token)) return undefined
     const question = new AbortController()
-    questions.set(token, question)
+    questions.set(token, { controller: question })
     try {
       return await input.requestCli(saveQuestionFor(input), { signal: AbortSignal.any([input.stop, question.signal]) })
     } finally {
@@ -142,11 +144,16 @@ export function createTerminalBackend(options: TerminalBackendOptions): Approval
       return submitted
     },
 
+    // An ask nobody answered before it ran out ends its question as skipped, no response, which the terminal cannot tell
+    // from the clock where it lapsed before its stated expiry (APPROVAL-36).
     async notify(events) {
       for (const event of events) {
         if (!asking.has(event.token)) continue
         closed.add(event.token)
-        questions.get(event.token)?.abort()
+        const open = questions.get(event.token)
+        if (open === undefined) continue
+        if (open.id !== undefined && event.type === 'skipped' && event.reason === 'no_response') tellQuestionEnding(open.id, 'no_response')
+        open.controller.abort()
       }
     },
 

@@ -10,7 +10,7 @@ import { setupCli } from '../cli/setup.js'
 import { describeLocalExpiry } from '../common/domain/approval-deadline.js'
 import { remainingMs } from '../common/domain/approval/expiry.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
-import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
+import { createApprovalRegistry, NO_RESPONSE, type Departure } from '../common/services/approvals/approval-registry.js'
 import type { ApprovalLedger } from '../common/services/approvals/approval-service.js'
 import { describeApprovalRequest, printable } from '../common/domain/approval-instruction.js'
 import { approvalBlock, createTerminalConsumer, describeQuestion, interruptSelf, type InterruptTarget } from '../cli/terminal-consumer.js'
@@ -65,18 +65,25 @@ function keyboardTerminal() {
 
 /**
  * The durable queue as the service reads it: `pending` drops an expired request, and another route
- * answering is a token leaving the queue.
+ * answering is a token leaving the queue. `lapse` drops an ask nobody answered before it ran out, at its ten-minute lapse,
+ * which comes before its stated expiry where nobody holds it (APPROVAL-36).
  */
 function stubQueue(requests: ApprovalRequest[]) {
   let pending = [...requests]
   const resolved: ApprovalDecision[] = []
+  const lapsed = new Set<string>()
+  const departed = (token: string): Departure | undefined => {
+    if (lapsed.has(token)) return NO_RESPONSE
+    const decision = resolved.find(item => item.token === token)
+    return decision === undefined ? undefined : { type: decision.approved ? 'answered' : 'denied' }
+  }
   const registry = {
     ask: async () => ({ requests, joined: false, answered: [] }),
     pending: vi.fn(() => pending.filter(request => remainingMs(request.expiresAt) > 0)),
     waiting: () => [],
     waitingAsk: () => undefined,
     wasDenied: (tokens: string[]) => resolved.some(decision => tokens.includes(decision.token) && !decision.approved),
-    departures: (tokens: string[]) => new Map(resolved.filter(decision => tokens.includes(decision.token)).map(decision => [decision.token, { type: decision.approved ? 'answered' as const : 'denied' as const }])),
+    departures: (tokens: string[]) => new Map(tokens.flatMap(token => { const left = departed(token); return left === undefined ? [] : [[token, left] as const] })),
     resolve: async (decision: ApprovalDecision) => {
       resolved.push(decision)
       pending = pending.filter(request => request.token !== decision.token)
@@ -94,7 +101,7 @@ function stubQueue(requests: ApprovalRequest[]) {
     sweep: async () => undefined,
     sweepIfDue: async () => undefined,
   } satisfies ApprovalLedger
-  return { registry, pending: registry.pending, resolved, answerElsewhere: (token: string) => { pending = pending.filter(request => request.token !== token) } }
+  return { registry, pending: registry.pending, resolved, answerElsewhere: (token: string) => { pending = pending.filter(request => request.token !== token) }, lapse: (token: string) => { lapsed.add(token); pending = pending.filter(request => request.token !== token) } }
 }
 
 const nobody: RequestCli = async request => ({ status: 'unavailable', requestId: request.id, reason: 'no_consumer' })
@@ -928,6 +935,29 @@ describe('the serve terminal\'s question', () => {
     // Past the expiry on the clock, with the requester's timer still a minute out.
     vi.setSystemTime(Date.now() + 61_000)
     await vi.waitFor(() => expect(terminal.shown()).toContain('Your choice: [skipped: no response]\n'), { timeout: 3_000 })
+    expect(await call).toMatchObject({ settled: false })
+  })
+
+  // Finding 4 of the APPROVAL-36/37 review: an ask nobody holds lapses ten minutes after its last hold ended, before its
+  // stated expiry, so the clock cannot tell that end from an answer given elsewhere; the departure the poll reads does.
+  it('shows [skipped: no response] where its ask lapses before its stated expiry, nobody having answered it', async () => {
+    const terminal = silentTerminal()
+    const queue = stubQueue([approval('t1', 600_000)])
+    const call = waitingService({ registry: queue.registry, graceMs: 200, requestCli: setupCli({ terminal }).requestCli })()
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: $/), { timeout: 3_000 })
+    queue.lapse('t1')
+    await vi.waitFor(() => expect(terminal.shown()).toContain('Your choice: [skipped: no response]\n'), { timeout: 3_000 })
+    expect(terminal.shown()).not.toContain('[no longer waiting]')
+    expect(await call).toMatchObject({ settled: false })
+  })
+
+  it('still ends the row with [no longer waiting] where another route answers it before its expiry', async () => {
+    const terminal = silentTerminal()
+    const queue = stubQueue([approval('t1', 600_000)])
+    const call = waitingService({ registry: queue.registry, graceMs: 200, requestCli: setupCli({ terminal }).requestCli })()
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: $/), { timeout: 3_000 })
+    await queue.registry.resolve({ token: 't1', approved: true, scope: 'once' })
+    await vi.waitFor(() => expect(terminal.shown()).toContain('Your choice: [no longer waiting]\n'), { timeout: 3_000 })
     expect(await call).toMatchObject({ settled: false })
   })
 })

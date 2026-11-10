@@ -10,6 +10,7 @@ import { remainingMs } from '../common/domain/approval/expiry.js'
 import { describeAsk, printable, type ShownAsk } from '../common/domain/approval-instruction.js'
 import { readAskView } from '../common/adapters/approval/ask-view.js'
 import { localTime } from '../common/domain/local-time.js'
+import { takeQuestionEnding } from '../common/adapters/approval/question-endings.js'
 import { createConsoleWriter, screenKind, type ConsoleWriter, type PromptRelease } from '../common/runtime/console.js'
 import { APPROVAL_REQUEST_KIND, GRANT_SAVE_REQUEST_KIND, type ApprovalChoice } from '../common/adapters/approval/terminal-question.js'
 import { saveAnswerOf, saveChoices, type SaveAnswer, type Unsaved } from '../common/adapters/approval/grant-save-question.js'
@@ -107,14 +108,15 @@ export function createTerminalConsumer(options: TerminalOptions = {}): TerminalC
 
   /**
    * Why a question on screen ended unanswered: nothing after Ctrl-C, as the shutdown lines follow; `[skipped: no response]`
-   * by the clock, within TIMER_JITTER_MS, as nobody answered its ask before it ran out (APPROVAL-36), since the poll that
-   * withdraws such an ask often ends its question before the requester's own timer does; `[stopped]` once the process
-   * stops; `[no longer waiting]` for an answer given elsewhere, a call withdrawn, or an ask that lapsed before its stated
-   * expiry, which the node log names as skipped.
+   * where nobody answered its ask before it ran out (APPROVAL-36): told by the terminal backend, as for an ask that lapsed
+   * before its stated expiry, or by the clock, within TIMER_JITTER_MS, since the poll that withdraws such an ask often ends
+   * its question before the requester's own timer does; `[stopped]` once the process stops; `[no longer waiting]` for an
+   * answer given elsewhere or a call withdrawn.
    */
-  const ending = (question: ApprovalQuestion): string | null => {
+  const ending = (question: ApprovalQuestion, id: string): string | null => {
+    const told = takeQuestionEnding(id)
     if (interrupted.signal.aborted) return null
-    if (remainingMs(question.expiresAt) <= TIMER_JITTER_MS) return '[skipped: no response]'
+    if (told === 'no_response' || remainingMs(question.expiresAt) <= TIMER_JITTER_MS) return '[skipped: no response]'
     return stopping ? '[stopped]' : '[no longer waiting]'
   }
 
@@ -156,7 +158,7 @@ export function createTerminalConsumer(options: TerminalOptions = {}): TerminalC
         row.answered(typed, choice === 'deny' && answer !== 'n')
         return { status: 'answered', answer: { choice } }
       } catch (error) {
-        if (cancelled.aborted) row.ended(ending(question))
+        if (cancelled.aborted) row.ended(ending(question, request.id))
         throw error
       } finally {
         // After what the row says, so a line logged as the question ended lands below it (fix brief 1, H1).
