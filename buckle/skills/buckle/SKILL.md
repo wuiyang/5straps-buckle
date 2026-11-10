@@ -42,10 +42,11 @@ the effect, not the wording. Over MCP the ask comes back as a result, not an err
 person has decided, send the same call again, unchanged: it joins the ask and runs once if
 approved.
 
-Scopes are `once`, `session`, and `always`. Some gates deliberately do not offer `always`. A
+Scopes are `once`, `session`, and `always`. Some gates never offer `always`. A
 `session` approval ends once your session sits idle, 15 minutes by default, or as the MCP server
-it came through closes. A call still held on an ask then answers `APPROVAL_UNANSWERED`: send it
-again, unchanged, to ask anew.
+it came through closes, and a call held on an ask then answers `APPROVAL_UNANSWERED`. An ask
+nobody answers in time is skipped, never denied: a call held on it answers `APPROVAL_SKIPPED`.
+Either way, send the call again, unchanged, to ask anew.
 
 Four things are gated:
 
@@ -97,9 +98,8 @@ Write a value from a workspace file as `{{file:<path>:NAME}}` in a shell word, a
 | `browser` | drive a real browser via agent-browser | `buckle-browser` |
 | `code` | run one script that calls the other tools, each call approved as usual | `buckle-code` |
 
-A pack that cannot run here is withheld rather than failing at call time, so `buckle tools` is
-an honest list; `buckle manifest` names each absent pack and why. Shell tools stay hidden until
-the machine has a working sandbox.
+A pack that cannot run here is withheld, so `buckle tools` is an honest list; `buckle manifest`
+names each absent pack and why. Shell tools stay hidden until the machine has a working sandbox.
 
 ## Passing arguments
 
@@ -118,7 +118,7 @@ buckle call shell_exec --json '{"command":"pnpm","args":["build"]}'
 
 ## Two ways in
 
-As a CLI, through this skill, which works in any harness with a shell.
+As a CLI, through this skill, in any harness with a shell.
 
 As an MCP server, where tools appear natively:
 
