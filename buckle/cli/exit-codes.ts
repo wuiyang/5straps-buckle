@@ -7,3 +7,5 @@ export const APPROVAL_REQUIRED_EXIT = 3
 export const SAVE_FAILED_EXIT = 5
 /** The owner's command did not run: its record could not be written to the audit log, and --ignore-warning was not passed. */
 export const RECORD_FAILED_EXIT = 6
+/** Anything that stops a verdict being reached. Never 1, which would read as a denial. */
+export const CHECK_URL_BAD_INPUT = 2

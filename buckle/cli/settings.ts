@@ -1,9 +1,10 @@
+import { stopsForRecord, type OwnerChoice } from './ignore-warning.js'
 import type { CliResult } from './result.js'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { resolve } from 'pathe'
 import { parseEnv } from 'node:util'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
-import { actionsPath, stateDirectoryOf } from '../common/runtime/config.js'
+import { actionsPath, environmentFilePath, stateDirectoryOf } from '../common/runtime/config.js'
 import { realPathOf } from '../common/runtime/real-path.js'
 import { scratchOverFolderNote } from '../common/domain/sandbox-mounts.js'
 import { registryPath, RegistrySchema } from '../common/services/workspaces/registry.js'
@@ -231,4 +232,8 @@ function usage(restart: RestartRoute): CliResult {
 function fail(message: string): CliResult {
   process.stderr.write(`${message}\n`)
   return { exitCode: 1 }
+}
+
+export function runSettingsCommand(argv: string[], options: OwnerChoice = {}): Promise<CliResult> {
+  return stopsForRecord(settingsCommand({ argv, environment: process.env, environmentFile: environmentFilePath(), cwd: process.cwd(), ignoreWarning: options.ignoreWarning === true }))
 }

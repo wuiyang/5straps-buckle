@@ -1,17 +1,7 @@
 import type { CliResult } from './result.js'
 import { BUCKLE_BUILD } from '../common/runtime/version.js'
 import { helpLines, MODES_HELP } from './dangerously-allow-words.js'
-import { asksForHelp } from './help-request.js'
-import { APPROVALS_USAGE, APPROVE_USAGE, BROWSER_CLOSE_USAGE, CHECK_URL_USAGE, GRANTS_USAGE, HISTORY_USAGE, KEYS_USAGE, PLUGIN_USAGE, POLICY_USAGE, WORKSPACES_USAGE, WORKSPACE_USAGE, isBrowserClose } from './usage.js'
-
-/** The usage each audited owner command prints for a help request. */
-const COMMAND_USAGE: ReadonlyMap<string, string> = new Map([
-  ['approve', APPROVE_USAGE], ['approvals', APPROVALS_USAGE], ['check-url', CHECK_URL_USAGE], ['grants', GRANTS_USAGE], ['workspaces', WORKSPACES_USAGE],
-  ['history', HISTORY_USAGE], ['plugin', PLUGIN_USAGE], ['policy', POLICY_USAGE], ['workspace', WORKSPACE_USAGE], ['keys', KEYS_USAGE],
-])
-
-/** The commands whose own first word `help` also asks for the usage. */
-const HELP_WORD_COMMANDS: readonly string[] = Object.freeze(['policy', 'workspace'])
+import { commandUsage } from './commands.js'
 
 /** Help and the version, which need no configuration; null for every other command. */
 export function answerWithoutConfiguration(argv: string[]): CliResult | null {
@@ -19,10 +9,8 @@ export function answerWithoutConfiguration(argv: string[]): CliResult | null {
   if (!command || command === 'help' || command === '--help' || command === '-h') return printUsage()
   if (command === '--version' || command === '-v') return printVersion()
   // A help request on an owner's command is answered here, before any workspace is found or any entry is written to the log.
-  const usage = COMMAND_USAGE.get(command)
-  if (usage !== undefined && (asksForHelp(rest) || (rest[0] === 'help' && HELP_WORD_COMMANDS.includes(command)))) return printCommandUsage(usage)
-  // `buckle browser` runs the browser's tools; only its `close` is the owner's own command.
-  if (isBrowserClose(command, rest) && asksForHelp(rest)) return printCommandUsage(BROWSER_CLOSE_USAGE)
+  const usage = commandUsage(command, rest)
+  if (usage !== undefined) return printCommandUsage(usage)
   return null
 }
 

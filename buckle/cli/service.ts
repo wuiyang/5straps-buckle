@@ -1,3 +1,7 @@
+import { runProcess } from '../common/adapters/process-runner.js'
+import { serviceManagerFor } from '../common/adapters/service-manager/index.js'
+import { builtMainPath } from '../common/runtime/package-root.js'
+import { stopsForRecord, type OwnerChoice } from './ignore-warning.js'
 import { SERVICE_USAGE } from './usage.js'
 export { SERVICE_USAGE } from './usage.js'
 import type { CliResult } from './result.js'
@@ -509,4 +513,14 @@ function pidOf(running: RunningNode): string {
 function fail(err: (text: string) => void, message: string): CliResult {
   err(`${message}\n`)
   return { exitCode: 1 }
+}
+
+/**
+ * `buckle service` (Phase 3 of the workspace-model slice): before buckle.env is read, so the programs it starts, the
+ * service manager's own, find no credential in its environment.
+ */
+export function runServiceCommand(argv: string[], options: { skipOwnerOnlyCheck?: boolean } & OwnerChoice = {}): Promise<CliResult> {
+  const environment = process.env
+  return stopsForRecord(serviceCommand({ argv, environment, platform: process.platform, cwd: process.cwd(), run: runProcess, mainScript: builtMainPath(), ...(options.skipOwnerOnlyCheck ? { skipOwnerOnlyCheck: true } : {}), ignoreWarning: options.ignoreWarning === true, stdoutIsTerminal: process.stdout.isTTY === true,
+    manager: location => serviceManagerFor({ platform: process.platform, environment, run: runProcess, location }) }))
 }

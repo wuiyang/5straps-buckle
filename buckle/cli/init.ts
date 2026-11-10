@@ -1,12 +1,17 @@
+import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
+import { auditOperation } from '../common/services/audit/audit-operation.js'
+import { NODE_SCOPE } from '../common/types/ports/client-keys.js'
+import { stopsForRecord, type OwnerChoice } from './ignore-warning.js'
+import { asksForHelp } from './help-request.js'
 import { INIT_USAGE as USAGE } from './usage.js'
 import type { CliResult } from './result.js'
 import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { createInterface } from 'node:readline/promises'
 import { dirname, resolve } from 'pathe'
-import { parseArgs } from 'node:util'
+import { parseInitArguments } from './init-arguments.js'
 import { MountPathSchema } from '@5straps/protocol'
-import { defaultEnvironmentFile, environmentFilePath, loadConfig, stateDirectoryOf, WORKSPACE_DEFAULT_KEYS, workspaceHolds, type NodeConfig } from '../common/runtime/config.js'
+import { actionsPath, defaultEnvironmentFile, environmentFilePath, loadConfig, stateDirectoryOf, WORKSPACE_DEFAULT_KEYS, workspaceHolds, type NodeConfig } from '../common/runtime/config.js'
 import { realPathOf } from '../common/runtime/real-path.js'
 import { recordEnvironmentFile } from '../common/runtime/environment-files.js'
 import { buckleVariables } from '../common/runtime/environment.js'
@@ -66,14 +71,7 @@ const DEFAULT_CHOICES: WorkspaceChoices = {}
  */
 export async function runInit(argv: string[], prompt: InitPrompt = terminalPrompt(), options: { home?: string; platform?: NodeJS.Platform; programSearch?: ProgramSearch } = {}): Promise<CliResult> {
   const platform = options.platform ?? process.platform
-  const { values } = parseArgs({
-    args: argv,
-    options: {
-      dir: { type: 'string' }, root: { type: 'string' }, mount: { type: 'string' }, volume: { type: 'string', multiple: true }, name: { type: 'string' }, port: { type: 'string' }, out: { type: 'string' },
-      yes: { type: 'boolean' }, force: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
-    },
-    allowPositionals: false,
-  })
+  const { values } = parseInitArguments(argv)
   if (values.help) {
     process.stdout.write(USAGE)
     return { exitCode: 0 }
@@ -585,4 +583,15 @@ function defaultNodeName(root: string): string {
 function fail(message: string): CliResult {
   process.stderr.write(`${message}\n`)
   return { exitCode: 1 }
+}
+
+/**
+ * Needs no node config beyond where the audit log lives: init is what writes the configuration. The config is checked
+ * as the process entry checks it, a node setting a shell sets refusing before anything is written, and none of the
+ * workspace defaults, which the node reads from its file alone, read from the shell (a bad one there is no refusal).
+ */
+export function runInitCommand(argv: string[], options: OwnerChoice = {}): Promise<CliResult> {
+  // Asking for the usage sets nothing up, so it reads no configuration and leaves no entry in the log.
+  if (asksForHelp(argv)) return runInit(argv)
+  return stopsForRecord(auditOperation({ actions: createFileActionLog(actionsPath(loadConfig(process.env, process.platform, { file: null, caller: process.env, defaultsFromFileAlone: true }))), workspaceId: NODE_SCOPE, tool: 'cli_init', sessionId: 'local-owner', ignoreWarning: options.ignoreWarning === true, isSuccessful: result => result.exitCode === 0, operation: () => runInit(argv) }))
 }

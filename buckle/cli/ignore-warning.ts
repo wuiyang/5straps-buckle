@@ -1,4 +1,4 @@
-import { OWNER_RECORD_FAILED, type OwnerRecordError } from '../common/adapters/action-log/file-action-log.js'
+import { OWNER_RECORD_FAILED, OwnerRecordError } from '../common/adapters/action-log/file-action-log.js'
 import { IGNORE_WARNING_FLAG } from '../common/domain/global-flags.js'
 import { RECORD_FAILED_EXIT } from './exit-codes.js'
 import type { CliResult } from './result.js'
@@ -21,4 +21,15 @@ function stoppedWith(cause: string): CliResult {
 /** A command the flag does not reach: a tool call never runs without its own record, and serve, mcp, and cp make no owner's change. */
 export function ignoreWarningRefused(command: string): string {
   return `${IGNORE_WARNING_FLAG} runs an owner's command whose record the audit log cannot take; buckle ${command} is not one, and a tool call never runs without its own record`
+}
+
+/** `ignoreWarning`: the owner's --ignore-warning, which runs a command whose record cannot be written. */
+export interface OwnerChoice { ignoreWarning?: boolean }
+
+/** A command that stopped because its record could not be written answers as such, with the error and how to run it anyway. */
+export async function stopsForRecord(command: Promise<CliResult>): Promise<CliResult> {
+  try { return await command } catch (error) {
+    if (error instanceof OwnerRecordError) return stoppedForRecord(error)
+    throw error
+  }
 }

@@ -44,13 +44,13 @@ async function node() {
   return { config, configWith, running, calls, sessions, workspace, failClose }
 }
 
-async function owner(input: { config: ReturnType<typeof configFromEnvironment>; argv: string[]; cwd?: string }) {
+async function owner(input: { config: ReturnType<typeof configFromEnvironment>; argv: string[]; cwd?: string; ignoreWarning?: boolean }) {
   let out = ''
   let err = ''
   vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { out += String(chunk); return true })
   vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => { err += String(chunk); return true })
   try {
-    const { exitCode } = await runCli({ argv: input.argv, config: input.config, confirm: null, ...(input.cwd ? { cwd: input.cwd } : {}) })
+    const { exitCode } = await runCli({ argv: input.argv, config: input.config, confirm: null, ...(input.cwd ? { cwd: input.cwd } : {}), ...(input.ignoreWarning === undefined ? {} : { ignoreWarning: input.ignoreWarning }) })
     return { exitCode, out, err }
   } finally { vi.restoreAllMocks() }
 }
@@ -73,6 +73,17 @@ describe('buckle browser close', () => {
     // The node's next call starts a browser of its own, as its record is gone.
     expect(await running.invoke({ sessionId: 'chat-1', request: { requestId: 'after', tool: 'browser_command', args: { command: 'snapshot', args: [] }, approvalTokens: [] } })).toMatchObject({ outcome: 'ok' })
     expect(opened).not.toContain(sessionOf(calls().at(-1)!))
+  })
+
+  it('closes through the owner audit with a target before close and the warning override enabled', async () => {
+    const { config, running, calls, sessions } = await node()
+    expect(await running.invoke({ sessionId: 'chat-1', request: { requestId: 'open', tool: 'browser_command', args: { command: 'open', args: ['https://example.test/'] }, approvalTokens: [] } })).toMatchObject({ outcome: 'ok' })
+    const opened = sessionOf(calls()[0]!)
+    const closed = await owner({ config, argv: ['browser', '--workspace', running.workspaceName(), 'close'], ignoreWarning: true })
+    expect(closed).toMatchObject({ exitCode: 0, out: `Closed 1 of 1 browser of workspace ${running.workspaceName()}, and dropped 0 held secret values.\n` })
+    expect(calls().slice(1).map(call => [call[0], sessionOf(call)])).toEqual([['close', opened]])
+    expect(JSON.parse(readFileSync(sessions, 'utf8')).browsers).toEqual({})
+    expect(await auditEntries(running.actions, 10)).toContainEqual(expect.objectContaining({ tool: 'cli_browser_close', outcome: 'ok', detail: 'closed 1 of 1 browsers, dropped 0 held secret values' }))
   })
 
   // Codex review L1: a browser that did not close stays recorded, and the command says it did not finish.

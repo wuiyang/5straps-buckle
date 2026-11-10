@@ -1,6 +1,8 @@
 import { CHECK_URL_USAGE as USAGE } from './usage.js'
 export { CHECK_URL_USAGE as USAGE } from './usage.js'
 import type { CliResult } from './result.js'
+import { CHECK_URL_BAD_INPUT } from './exit-codes.js'
+export { CHECK_URL_BAD_INPUT } from './exit-codes.js'
 import { parseArgs } from 'node:util'
 import { normaliseUrl, UrlNormaliseError } from '../common/domain/url-normalise.js'
 import { describeGrantScope, judgeUrl, type NetworkApproval, type UrlVerdictKind } from '../common/domain/url-verdict.js'
@@ -13,8 +15,6 @@ import { WorkspaceError } from '../common/domain/workspace-error.js'
  * `not listed` has its own because it is reached without asking, which a script must tell apart.
  */
 const EXIT_CODES: Record<UrlVerdictKind, number> = { approved: 0, denied: 1, asks: 3, 'not listed': 4 }
-/** Anything that stops a verdict being reached. Never 1, which would read as a denial. */
-export const CHECK_URL_BAD_INPUT = 2
 
 
 /**
