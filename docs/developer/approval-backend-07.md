@@ -8,7 +8,7 @@ Paths are in `buckle/`.
 
 `ApprovalRegistry.endSessions(request)` (`SessionEndRequest`) takes `{ sessionId }`, every
 caller's session under a face's id, or `{ sessions }` with an optional `due`, of which only those
-still due end (`SessionEnding`, `common/types/ports/grant-store.ts`; `{ allSessions: true }` stands
+still due end (`SessionEnding`, `common/domain/permission/grant-holder.ts`; `{ allSessions: true }` stands
 only for a revocations file that cannot be read). It runs under the approvals lock, then the
 grants lock:
 

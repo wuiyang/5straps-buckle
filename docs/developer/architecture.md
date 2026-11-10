@@ -13,11 +13,11 @@ inside `buckle/` unless they start with `packages/`.
 
 ## Layers inside buckle/
 
-- `main.ts` is the entry. `selectMode` sends `init`, `settings`, `client`, and `service` to
-  commands that need no node, `serve` and `mcp` to long-lived services, and everything else to
-  the one-shot CLI; `serve --background` and `buckle service` run before `buckle.env` is read.
-  Before a node starts, it loads `buckle.env` (`common/runtime/environment.ts`) and builds the
-  configuration (`common/runtime/config.ts`).
+- **Entry:** `main.ts` selects and loads commands before environment mutation.
+  Help needs no workspace runtime. `server/service-process.ts` owns service startup and shutdown;
+  `server/service-signals.ts` owns stop signals. `serve --background` and `buckle service` run
+  before `buckle.env` is read. Node startup loads it through `common/runtime/environment.ts`
+  and builds configuration through `common/runtime/config.ts`.
 - `common/` holds what every face shares. `common/runtime/` starts one common runtime per
   process (`initialize.ts`, `services.ts`). `common/domain/` is pure logic: permission rules,
   the command reader, policy, URL patterns, redaction, effects, tools, and packs.
@@ -25,9 +25,9 @@ inside `buckle/` unless they start with `packages/`.
   webhooks, the GitHub client, and plugins. `common/services/` ties them together: approvals,
   invocation, packs, shell isolation, change history, workbenches, workspaces, audit, and access.
   `common/types/ports/` holds the interfaces adapters implement.
-- `cli/` is the one-shot commands: `main.ts` dispatches, and `init.ts`, `settings.ts`,
-  `policy.ts`, `approvals-watch.ts`, `terminal-consumer.ts`, `keys.ts`, `client.ts`,
-  `workspace.ts`, `workspace-keys.ts`, `target.ts`, and `service.ts` implement them.
+- **CLI:** `cli/commands.ts` defines each command's target, help, audit policy, and handler loader.
+  Feature files own their handlers. `cli/main.ts` owns runtime lifetime, target resolution,
+  and audit phases. `cli/help.ts` answers without configuration.
 - `mcp/` is the MCP face. `server.ts` registers each available tool and each skill and turns an
   ask into relay text, or, while forms are on, into the forms `forms-backend.ts` draws; `stdio.ts`,
   `stdio-wire.ts`, and `audited-stdio-transport.ts` serve it on stdio; `http.ts` keeps one

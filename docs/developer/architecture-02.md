@@ -24,6 +24,11 @@ directory:
 | `approval-revocations.json` | revokes and session ends not yet finished: made while `approvals.json` was unreadable, or whose grants still stand. Approvals they name clear nothing; the next decision, ask, spent once, or opening finishes them, then deletes it. While it is damaged, those are refused and no session approval clears a call |
 | `grants.json` | `session` and `always` grants and remembered denials (`common/adapters/grant-store/file-grant-store.ts`) |
 
+**Ledger boundaries:** `common/domain/approval/ledger-state.ts` owns the persisted schemas.
+`common/adapters/approval-ledger/file-call-store.ts` stores whole calls. The registry owns locks,
+transactions, grant recovery, and hold release. `common/domain/approval/challenges.ts` builds
+listings and signed display digests from the complete call, with the current workspace name.
+
 Every file goes through `common/adapters/json-file-store.ts`: a write is an atomic rename,
 and an update holds a cross-process lock in `<file>.lock.sqlite`, waiting up to 5 seconds before
 answering `STATE_BUSY`. The action log's writer worker takes the same lock (`withFileTurn`) around
@@ -41,6 +46,10 @@ which `buckle client` prints the same way. The owner's `--ignore-warning`, taken
 `main.ts` with the other global flags, or `ignoreWarning=true` in a setup request's query, hands
 the attempt to the log service instead (`ActionLog.ownerAttempt`).
 
+**Secret masking:** `common/domain/secret-mask.ts` owns the pure mask transformations.
+`common/runtime/held-secrets.ts` holds the process-wide masks shared by calls, scripts,
+approval displays, and log writers. Each call or script still owns its mask's lifetime.
+
 ## The pack system
 
 A pack (`common/domain/pack.ts`) has an id, tools, skills, an `unavailableReason`, and an
@@ -57,6 +66,27 @@ own records under (`isRecordTool` in `common/domain/record-tools.ts`): `approval
 `policy_`. A plugin with such a tool fails to load, shows as an unavailable pack, and the node's
 log names the tool.
 
+**Pack metadata:** `common/services/packs/catalogue.ts` defines built-in ids, order, summaries,
+and prerequisites. Settings read it without constructing packs. Each pack's `results.ts` owns
+its static result descriptions. `common/services/packs/results.ts` gathers them for code
+declarations, including saved journal tools whose pack is currently unavailable.
+
+**Pack generations:** `common/services/packs/runtime.ts` builds generations and retires replaced
+packs after active calls end. It keeps a browser close handle when the workspace disables the
+pack. `browser/inputs.ts` owns construction options and the reuse key; the daemon fingerprint
+in `browser/mode.ts` remains separate. Scripts and nested calls keep their starting registry
+and browser secrets.
+
+**History ownership:** `common/services/history/git-process.ts` owns isolated Git execution,
+and `git-files.ts` owns metadata reads. Current capture and legacy compatibility share them.
+`snapshot-contract.ts`, `file-mode.ts`, `tree-capture.ts`, and `defaults.ts` hold data and defaults.
+`object-retention.ts` selects unreferenced objects. Foreground pruning and background sweeping
+keep their own locks and schedules in `journal.ts`.
+
+**Call identity:** `common/domain/call-identity.ts` owns request-id hashing, canonical call
+fingerprints, and the session/actor/request tuple. Replay, MCP joins, script journals, and ask
+lapse share its ten-minute duration, but each keeps its own clock. A held ask does not lapse.
+
 The `network_egress` rule and `web_fetch`'s hop check (`services/packs/web/egress.ts`) both take
 the workspace's `network.privateRanges`, parsed by `parseCidr` in `common/domain/ip.ts`, which
 refuses a prefix shorter than `LEAST_PREFIX` (`/8` in each family): an address `rangeCovering`
@@ -65,4 +95,3 @@ serve listener (`BUCKLE_HOST`, `BUCKLE_PORT`), which still asks, and `web_fetch`
 rebuilds the packs for the next call.
 
 [Code mode](architecture-03.md), the pack that runs an agent's script, continues on part three.
-

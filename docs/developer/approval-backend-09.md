@@ -15,7 +15,7 @@ that reads it. Paths are in `buckle/`.
   opens, which also names the browser sessions it writes. Never by its pid, so a new process under
   a dead one's pid never refreshes the dead one's mark. It holds `{ pid, sessions, asks }`: the
   writer's pid, the sessions whose tools run or whose calls are held for an answer, and the asks
-  those calls hold, each by `heldAskName` (the join key hashed, in `full-ask.ts`). It is written to
+  those calls hold, each by `heldAskName` (the join key hashed, in `common/domain/approval/call-identity.ts`). It is written to
   a `.tmp` beside it and renamed as that set changes, so no reader meets it half written.
 - **When it is held:** from the moment a tool begins to run (`beginRun` in
   `common/services/invocation/invoker.ts`) to a `finally` around the history wrapper, so through
