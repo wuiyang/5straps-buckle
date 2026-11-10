@@ -17,6 +17,19 @@ import { NoticeRefusedError } from '../common/domain/approval/notice-refused.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 
+// How many times a delivery owner was closed, which a runtime's own owner does inside it.
+const closes = vi.hoisted(() => ({ count: 0 }))
+vi.mock('../common/services/approvals/approval-notices.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../common/services/approvals/approval-notices.js')>()
+  return {
+    ...actual,
+    createApprovalNotices: (...args: Parameters<typeof actual.createApprovalNotices>) => {
+      const notices = actual.createApprovalNotices(...args)
+      return { ...notices, settle: () => { closes.count += 1; return notices.settle() } }
+    },
+  }
+})
+
 const at = new Date('2026-10-01T12:00:00.000Z').getTime()
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 function queue(workspaceKey?: string, stateDirectory?: string) {
@@ -215,14 +228,18 @@ describe('durable approval outcome delivery', () => {
     const notADirectory = join(mkdtempSync(join(tmpdir(), 'buckle-outbox-skills-')), 'SKILL.md')
     writeFileSync(notADirectory, '')
     const { config, q, fetch, blocked } = await queuedNoticeRuntime({ BUCKLE_SKILLS_DIRS: notADirectory })
+    closes.count = 0
     const rejected = expect(createRuntime({ config })).rejects.toThrow('Skill path is not a directory')
     await vi.waitFor(() => expect(fetch, 'a delivery attempt starts before the open fails').toHaveBeenCalledTimes(1))
+    // The attempt is let go only once the failed open closes its owner, so it is still in flight then however slowly the
+    // open reaches its failure.
+    await vi.waitFor(() => expect(closes.count, 'the failed open closes the delivery owner').toBeGreaterThan(0), { timeout: 15_000 })
     blocked.release()
     await rejected
     await vi.advanceTimersByTimeAsync(20_000)
     expect(fetch).toHaveBeenCalledTimes(1)
     expect(q.registry.pendingDeliveries()).toHaveLength(1)
-  })
+  }, 30_000)
 
   it('starts no delivery when runtime initialization fails reading the workspace settings', async () => {
     vi.useFakeTimers(); vi.setSystemTime(at)
