@@ -48,8 +48,8 @@ afresh. A withdrawn ask, or a `once` another call spent, still answers `APPROVAL
 | A deadline line, as in `buckle approvals` | `skipped: no response (<time>)` once the time has passed |
 | The node log | `Skipped approvals nobody answered before they ran out`, with `reason` `no_response` and the count |
 
-An ask that lapsed before its stated expiry ends the serve terminal's row `[no longer waiting]`,
-and the node log line names it. The process whose update dropped the ask writes the log line.
+An ask that lapses before its stated expiry ends the row the same way. The process whose update
+dropped the ask writes the log line.
 
 ## Records
 
@@ -62,7 +62,8 @@ and the node log line names it. The process whose update dropped the ask writes 
 
 ## From earlier builds
 
-- **The webhook:** said `expired`. A notice an older node queued still reads and is sent.
+- **The webhook:** said `expired`. A notice an older node queued is sent as `skipped` with
+  `no_response`.
 - **A held call:** answered `APPROVAL_UNANSWERED`, and now answers `APPROVAL_SKIPPED`.
 - **The terminals:** the serve terminal said `[timeout]`, `--watch` said `expired; dropped.`, and a
   passed deadline read `expired (<time>)`.
@@ -70,14 +71,14 @@ and the node log line names it. The process whose update dropped the ask writes 
 
 ## Receivers and older builds
 
-- **Update the receiver first:** a receiver that checks each notice with an older
-  `@5straps/protocol` refuses `skipped` with `no_response`, because the reason is new. It answers
-  HTTP 400 for the whole post, the notices beside it included.
+- **Update the receiver first:** this change breaks a receiver that checks each notice with an
+  older `@5straps/protocol`. It refuses `skipped` with `no_response`, because the reason is new,
+  and answers HTTP 400 for the whole post, the notices beside it included.
 - **What the node does:** it sends a refused post again in halves until the refused notice is
-  alone, takes the rest, and holds that one for five minutes before it tries again. The notice
-  stays queued until a receiver takes it or 24 hours pass. The node log warns once.
-- **Rolling back:** a build from before this one reports `approvals.json` as unreadable while a
-  `no_response` notice waits in its queue. A receiver that takes notices empties the queue in
-  seconds. If yours refuses them, update it first, or keep this build running until the 24 hours
-  pass.
-
+  alone, and the receiver takes the rest. A notice refused on its own, with HTTP 400, 413, or 422,
+  is dropped: the receiver will not take it unchanged, so it is never sent again and never fills
+  the queue. The node log warns at the first drop and logs the rest at debug.
+- **Rolling back:** the queue keeps this end as `expired`, so a build from before this one still
+  reads `approvals.json`, a serve still running beside a newer command included. That build sends
+  the end as `expired`, as it always did. When it writes the file, it drops the record of why an
+  ask left, so for up to ten minutes this build reads such an ask as withdrawn.

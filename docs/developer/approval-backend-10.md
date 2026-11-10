@@ -28,20 +28,22 @@ it. [The user page](../user/how-to/approvals-09.md) says what each route shows. 
 
 ## The webhook
 
-`approval-notices.ts` sends `{ event: 'skipped', reason: 'no_response' }`; the durable outbox
-queues the same notice. `endsAsk` in the registry tells an end from a wait notice: an end
-replaces a wait notice queued for its token, and a wait notice never replaces an end.
+`approval-notices.ts` sends `{ event: 'skipped', reason: 'no_response' }`. The durable outbox
+keeps the end as `{ event: 'expired' }`, the shape a build from before this ruling reads, so a
+rollback, or a serve still running beside a newer command, still reads `approvals.json`.
+`pendingDeliveries` reads it through `sentNotice` as the skipped notice, an entry an older node
+queued included. `endsAsk` in the registry tells an end from a wait notice: an end replaces a
+wait notice queued for its token, and a wait notice never replaces an end.
 `enqueueSkippedNotices`, the routes' one way in, refuses a `no_response` notice as it refuses any
-end, and `WaitSkipReason` types the reasons a wait notice takes. `expired` stays in
-`ApprovalLifecycleEventSchema`, so an entry an older node queued still parses and is sent.
+end, and `WaitSkipReason` types the reasons a wait notice takes.
 
-A receiver on an older `@5straps/protocol` refuses the new reason and answers the whole post HTTP
-400. `createApprovalNoticeSender` throws `NoticeRefusedError` for 400, 413, and 422; any other
-failure stays a plain error. On that error the queue sends the batch in halves until the refused
-notice is alone, acknowledges the rest, and holds that one in memory for five minutes. The outbox
-keeps it until a receiver takes it or its 24 hours pass. An outage or a 401, 403, 404, 429, or
-5xx never splits a batch. A build from before this ruling cannot read an outbox that holds a
-`no_response` notice, so `approvals.json` reads as invalid there until the notice leaves.
+This change breaks a receiver on an older `@5straps/protocol`: it refuses the new reason and
+answers the whole post HTTP 400. `createApprovalNoticeSender` throws `NoticeRefusedError` for
+400, 413, and 422; any other failure stays a plain error. On that error the queue sends the batch
+in halves until the refused notice is alone, then acknowledges what was taken and drops the
+notice refused on its own, with one warning, later drops at debug. Kept, it would be refused at
+every retry and hold the room new asks need. An outage or a 401, 403, 404, 429, or 5xx never
+splits a batch.
 
 ## The port
 
@@ -60,10 +62,13 @@ or a `once` spent. The read is lazy, so an approved call reads nothing more.
 
 ## The routes
 
-- **The serve terminal:** `ending` in `cli/terminal-consumer.ts` reads the clock against
-  `expiresAt`, within `TIMER_JITTER_MS`, as before, and says `[skipped: no response]`. A lapse
-  before the stated expiry still reads `[no longer waiting]`: the consumer sees only its own
-  aborted signal, which carries no reason across the requester. The node log line names it.
+- **The serve terminal:** `ending` in `cli/terminal-consumer.ts` says `[skipped: no response]`
+  where the clock has passed `expiresAt`, within `TIMER_JITTER_MS`, or where the terminal backend
+  told it so. The requester aborts the consumer's signal with no reason, so a lapse before the
+  stated expiry goes another way: on a `skipped` event with `no_response`, the backend's `notify`
+  calls `tellQuestionEnding` with the question's id before it closes the question, and the
+  consumer reads it once through `takeQuestionEnding` (`common/adapters/approval/question-endings.ts`,
+  process-wide, the latest 256 kept).
 - **`--watch`:** `ranOut` in `cli/approvals-watch.ts` reads the clock, then
   `CoreApprovalApi.departure`, so a lapse reads as skipped too.
 - **A deadline line:** `describeExpiry` and `describeLocalExpiry` say `skipped: no response
@@ -73,8 +78,10 @@ or a `once` spent. The read is lazy, so an approved call reads nothing more.
 
 - `test/approval-no-response.test.ts`: every process reads the end, a late answer from any
   process is told, the webhook end replaces a wait notice and is never replaced, no route queues
-  one, an older node's `expired` entry is delivered, and the deadline and log lines.
+  one, the outbox keeps the end in the shape an older build reads, an older node's `expired` entry
+  is sent as skipped, and the deadline and log lines.
 - `test/approval-join.test.ts`: a held call answers `APPROVAL_SKIPPED`, and the audit entry lands.
 - `test/approval-terminal-port.test.ts`, `test/approvals-watch.test.ts`,
   `test/approval-terminal.test.ts`, `test/approval-notices.test.ts`, and
-  `test/approval-outbox.test.ts`: each route's words and events, another process's drop included.
+  `test/approval-outbox.test.ts`: each route's words and events, another process's drop and a
+  lapse before the stated expiry included, and a receiver on the older protocol.
