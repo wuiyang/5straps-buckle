@@ -27,4 +27,14 @@ describe('approval lifecycle notices', () => {
     expect(ApprovalNoticesSchema.safeParse({ serverId: 'node-1', workspaceId: 'default', notices: [{ token: 't1', event: 'approved', at }] }).success).toBe(false)
     expect(ApprovalNoticesSchema.safeParse({ serverId: 'node-1', workspaceId: 'default', notices: [] }).success).toBe(false)
   })
+
+  // APPROVAL-36: an ask nobody answered before it ran out is skipped, with the reason no_response, never denied. `expired`,
+  // which a node built before it sent, still reads.
+  it('names an ask nobody answered in time as skipped, with the reason no_response, and still reads an older node\'s expired', () => {
+    const at = new Date().toISOString()
+    expect(ApprovalNoticesSchema.parse({ serverId: 'node-1', workspaceId: 'default', notices: [
+      { token: 't1', event: 'skipped', at, reason: 'no_response' },
+      { token: 't2', event: 'expired', at },
+    ] }).notices).toEqual([{ token: 't1', event: 'skipped', at, reason: 'no_response' }, { token: 't2', event: 'expired', at }])
+  })
 })

@@ -80,17 +80,22 @@ export type GrantRecord = z.infer<typeof GrantRecordSchema>
 
 /**
  * What became of an announced ask, told on the same sealed path as the announcement:
- * answered or denied (with the scope recorded), expired unanswered, cancelled because its caller
- * left while waiting, or skipped: the call returned without an answer and the ask stays pending.
+ * answered or denied (with the scope recorded), cancelled because its caller left while waiting, or
+ * skipped, with its reason: the call returned without an answer and the ask stays pending, or, with
+ * `no_response`, nobody answered it before it ran out, so it left the queue and its call did not run
+ * (APPROVAL-36). `expired` is what a node built before that ruling sent for the same end; no node
+ * sends it now, and a reader still takes it as that end.
  */
 export const ApprovalLifecycleEventSchema = z.enum(['answered', 'denied', 'expired', 'cancelled', 'skipped'])
 export type ApprovalLifecycleEvent = z.infer<typeof ApprovalLifecycleEventSchema>
 
 /**
- * Why a call stopped waiting while its ask stays pending: the caller's wait hint said none, nobody
- * was at a terminal to ask, the wait ran out, or the node shut down.
+ * Why an ask was skipped. While it stays pending, why its call stopped waiting: the caller's wait hint
+ * said none, nobody was at a terminal to ask, the wait ran out, or the node shut down. `no_response`:
+ * nobody answered it before it ran out, which ends it; it is never a denial, and the call sent again
+ * asks afresh (APPROVAL-36).
  */
-export const ApprovalSkipReasonSchema = z.enum(['caller_declined_wait', 'no_approver', 'wait_elapsed', 'shutdown'])
+export const ApprovalSkipReasonSchema = z.enum(['caller_declined_wait', 'no_approver', 'wait_elapsed', 'shutdown', 'no_response'])
 export type ApprovalSkipReason = z.infer<typeof ApprovalSkipReasonSchema>
 
 export const ApprovalNoticeSchema = z.object({
@@ -101,7 +106,7 @@ export const ApprovalNoticeSchema = z.object({
   scope: GrantScopeSchema.optional(),
   /** The authenticated signed-once deadline; delivery does not restart it. */
   consumeNotAfter: z.iso.datetime().optional(),
-  /** Why the call stopped waiting, on skipped. */
+  /** Why it was skipped, on skipped: why its call stopped waiting, or `no_response`, which ends it. */
   reason: ApprovalSkipReasonSchema.optional(),
 })
 export type ApprovalNotice = z.infer<typeof ApprovalNoticeSchema>
