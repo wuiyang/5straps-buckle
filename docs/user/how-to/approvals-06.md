@@ -26,14 +26,17 @@ With forms on, Buckle answers a call that needs a person with one form per ask, 
 that declares form elicitation, as Claude Code does: `buckle mcp` over stdio, and `/mcp` over
 HTTP for a client of the 2026-07-28 MCP revision. The form shows the whole action, as the serve
 terminal does. Your answer travels back with the same call sent again, and decides the ask. A
-form grants the ask's own subject alone: a folder and its subfolders, or a host pattern, are
-granted at the node.
+host pattern is granted at the node alone, with `buckle approve --host`.
 
 - **Over stdio and HTTP alike:** the choices the serve terminal offers for the same ask, approve
   or deny, `once`, `session`, or `always` as the ask offers them, floor asks included: `sudo`,
   the destructive list, and the file floor. They come as one list, so a form sends nothing the
   terminal does not offer. A destructive command never offers `always`, at the
   terminal or in a form. Over HTTP, a client of an earlier revision gets the text instead.
+- **A delete outside the workspace:** `Allow this session, folder and below` and `Always allow,
+  folder and below` grant its folder and subfolders, as the terminal's `(4)` and `(5)` do: the
+  same grant, and the same `below` widening in the [audit log](audit-log-03.md)
+  ([deletes](policy-05.md)).
 - **A grant that cannot be saved:** where a `session` or `always` answer's grant cannot be
   saved, a save form asks to retry or skip it before the call runs ([when a grant cannot be
   saved](approvals-05.md)).
@@ -83,7 +86,7 @@ token counts as one.
 
 With forms on, anything holding an agent's token can approve that agent's own asks through the
 form, floor asks included: `sudo`, the destructive list, and the file floor, for `once`,
-`session`, or `always` as each ask offers them. An agent that reads its own MCP config holds that
+`session`, or `always` as each ask offers them, and a delete's folder and its subfolders. An agent that reads its own MCP config holds that
 token. This is why forms are off by default. Turn them on only for a workspace whose agent app
 you trust to show you each form unchanged. Answers at the node, with `buckle approvals`, stay
 open to you whichever way the setting is.

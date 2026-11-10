@@ -72,16 +72,24 @@ offers `once` alone.
 
 ## Approving
 
+Every route that approves offers the wider subject, and each grants it alike: the same
+`delete-below:` grant, and the same `below` widening in the [audit log](audit-log-03.md).
+
 - The serve terminal shows the wider subject under the ask's subject, as
   `or: delete-below:<folder>`, and numbers two more choices after the scopes:
   `(4) approve this session, folder and below` and `(5) always approve, folder and below`.
 - `buckle approve <token> --scope session --below` grants it once you confirm. `--below` refuses
   `--scope once`, `--deny`, `--host`, and an ask that offers no wider subject.
 - `buckle approvals --watch` takes `sb` for the session, and the word `always-below`.
+- An [MCP form](approvals-06.md), over stdio or HTTP, lists `Allow this session, folder and below`
+  and `Always allow, folder and below`.
+- `buckle client approve <node-url> <token> --scope session --below --workspace <name>` grants it
+  from a device, once you confirm. The node signs the wider subject into the challenge the device
+  shows, and takes a decision naming it only on a challenge that showed it. `--below` refuses
+  what `buckle approve --below` refuses.
 - An ask in JSON carries `widerSubject`, and a decision may name the subject it grants as
   `subject`. Both are optional, so a client at protocol 0.1.7 shows and approves the first subject
-  unchanged. A device key's signed decision grants the subject of the challenge it signed, and
-  names no other.
+  unchanged.
 
 `buckle grants list` shows a `delete-below:` grant, and `buckle grants revoke <id>` removes it.
 
