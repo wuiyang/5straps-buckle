@@ -31,7 +31,11 @@ const entry = vi.hoisted(() => ({
 }))
 vi.mock('../common/runtime/environment.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/runtime/environment.js')>(), loadEnvironmentFile: entry.loadEnvironmentFile }))
 vi.mock('../common/runtime/config.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/runtime/config.js')>(), loadConfig: entry.loadConfig }))
-vi.mock('../cli/main.js', () => ({ runInitCommand: entry.runInitCommand, runSettingsCommand: entry.runSettingsCommand, runServiceCommand: entry.runServiceCommand, runCli: entry.runCli, answerWithoutConfiguration: () => null }))
+vi.mock('../cli/main.js', () => ({ runCli: entry.runCli }))
+vi.mock('../cli/help.js', () => ({ answerWithoutConfiguration: () => null }))
+vi.mock('../cli/init.js', () => ({ runInitCommand: entry.runInitCommand }))
+vi.mock('../cli/settings.js', () => ({ runSettingsCommand: entry.runSettingsCommand }))
+vi.mock('../cli/service.js', () => ({ runServiceCommand: entry.runServiceCommand }))
 vi.mock('../server/serve.js', () => ({ serveHttp: entry.serveHttp }))
 vi.mock('../server/setup-server.js', () => ({ setupServer: entry.setupServer, builtEntryPath: () => '/built/.output/server/index.mjs' }))
 vi.mock('../mcp/stdio.js', async importOriginal => ({ serveMcpStdio: entry.serveMcpStdio, mcpTarget: (await importOriginal<typeof import('../mcp/stdio.js')>()).mcpTarget }))
@@ -124,7 +128,7 @@ describe('main', () => {
   it('takes --skip-owner-only-check before or after the command word, so buckle policy never sees it', async () => {
     for (const argv of [['--skip-owner-only-check', 'policy', 'show'], ['policy', 'show', '--skip-owner-only-check']]) {
       expect(await main(argv)).toBe(5)
-      expect(entry.runCli).toHaveBeenLastCalledWith({ argv: ['policy', 'show'], config, ignoreWarning: false })
+      expect(entry.runCli).toHaveBeenLastCalledWith({ argv: ['policy', 'show'], config, ignoreWarning: false, prepared: expect.objectContaining({ command: 'policy', argv: ['show'], target: {} }) })
       expect(entry.configureOwnerOnlyCheck).toHaveBeenLastCalledWith({ skip: true })
     }
     expect(await main(['--skip-owner-only-check', 'init', '--yes'])).toBe(3)
@@ -183,7 +187,7 @@ describe('main', () => {
 
   it('hands --ignore-warning to the owner\'s commands, and refuses it where no owner\'s record is written', async () => {
     expect(await main(['grants', 'revoke', 'g-1', '--ignore-warning'])).toBe(5)
-    expect(entry.runCli).toHaveBeenLastCalledWith({ argv: ['grants', 'revoke', 'g-1'], config, ignoreWarning: true })
+    expect(entry.runCli).toHaveBeenLastCalledWith({ argv: ['grants', 'revoke', 'g-1'], config, ignoreWarning: true, prepared: expect.objectContaining({ command: 'grants', argv: ['revoke', 'g-1'], target: {} }) })
     expect(await main(['--ignore-warning', 'init', '--yes'])).toBe(3)
     expect(entry.runInitCommand).toHaveBeenLastCalledWith(['--yes'], { ignoreWarning: true })
     expect(await main(['settings', 'set', 'a', 'b', '--ignore-warning'])).toBe(4)
@@ -387,6 +391,14 @@ describe('main', () => {
     expect(entry.serveHttp).not.toHaveBeenCalled()
   })
 
+  it('reports invalid node configuration before rejecting the warning override for a tool', async () => {
+    entry.loadConfig.mockImplementationOnce(() => { throw new Error('invalid node configuration') })
+    const refused = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    expect(await main(['fs', 'read', 'notes.txt', '--ignore-warning'])).toBe(1)
+    expect(String(refused.mock.calls[0]![0])).toBe('invalid node configuration\n')
+    expect(entry.runCli).not.toHaveBeenCalled()
+  })
+
   // The CLI display slice, C1: the log's format is read once buckle.env is, and a value it does not know is refused there.
   it('refuses a BUCKLE_LOG_FORMAT other than json or human before the command runs, with the fixed message', async () => {
     vi.stubEnv('BUCKLE_LOG_FORMAT', 'pretty')
@@ -514,9 +526,9 @@ describe('main', () => {
 
   it('hands every other argument list to the CLI with the loaded config', async () => {
     expect(await main(['fs', 'read', 'notes.txt'])).toBe(5)
-    expect(entry.runCli).toHaveBeenCalledWith({ argv: ['fs', 'read', 'notes.txt'], config, ignoreWarning: false })
+    expect(entry.runCli).toHaveBeenCalledWith({ argv: ['fs', 'read', 'notes.txt'], config, ignoreWarning: false, prepared: expect.objectContaining({ command: 'fs', argv: ['read', 'notes.txt'], target: {} }) })
     expect(await main([])).toBe(5)
-    expect(entry.runCli).toHaveBeenLastCalledWith({ argv: [], config, ignoreWarning: false })
+    expect(entry.runCli).toHaveBeenLastCalledWith({ argv: [], config, ignoreWarning: false, prepared: expect.objectContaining({ command: '', argv: [], target: {} }) })
     expect(entry.loadEnvironmentFile).toHaveBeenCalledTimes(2)
     // The CLI builds its own command-scoped runtime; main starts no service runtime for it.
     expect(entry.initializeCommon).not.toHaveBeenCalled()
